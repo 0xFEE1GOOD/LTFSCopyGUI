@@ -1552,6 +1552,8 @@ Public Class Form1
     End Sub
 
     Private Sub Button15_Click(sender As Object, e As EventArgs) Handles Button15.Click
+        SCSIGUI.Show()
+        Exit Sub
         Dim nws As New IOManager.NetworkCommand
         Dim result As IOManager.NetworkCommand
         Dim addr As New Net.IPAddress(0)
