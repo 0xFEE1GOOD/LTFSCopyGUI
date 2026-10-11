@@ -7,9 +7,9 @@ Imports System.ComponentModel
 Imports System.Linq
 
 Public Enum ScsiDataIn
-    HostToDevice = 0
-    DeviceToHost = 1
-    Undefined = 2
+    _0_HostToDevice = 0
+    _1_DeviceToHost = 1
+    _2_Undefined = 2
 End Enum
 
 Public Enum ScsiFieldType
@@ -37,7 +37,7 @@ Public Class ScsiCommandDef
     Public Property Name As String = ""
     Public Property Opcode As Integer
     Public Property CdbLength As Integer = 6
-    Public Property DataIn As ScsiDataIn = ScsiDataIn.Undefined
+    Public Property DataIn As ScsiDataIn = ScsiDataIn._2_Undefined
     Public Property Description As String = ""
     Public Property Elements As New List(Of ScsiElementDef)()
 End Class

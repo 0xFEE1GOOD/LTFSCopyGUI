@@ -85,6 +85,7 @@ Partial Public Class SCSIGUI
         Me.definitionLayout = New System.Windows.Forms.TableLayoutPanel()
         Me.tvElements = New System.Windows.Forms.TreeView()
         Me.pg = New System.Windows.Forms.PropertyGrid()
+        Me.SplitContainer1 = New System.Windows.Forms.SplitContainer()
         Me.rootLayout.SuspendLayout()
         Me.topPanel.SuspendLayout()
         Me.leftLayout.SuspendLayout()
@@ -95,16 +96,20 @@ Partial Public Class SCSIGUI
         Me.tabValues.SuspendLayout()
         Me.tabDefinition.SuspendLayout()
         Me.definitionLayout.SuspendLayout()
+        CType(Me.SplitContainer1, System.ComponentModel.ISupportInitialize).BeginInit()
+        Me.SplitContainer1.Panel1.SuspendLayout()
+        Me.SplitContainer1.Panel2.SuspendLayout()
+        Me.SplitContainer1.SuspendLayout()
         Me.SuspendLayout()
         '
         'rootLayout
         '
-        Me.rootLayout.ColumnCount = 2
-        Me.rootLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 257.0!))
+        Me.rootLayout.ColumnCount = 1
+        Me.rootLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 248.0!))
+        Me.rootLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 10.0!))
         Me.rootLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0!))
         Me.rootLayout.Controls.Add(Me.topPanel, 0, 0)
-        Me.rootLayout.Controls.Add(Me.leftLayout, 0, 1)
-        Me.rootLayout.Controls.Add(Me.rightLayout, 1, 1)
+        Me.rootLayout.Controls.Add(Me.SplitContainer1, 0, 1)
         Me.rootLayout.Dock = System.Windows.Forms.DockStyle.Fill
         Me.rootLayout.Location = New System.Drawing.Point(0, 0)
         Me.rootLayout.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
@@ -112,12 +117,13 @@ Partial Public Class SCSIGUI
         Me.rootLayout.RowCount = 2
         Me.rootLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 34.0!))
         Me.rootLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0!))
+        Me.rootLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20.0!))
         Me.rootLayout.Size = New System.Drawing.Size(1058, 537)
         Me.rootLayout.TabIndex = 0
         '
         'topPanel
         '
-        Me.rootLayout.SetColumnSpan(Me.topPanel, 2)
+        Me.rootLayout.SetColumnSpan(Me.topPanel, 3)
         Me.topPanel.Controls.Add(Me.lblTemplate)
         Me.topPanel.Controls.Add(Me.cboTemplates)
         Me.topPanel.Dock = System.Windows.Forms.DockStyle.Fill
@@ -156,7 +162,7 @@ Partial Public Class SCSIGUI
         Me.leftLayout.Controls.Add(Me.lstCommands, 0, 1)
         Me.leftLayout.Controls.Add(Me.commandButtonsPanel, 0, 2)
         Me.leftLayout.Dock = System.Windows.Forms.DockStyle.Fill
-        Me.leftLayout.Location = New System.Drawing.Point(3, 36)
+        Me.leftLayout.Location = New System.Drawing.Point(0, 0)
         Me.leftLayout.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.leftLayout.Name = "leftLayout"
         Me.leftLayout.Padding = New System.Windows.Forms.Padding(7, 6, 7, 6)
@@ -164,7 +170,8 @@ Partial Public Class SCSIGUI
         Me.leftLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 21.0!))
         Me.leftLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0!))
         Me.leftLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 28.0!))
-        Me.leftLayout.Size = New System.Drawing.Size(251, 499)
+        Me.leftLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20.0!))
+        Me.leftLayout.Size = New System.Drawing.Size(366, 497)
         Me.leftLayout.TabIndex = 1
         '
         'chkEdit
@@ -182,11 +189,12 @@ Partial Public Class SCSIGUI
         '
         Me.lstCommands.Dock = System.Windows.Forms.DockStyle.Fill
         Me.lstCommands.FormattingEnabled = True
+        Me.lstCommands.IntegralHeight = False
         Me.lstCommands.ItemHeight = 12
         Me.lstCommands.Location = New System.Drawing.Point(10, 29)
         Me.lstCommands.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.lstCommands.Name = "lstCommands"
-        Me.lstCommands.Size = New System.Drawing.Size(231, 434)
+        Me.lstCommands.Size = New System.Drawing.Size(346, 432)
         Me.lstCommands.TabIndex = 1
         '
         'commandButtonsPanel
@@ -196,10 +204,10 @@ Partial Public Class SCSIGUI
         Me.commandButtonsPanel.Controls.Add(Me.btnUp)
         Me.commandButtonsPanel.Controls.Add(Me.btnDown)
         Me.commandButtonsPanel.Dock = System.Windows.Forms.DockStyle.Fill
-        Me.commandButtonsPanel.Location = New System.Drawing.Point(10, 467)
+        Me.commandButtonsPanel.Location = New System.Drawing.Point(10, 465)
         Me.commandButtonsPanel.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.commandButtonsPanel.Name = "commandButtonsPanel"
-        Me.commandButtonsPanel.Size = New System.Drawing.Size(231, 24)
+        Me.commandButtonsPanel.Size = New System.Drawing.Size(346, 24)
         Me.commandButtonsPanel.TabIndex = 2
         Me.commandButtonsPanel.WrapContents = False
         '
@@ -250,14 +258,14 @@ Partial Public Class SCSIGUI
         Me.rightLayout.Controls.Add(Me.toolbarPanel, 0, 0)
         Me.rightLayout.Controls.Add(Me.tabs, 0, 1)
         Me.rightLayout.Dock = System.Windows.Forms.DockStyle.Fill
-        Me.rightLayout.Location = New System.Drawing.Point(260, 36)
+        Me.rightLayout.Location = New System.Drawing.Point(0, 0)
         Me.rightLayout.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.rightLayout.Name = "rightLayout"
         Me.rightLayout.Padding = New System.Windows.Forms.Padding(3, 0, 7, 6)
         Me.rightLayout.RowCount = 2
         Me.rightLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 28.0!))
         Me.rightLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0!))
-        Me.rightLayout.Size = New System.Drawing.Size(795, 499)
+        Me.rightLayout.Size = New System.Drawing.Size(682, 497)
         Me.rightLayout.TabIndex = 2
         '
         'toolbarPanel
@@ -268,7 +276,7 @@ Partial Public Class SCSIGUI
         Me.toolbarPanel.Location = New System.Drawing.Point(6, 2)
         Me.toolbarPanel.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.toolbarPanel.Name = "toolbarPanel"
-        Me.toolbarPanel.Size = New System.Drawing.Size(779, 24)
+        Me.toolbarPanel.Size = New System.Drawing.Size(666, 24)
         Me.toolbarPanel.TabIndex = 0
         Me.toolbarPanel.WrapContents = False
         '
@@ -301,7 +309,7 @@ Partial Public Class SCSIGUI
         Me.tabs.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.tabs.Name = "tabs"
         Me.tabs.SelectedIndex = 0
-        Me.tabs.Size = New System.Drawing.Size(779, 461)
+        Me.tabs.Size = New System.Drawing.Size(666, 459)
         Me.tabs.TabIndex = 1
         '
         'tabValues
@@ -311,7 +319,7 @@ Partial Public Class SCSIGUI
         Me.tabValues.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.tabValues.Name = "tabValues"
         Me.tabValues.Padding = New System.Windows.Forms.Padding(3, 2, 3, 2)
-        Me.tabValues.Size = New System.Drawing.Size(771, 435)
+        Me.tabValues.Size = New System.Drawing.Size(658, 433)
         Me.tabValues.TabIndex = 0
         Me.tabValues.Text = "参数值"
         Me.tabValues.UseVisualStyleBackColor = True
@@ -324,7 +332,7 @@ Partial Public Class SCSIGUI
         Me.pnlValues.Location = New System.Drawing.Point(3, 2)
         Me.pnlValues.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.pnlValues.Name = "pnlValues"
-        Me.pnlValues.Size = New System.Drawing.Size(765, 431)
+        Me.pnlValues.Size = New System.Drawing.Size(652, 429)
         Me.pnlValues.TabIndex = 0
         Me.pnlValues.WrapContents = False
         '
@@ -335,7 +343,7 @@ Partial Public Class SCSIGUI
         Me.tabDefinition.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.tabDefinition.Name = "tabDefinition"
         Me.tabDefinition.Padding = New System.Windows.Forms.Padding(3, 2, 3, 2)
-        Me.tabDefinition.Size = New System.Drawing.Size(163, 45)
+        Me.tabDefinition.Size = New System.Drawing.Size(770, 435)
         Me.tabDefinition.TabIndex = 1
         Me.tabDefinition.Text = "元素定义"
         Me.tabDefinition.UseVisualStyleBackColor = True
@@ -353,7 +361,7 @@ Partial Public Class SCSIGUI
         Me.definitionLayout.Name = "definitionLayout"
         Me.definitionLayout.RowCount = 1
         Me.definitionLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0!))
-        Me.definitionLayout.Size = New System.Drawing.Size(157, 41)
+        Me.definitionLayout.Size = New System.Drawing.Size(764, 431)
         Me.definitionLayout.TabIndex = 0
         '
         'tvElements
@@ -363,17 +371,34 @@ Partial Public Class SCSIGUI
         Me.tvElements.Location = New System.Drawing.Point(3, 2)
         Me.tvElements.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.tvElements.Name = "tvElements"
-        Me.tvElements.Size = New System.Drawing.Size(69, 37)
+        Me.tvElements.Size = New System.Drawing.Size(360, 427)
         Me.tvElements.TabIndex = 0
         '
         'pg
         '
         Me.pg.Dock = System.Windows.Forms.DockStyle.Fill
-        Me.pg.Location = New System.Drawing.Point(78, 2)
+        Me.pg.Location = New System.Drawing.Point(369, 2)
         Me.pg.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.pg.Name = "pg"
-        Me.pg.Size = New System.Drawing.Size(76, 37)
+        Me.pg.Size = New System.Drawing.Size(392, 427)
         Me.pg.TabIndex = 1
+        '
+        'SplitContainer1
+        '
+        Me.SplitContainer1.Dock = System.Windows.Forms.DockStyle.Fill
+        Me.SplitContainer1.Location = New System.Drawing.Point(3, 37)
+        Me.SplitContainer1.Name = "SplitContainer1"
+        '
+        'SplitContainer1.Panel1
+        '
+        Me.SplitContainer1.Panel1.Controls.Add(Me.leftLayout)
+        '
+        'SplitContainer1.Panel2
+        '
+        Me.SplitContainer1.Panel2.Controls.Add(Me.rightLayout)
+        Me.SplitContainer1.Size = New System.Drawing.Size(1052, 497)
+        Me.SplitContainer1.SplitterDistance = 366
+        Me.SplitContainer1.TabIndex = 3
         '
         'SCSIGUI
         '
@@ -400,7 +425,13 @@ Partial Public Class SCSIGUI
         Me.tabValues.ResumeLayout(False)
         Me.tabDefinition.ResumeLayout(False)
         Me.definitionLayout.ResumeLayout(False)
+        Me.SplitContainer1.Panel1.ResumeLayout(False)
+        Me.SplitContainer1.Panel2.ResumeLayout(False)
+        CType(Me.SplitContainer1, System.ComponentModel.ISupportInitialize).EndInit()
+        Me.SplitContainer1.ResumeLayout(False)
         Me.ResumeLayout(False)
 
     End Sub
+
+    Friend WithEvents SplitContainer1 As SplitContainer
 End Class
