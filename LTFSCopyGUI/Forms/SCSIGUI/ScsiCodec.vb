@@ -75,11 +75,78 @@ Public NotInheritable Class ScsiCodec
 
     Public Shared Function GetAllowedPageTemplates(listDef As ScsiElementDef, template As ScsiTemplate) As List(Of ScsiElementDef)
         Dim allPages As List(Of ScsiElementDef) = GetAllPageTemplates(template)
-        Dim ids = Regex.Split(If(String.IsNullOrWhiteSpace(listDef.AllowedPageTemplateIds), listDef.PageTemplateId, listDef.AllowedPageTemplateIds), "[;,]")
-        Dim selected = ids.Select(Function(s) s.Trim()).Where(Function(s) s <> "").ToList()
+        If listDef Is Nothing Then Return allPages
+        ' AllowedPageTemplateIds 非空时优先使用，否则使用 PageTemplateId。
+        Dim idText As String = If(String.IsNullOrWhiteSpace(listDef.AllowedPageTemplateIds), listDef.PageTemplateId, listDef.AllowedPageTemplateIds)
+        Dim selected As List(Of String) = Regex.Split(If(idText, ""), "[;,]").Select(Function(s) s.Trim()).Where(Function(s) s <> "").ToList()
+        ' 两个属性都没有设置时，允许所有 Page 模板。
         If selected.Count = 0 Then Return allPages
-        Return allPages.Where(Function(p) selected.Any(Function(id) String.Equals(id, p.Id, StringComparison.OrdinalIgnoreCase) OrElse String.Equals(id, p.Name, StringComparison.OrdinalIgnoreCase))).ToList()
+        ' 收集最终允许的 Page ID。
+        Dim allowedIds As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        For Each id In selected
+            ' 1. 如果填写的是普通 Page 的 ID 或名称，直接允许该 Page。
+            For Each page In allPages
+                If String.Equals(id, page.Id, StringComparison.OrdinalIgnoreCase) OrElse String.Equals(id, page.Name, StringComparison.OrdinalIgnoreCase) Then
+                    allowedIds.Add(page.Id)
+                End If
+            Next
+            ' 2. 如果填写的是 Category 的 ID 或名称，
+            '    则递归允许该 Category 下的所有 Page。
+            For Each category In GetAllCategories(template)
+                If String.Equals(id, category.Id, StringComparison.OrdinalIgnoreCase) OrElse String.Equals(id, category.Name, StringComparison.OrdinalIgnoreCase) Then
+                    CollectCategoryPageIds(category, allowedIds)
+                End If
+            Next
+        Next
+        ' 按模板原有顺序返回，并通过 ID 去重。
+        Return allPages.Where(Function(p) allowedIds.Contains(p.Id)).ToList()
     End Function
+
+    ''' <summary>
+    ''' 递归收集所有 Category 节点，包括多层嵌套的 Category。
+    ''' </summary>
+    Private Shared Function GetAllCategories(template As ScsiTemplate) As List(Of ScsiElementDef)
+        Dim result As New List(Of ScsiElementDef)
+        If template Is Nothing OrElse template.PageTemplates Is Nothing Then
+            Return result
+        End If
+        For Each item As ScsiElementDef In template.PageTemplates
+            CollectCategories(item, result)
+        Next
+        Return result
+    End Function
+    Private Shared Sub CollectCategories(element As ScsiElementDef, result As List(Of ScsiElementDef))
+        If element Is Nothing Then Return
+        If String.Equals(element.Kind, "Category", StringComparison.OrdinalIgnoreCase) Then
+            result.Add(element)
+        End If
+
+        If element.Children IsNot Nothing Then
+            For Each child As ScsiElementDef In element.Children
+                CollectCategories(child, result)
+            Next
+        End If
+    End Sub
+
+    ''' <summary>
+    ''' 收集指定 Category 下的全部实际 Page ID。
+    ''' 支持任意层级的 Category 嵌套。
+    ''' </summary>
+    Private Shared Sub CollectCategoryPageIds(category As ScsiElementDef, allowedIds As HashSet(Of String))
+        If category Is Nothing OrElse category.Children Is Nothing Then Return
+        For Each child As ScsiElementDef In category.Children
+            If child Is Nothing Then Continue For
+            If String.Equals(child.Kind, "Category", StringComparison.OrdinalIgnoreCase) Then
+                ' 子分类：继续递归。
+                CollectCategoryPageIds(child, allowedIds)
+            Else
+                ' 非 Category 节点视为实际 Page 模板。
+                If Not String.IsNullOrWhiteSpace(child.Id) Then
+                    allowedIds.Add(child.Id)
+                End If
+            End If
+        Next
+    End Sub
 
     Public Shared Function Encode(command As ScsiCommandDef, template As ScsiTemplate, nodes As List(Of ScsiValueNode)) As ScsiEncodedCommand
         If command.CdbLength < 1 OrElse command.CdbLength > 260 Then Throw New InvalidOperationException("CDB 长度必须在 1–260 字节范围内。")
@@ -223,7 +290,7 @@ Public NotInheritable Class ScsiCodec
         Select Case d.Kind.ToUpperInvariant()
             Case "FIELD"
                 If d.FieldType = ScsiFieldType.ASCII OrElse d.FieldType = ScsiFieldType.Binary Then
-                    Return CLng(Math.Max(0, If(d.ByteLength > 0, d.ByteLength, (d.BitLength + 7) \ 8))) * 8L
+                    Return CLng(Math.Max(0, GetFieldByteLength(node))) * 8L
                 End If
                 Return Math.Max(0, d.BitLength)
             Case "PAGELIST"
@@ -277,7 +344,7 @@ Public NotInheritable Class ScsiCodec
             ' Value was recalculated immediately before encoding.
         End If
         If d.FieldType = ScsiFieldType.ASCII Then
-            Dim count = If(d.ByteLength > 0, d.ByteLength, (d.BitLength + 7) \ 8)
+            Dim count = GetFieldByteLength(node)
             EnsureRange(target, bitOffset, count * 8, d.Name)
             Dim src = Encoding.ASCII.GetBytes(Convert.ToString(If(node.Value, ""), CultureInfo.InvariantCulture))
             For i As Integer = 0 To Math.Min(count, src.Length) - 1
@@ -285,7 +352,7 @@ Public NotInheritable Class ScsiCodec
             Next
             Return
         ElseIf d.FieldType = ScsiFieldType.Binary Then
-            Dim count = If(d.ByteLength > 0, d.ByteLength, (d.BitLength + 7) \ 8)
+            Dim count = GetFieldByteLength(node)
             EnsureRange(target, bitOffset, count * 8, d.Name)
             Dim src = ParseHexBytes(Convert.ToString(If(node.Value, ""), CultureInfo.InvariantCulture))
             If src.Length > count Then Throw New InvalidOperationException(d.Name & " 的 Binary 数据超过指定长度 " & count & " 字节。")
@@ -329,16 +396,45 @@ Public NotInheritable Class ScsiCodec
                 DecodePageList(node, source, startBit, limitBytes)
         End Select
     End Sub
-
+    ' 获取 Field 的实际字节长度。
+    ' LengthFieldId 非空时，在当前 Page 实例内查找对应长度字段，
+    ' 避免多个相同 Page 模板实例之间串用长度值。
+    Private Shared Function GetFieldByteLength(node As ScsiValueNode) As Integer
+        Dim d = node.Definition
+        If Not String.IsNullOrWhiteSpace(d.LengthFieldId) Then
+            ' 向上查找当前字段所属的 Page 实例。
+            Dim pageNode As ScsiValueNode = node
+            While pageNode IsNot Nothing
+                If pageNode.Definition IsNot Nothing AndAlso String.Equals(pageNode.Definition.Kind, "Page", StringComparison.OrdinalIgnoreCase) Then
+                    Exit While
+                End If
+                pageNode = pageNode.Parent
+            End While
+            If pageNode Is Nothing Then
+                Throw New InvalidOperationException("字段 " & d.Name & " 引用了动态长度，但找不到所属 Page 实例。")
+            End If
+            ' 仅在当前 Page 实例内查找，不能在整个 _currentNodes 中全局查找。
+            Dim lengthNode = Flatten(New List(Of ScsiValueNode) From {pageNode}).FirstOrDefault(Function(n) n.Definition IsNot Nothing AndAlso String.Equals(n.Definition.Id, d.LengthFieldId, StringComparison.OrdinalIgnoreCase))
+            If lengthNode Is Nothing Then
+                Throw New InvalidOperationException("字段 " & d.Name & " 引用的长度字段不存在：" & d.LengthFieldId)
+            End If
+            Dim lengthValue As Long = ParseInteger(lengthNode.Value)
+            If lengthValue < 0 OrElse lengthValue > Integer.MaxValue Then
+                Throw New InvalidOperationException("字段 " & d.Name & " 的动态长度无效。")
+            End If
+            Return CInt(lengthValue)
+        End If
+        Return If(d.ByteLength > 0, d.ByteLength, (d.BitLength + 7) \ 8)
+    End Function
     Private Shared Sub DecodeField(node As ScsiValueNode, source As Byte(), bitOffset As Integer, limitBytes As Integer)
         Dim d = node.Definition
         If d.FieldType = ScsiFieldType.ASCII Then
-            Dim count = If(d.ByteLength > 0, d.ByteLength, (d.BitLength + 7) \ 8)
+            Dim count = GetFieldByteLength(node)
             If bitOffset Mod 8 <> 0 OrElse bitOffset \ 8 + count > Math.Min(source.Length, limitBytes) Then Return
             node.Value = Encoding.ASCII.GetString(source, bitOffset \ 8, count).TrimEnd(ChrW(0), " "c)
             Return
         ElseIf d.FieldType = ScsiFieldType.Binary Then
-            Dim count = If(d.ByteLength > 0, d.ByteLength, (d.BitLength + 7) \ 8)
+            Dim count = GetFieldByteLength(node)
             If bitOffset Mod 8 <> 0 OrElse bitOffset \ 8 + count > Math.Min(source.Length, limitBytes) Then Return
             node.Value = String.Join(" ", source.Skip(bitOffset \ 8).Take(count).Select(Function(b) b.ToString("X2")))
             Return
