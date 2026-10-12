@@ -147,7 +147,19 @@ Public Class IOManager
             chars(i * 2) = HexChars(b >> 4)
             chars(i * 2 + 1) = HexChars(b And &HF)
         Next
+        Return New String(chars)
+    End Function
+    Public Shared Function Bytes2HexSplit(data As Byte()) As String
+        If data Is Nothing OrElse data.Length = 0 Then Return String.Empty
 
+        Dim chars(data.Length * 3 - 1) As Char
+
+        For i As Integer = 0 To data.Length - 1
+            Dim b As Integer = data(i)
+            chars(i * 3) = HexChars(b >> 4)
+            chars(i * 3 + 1) = HexChars(b And &HF)
+            chars(i * 3 + 2) = " "c
+        Next
         Return New String(chars)
     End Function
     Public Shared Function SHA1(filename As String, LogFile As String()) As String

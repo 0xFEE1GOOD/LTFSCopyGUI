@@ -187,6 +187,8 @@ Partial Class LTFSConfigurator
         Me.SaveFileDialog1 = New System.Windows.Forms.SaveFileDialog()
         Me.SaveFileDialog2 = New System.Windows.Forms.SaveFileDialog()
         Me.OpenFileDialog1 = New System.Windows.Forms.OpenFileDialog()
+        Me.复制ToolStripMenuItem = New System.Windows.Forms.ToolStripMenuItem()
+        Me.粘贴ToolStripMenuItem = New System.Windows.Forms.ToolStripMenuItem()
         Me.ContextMenuStripRefreshDeviceList.SuspendLayout()
         Me.Panel1.SuspendLayout()
         Me.ContextMenuStripLTFSWriter.SuspendLayout()
@@ -1260,7 +1262,7 @@ Partial Class LTFSConfigurator
         '
         'ContextMenuStripSend
         '
-        Me.ContextMenuStripSend.Items.AddRange(New System.Windows.Forms.ToolStripItem() {Me.ToolStripSeparator1, Me.保存ToolStripMenuItem, Me.删除ToolStripMenuItem, Me.DebugToolStripMenuItem})
+        Me.ContextMenuStripSend.Items.AddRange(New System.Windows.Forms.ToolStripItem() {Me.ToolStripSeparator1, Me.保存ToolStripMenuItem, Me.删除ToolStripMenuItem, Me.DebugToolStripMenuItem, Me.复制ToolStripMenuItem, Me.粘贴ToolStripMenuItem})
         Me.ContextMenuStripSend.Name = "ContextMenuStripSend"
         resources.ApplyResources(Me.ContextMenuStripSend, "ContextMenuStripSend")
         '
@@ -1317,6 +1319,16 @@ Partial Class LTFSConfigurator
         'OpenFileDialog1
         '
         Me.OpenFileDialog1.FileName = "OpenFileDialog1"
+        '
+        '复制ToolStripMenuItem
+        '
+        Me.复制ToolStripMenuItem.Name = "复制ToolStripMenuItem"
+        resources.ApplyResources(Me.复制ToolStripMenuItem, "复制ToolStripMenuItem")
+        '
+        '粘贴ToolStripMenuItem
+        '
+        Me.粘贴ToolStripMenuItem.Name = "粘贴ToolStripMenuItem"
+        resources.ApplyResources(Me.粘贴ToolStripMenuItem, "粘贴ToolStripMenuItem")
         '
         'LTFSConfigurator
         '
@@ -1545,4 +1557,6 @@ Partial Class LTFSConfigurator
     Friend WithEvents GroupBoxRWTest As GroupBox
     Friend WithEvents ButtonResetAllZones As Button
     Friend WithEvents ButtonZBCiSCSISvc As Button
+    Friend WithEvents 复制ToolStripMenuItem As ToolStripMenuItem
+    Friend WithEvents 粘贴ToolStripMenuItem As ToolStripMenuItem
 End Class

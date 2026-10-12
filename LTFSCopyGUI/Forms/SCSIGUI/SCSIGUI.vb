@@ -81,66 +81,36 @@ Partial Public Class SCSIGUI
     End Sub
 
     Private Sub RenderValueEditors()
+        ' 只重建动态参数编辑器；指令信息、按钮和 CDB/Param 文本框由 Designer 静态创建。
         pnlValues.SuspendLayout()
         pnlValues.Controls.Clear()
         _editors.Clear()
+
         If _selectedCommand Is Nothing OrElse _runtimeNodes Is Nothing Then
-            pnlValues.ResumeLayout()
+            lblCommandInfo.Text = "请选择指令"
+            pnlValues.ResumeLayout(True)
             Return
         End If
 
-        Dim heading As New Label With {
-            .Text = String.Format("{0}   Opcode=0x{1:X2}   CDB={2} bytes   DataIn={3}",
-                _selectedCommand.Name, _selectedCommand.Opcode, _selectedCommand.CdbLength, CInt(_selectedCommand.DataIn)),
-            .AutoSize = True, .Font = New Font(Font, FontStyle.Bold), .Margin = New Padding(4, 8, 4, 8)
-        }
-        pnlValues.Controls.Add(heading)
-
-        Dim actionRow As New FlowLayoutPanel With {.AutoSize = True, .WrapContents = False, .Margin = New Padding(3, 2, 3, 8)}
-        Dim btnEncode As New Button With {.Text = "生成 CDB / Param", .AutoSize = True}
-        Dim btnDecode As New Button With {.Text = "解析输入字节", .AutoSize = True}
-        AddHandler btnEncode.Click, AddressOf EncodeButtonClick
-        AddHandler btnDecode.Click, AddressOf DecodeButtonClick
-        actionRow.Controls.Add(btnEncode)
-        actionRow.Controls.Add(btnDecode)
-        pnlValues.Controls.Add(actionRow)
-
-        AddHexArea("CDB 输入（解析用）", "cdbInput")
-        AddHexArea("Param 输入（解析用）", "paramInput")
-        AddHexArea("CDB 输出", "cdbOutput")
-        AddHexArea("Param 输出", "paramOutput")
+        lblCommandInfo.Text = String.Format("{0}   Opcode=0x{1:X}   CDB={2} bytes   DataIn={3}",
+            _selectedCommand.Name, _selectedCommand.Opcode, _selectedCommand.CdbLength, CInt(_selectedCommand.DataIn))
 
         For Each node In _runtimeNodes
             RenderNode(node, pnlValues, 0)
         Next
 
-        ' 先完成所有子控件布局，再从内到外修正带边框的嵌套容器高度。
-        ' 嵌套 FlowLayoutPanel 的 AutoSize 计算可能滞后，导致底部边框覆盖最后一个字段。
+        FitNestedPanelHeights(pnlValues)
         pnlValues.ResumeLayout(True)
     End Sub
 
-    Private Sub AddHexArea(caption As String, key As String)
-        Dim box As New TableLayoutPanel With {.ColumnCount = 1, .RowCount = 2, .Width = Math.Max(500, pnlValues.ClientSize.Width - 40), .Height = 72, .Margin = New Padding(4, 2, 4, 2)}
-        box.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
-        box.RowStyles.Add(New RowStyle(SizeType.Absolute, 22.0F))
-        box.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
-        box.Controls.Add(New Label With {.Text = caption, .AutoSize = True}, 0, 0)
-        Dim tb As New TextBox With {.Dock = DockStyle.Fill, .Multiline = True, .ScrollBars = ScrollBars.Vertical, .Tag = key}
-        If key.EndsWith("Output", StringComparison.Ordinal) Then tb.ReadOnly = True
-        box.Controls.Add(tb, 0, 1)
-        pnlValues.Controls.Add(box)
-    End Sub
-
     Private Function FindHexBox(key As String) As TextBox
-        For Each c As Control In pnlValues.Controls
-            Dim t = TryCast(c, TableLayoutPanel)
-            If t Is Nothing Then Continue For
-            For Each child As Control In t.Controls
-                Dim tb = TryCast(child, TextBox)
-                If tb IsNot Nothing AndAlso String.Equals(Convert.ToString(tb.Tag), key, StringComparison.Ordinal) Then Return tb
-            Next
-        Next
-        Return Nothing
+        Select Case key
+            Case "cdbInput" : Return txtCdbInput
+            Case "paramInput" : Return txtParamInput
+            Case "cdbOutput" : Return txtCdbOutput
+            Case "paramOutput" : Return txtParamOutput
+            Case Else : Return Nothing
+        End Select
     End Function
 
     Private Sub RenderNode(node As ScsiValueNode, host As Control, indent As Integer)
@@ -450,7 +420,7 @@ Partial Public Class SCSIGUI
         RenderValueEditors()
     End Sub
 
-    Private Sub EncodeButtonClick(sender As Object, e As EventArgs)
+    Private Sub EncodeButtonClick(sender As Object, e As EventArgs) Handles btnEncode.Click
         If _selectedCommand Is Nothing OrElse _runtimeNodes Is Nothing Then Return
         Try
             Dim result = ScsiCodec.Encode(_selectedCommand, _template, _runtimeNodes)
@@ -463,22 +433,81 @@ Partial Public Class SCSIGUI
         End Try
     End Sub
 
-    Private Sub DecodeButtonClick(sender As Object, e As EventArgs)
+    Private Sub DecodeButtonClick(sender As Object, e As EventArgs) Handles btnDecode.Click
         If _selectedCommand Is Nothing OrElse _runtimeNodes Is Nothing Then Return
         Try
             Dim cdbBox = FindHexBox("cdbInput")
             Dim paramBox = FindHexBox("paramInput")
             Dim cdb = ParseHex(cdbBox.Text)
             Dim param = ParseHex(paramBox.Text)
+            If cdb.Length = 0 Then Throw New FormatException("CDB 输入不能为空。")
+
+            ' 根据 CDB 开头的一个或多个 Opcode 字节自动匹配指令。
+            Dim matchedCommand = FindCommandByOpcodePrefix(cdb)
+            If matchedCommand Is Nothing Then
+                Throw New InvalidOperationException(
+                    "没有找到 Opcode 与 CDB 开头匹配的指令：" &
+                    BitConverter.ToString(cdb.Take(Math.Min(4, cdb.Length)).ToArray()).Replace("-", " "))
+            End If
+
+            If Not Object.ReferenceEquals(matchedCommand, _selectedCommand) Then
+                Dim matchedIndex = _template.Commands.IndexOf(matchedCommand)
+                If matchedIndex >= 0 Then lstCommands.SelectedIndex = matchedIndex
+            End If
+
+            If _selectedCommand Is Nothing OrElse _runtimeNodes Is Nothing Then
+                Throw New InvalidOperationException("无法初始化匹配指令的参数节点。")
+            End If
+
             ScsiCodec.Decode(_selectedCommand, _template, _runtimeNodes, cdb, param)
             RenderValueEditors()
-            FindHexBox("cdbInput").Text = cdbBox.Text
-            FindHexBox("paramInput").Text = paramBox.Text
 
         Catch ex As Exception
             MessageBox.Show("解析 CDB/Param 失败：" & ex.Message, "编解码错误", MessageBoxButtons.OK, MessageBoxIcon.Error)
         End Try
     End Sub
+
+    ' Opcode 可能占用多个字节；按整数的最短大端字节序列匹配 CDB 前缀。
+    ' 若多个指令匹配同一前缀，优先选择 Opcode 字节数最多的指令。
+    Private Function FindCommandByOpcodePrefix(cdb As Byte()) As ScsiCommandDef
+        If _template Is Nothing OrElse cdb Is Nothing OrElse cdb.Length = 0 Then Return Nothing
+
+        Dim best As ScsiCommandDef = Nothing
+        Dim bestLength As Integer = -1
+
+        For Each cmd In _template.Commands
+            If cmd.Opcode < 0 Then Continue For
+
+            Dim opcodeLength As Integer = 1
+            Dim temp As Integer = cmd.Opcode
+            While temp > &HFF
+                opcodeLength += 1
+                temp >>= 8
+            End While
+
+            If opcodeLength > cdb.Length OrElse opcodeLength < bestLength Then Continue For
+
+            Dim matches As Boolean = True
+            For i As Integer = 0 To opcodeLength - 1
+                Dim shift As Integer = (opcodeLength - 1 - i) * 8
+                Dim expected As Byte = CByte((cmd.Opcode >> shift) And &HFF)
+                If cdb(i) <> expected Then
+                    matches = False
+                    Exit For
+                End If
+            Next
+
+            If matches AndAlso opcodeLength > bestLength Then
+                best = cmd
+                bestLength = opcodeLength
+            ElseIf matches AndAlso opcodeLength = bestLength AndAlso
+                   Object.ReferenceEquals(Command, _selectedCommand) Then
+                best = cmd
+            End If
+        Next
+
+        Return best
+    End Function
 
     Private Function ParseHex(value As String) As Byte()
         Dim s = If(value, "").Trim()
@@ -792,6 +821,72 @@ Partial Public Class SCSIGUI
     Private Sub SCSIGUI_Load(sender As Object, e As EventArgs) Handles Me.Load
         UpdateEditUi()
         LoadTemplateList()
+    End Sub
+
+    Private Sub btnCopy_Click(sender As Object, e As EventArgs) Handles btnCopy.Click
+        Dim sb As New System.Text.StringBuilder()
+        sb.AppendLine("[SCSIGUI]")
+        sb.AppendLine("CDB:")
+        sb.AppendLine(txtCdbOutput.Text)
+        sb.AppendLine("PARAM:")
+        sb.AppendLine(txtParamOutput.Text)
+        sb.AppendLine("DataIn:")
+        sb.AppendLine(CInt(_selectedCommand.DataIn).ToString())
+        sb.AppendLine("[/SCSIGUI]")
+        Clipboard.SetText(sb.ToString())
+    End Sub
+
+    Private Sub btnPaste_Click(sender As Object, e As EventArgs) Handles btnPaste.Click
+        Dim content As String = Clipboard.GetText()
+        If String.IsNullOrWhiteSpace(content) Then
+            Throw New FormatException("剪贴板为空。")
+        End If
+        Dim lines As String() = content.Split(New String() {vbCrLf, vbLf, vbCr}, StringSplitOptions.RemoveEmptyEntries)
+        Dim values As New Dictionary(Of String, System.Text.StringBuilder)(StringComparer.OrdinalIgnoreCase) From {{"CDB", New System.Text.StringBuilder()}, {"PARAM", New System.Text.StringBuilder()}}
+        Dim currentKey As String = Nothing
+        Dim hasStart As Boolean = False
+        Dim hasEnd As Boolean = False
+
+        For Each rawLine As String In lines
+            Dim line As String = rawLine.Trim()
+            If line = "[SCSIGUI]" Then
+                hasStart = True
+                Continue For
+            End If
+            If line = "[/SCSIGUI]" Then
+                hasEnd = True
+                Exit For
+            End If
+            If Not hasStart Then Continue For
+            Select Case line.ToUpperInvariant()
+                Case "CDB:"
+                    currentKey = "CDB"
+                    Continue For
+                Case "PARAM:"
+                    currentKey = "PARAM"
+                    Continue For
+                Case "DATAIN:"
+                    currentKey = Nothing
+                    Continue For
+            End Select
+            If currentKey IsNot Nothing Then
+                If values(currentKey).Length > 0 Then
+                    values(currentKey).AppendLine()
+                End If
+                values(currentKey).Append(line)
+            End If
+        Next
+        If Not hasStart OrElse Not hasEnd Then
+            Throw New FormatException("剪贴板内容不是有效的 SCSIGUI 数据。")
+        End If
+        If Not values.ContainsKey("CDB") OrElse values("CDB").Length = 0 Then
+            Throw New FormatException("剪贴板中 CDB 不能为空。")
+        End If
+        If Not values.ContainsKey("PARAM") Then
+            Throw New FormatException("剪贴板中缺少 PARAM 字段。")
+        End If
+        txtCdbInput.Text = values("CDB").ToString()
+        txtParamInput.Text = values("PARAM").ToString()
     End Sub
 End Class
 

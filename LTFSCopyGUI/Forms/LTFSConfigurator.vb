@@ -2385,6 +2385,8 @@ DatasetResidue = {ts.CurrentSetResidueBytes}{vbCrLf}"
                    TextBoxDebugOutput.Text &= vbCrLf & vbCrLf & "Sense" & vbCrLf
                    If sense IsNot Nothing AndAlso sense.Length > 0 Then TextBoxDebugOutput.Text &= IOManager.Byte2Hex(sense, True) & vbCrLf
                    TextBoxDebugOutput.Text &= TapeUtils.ParseSenseData(sense)
+                   TextBoxCDBData.Text = IOManager.Bytes2HexSplit(cdb)
+                   TextBoxParamData.Text = IOManager.Bytes2HexSplit(param)
                End Sub)
     End Sub
 
@@ -3672,5 +3674,75 @@ DatasetResidue = {ts.CurrentSetResidueBytes}{vbCrLf}"
         End If
 
 
+    End Sub
+
+    Private Sub 复制ToolStripMenuItem_Click(sender As Object, e As EventArgs) Handles 复制ToolStripMenuItem.Click
+        Dim sb As New System.Text.StringBuilder()
+        sb.AppendLine("[SCSIGUI]")
+        sb.AppendLine("CDB:")
+        sb.AppendLine(TextBoxCDBData.Text)
+        sb.AppendLine("PARAM:")
+        sb.AppendLine(TextBoxParamData.Text)
+        sb.AppendLine("DataIn:")
+        sb.AppendLine(TextBoxDataDir.Text)
+        sb.AppendLine("[/SCSIGUI]")
+        Clipboard.SetText(sb.ToString())
+    End Sub
+
+    Private Sub 粘贴ToolStripMenuItem_Click(sender As Object, e As EventArgs) Handles 粘贴ToolStripMenuItem.Click
+        Dim content As String = Clipboard.GetText()
+        If String.IsNullOrWhiteSpace(content) Then
+            Throw New FormatException("剪贴板为空。")
+        End If
+        Dim lines As String() = content.Split(New String() {vbCrLf, vbLf, vbCr}, StringSplitOptions.RemoveEmptyEntries)
+        Dim values As New Dictionary(Of String, System.Text.StringBuilder)(StringComparer.OrdinalIgnoreCase) From {{"CDB", New System.Text.StringBuilder()}, {"PARAM", New System.Text.StringBuilder()}, {"DATAIN", New System.Text.StringBuilder()}}
+        Dim currentKey As String = Nothing
+        Dim hasStart As Boolean = False
+        Dim hasEnd As Boolean = False
+
+        For Each rawLine As String In lines
+            Dim line As String = rawLine.Trim()
+            If line = "[SCSIGUI]" Then
+                hasStart = True
+                Continue For
+            End If
+            If line = "[/SCSIGUI]" Then
+                hasEnd = True
+                Exit For
+            End If
+            If Not hasStart Then Continue For
+            Select Case line.ToUpperInvariant()
+                Case "CDB:"
+                    currentKey = "CDB"
+                    Continue For
+                Case "PARAM:"
+                    currentKey = "PARAM"
+                    Continue For
+                Case "DATAIN:"
+                    currentKey = "DATAIN"
+                    Continue For
+            End Select
+            If currentKey IsNot Nothing Then
+                If values(currentKey).Length > 0 Then
+                    values(currentKey).AppendLine()
+                End If
+                values(currentKey).Append(line)
+            End If
+        Next
+        If Not hasStart OrElse Not hasEnd Then
+            Throw New FormatException("剪贴板内容不是有效的 SCSIGUI 数据。")
+        End If
+        If Not values.ContainsKey("CDB") OrElse values("CDB").Length = 0 Then
+            Throw New FormatException("剪贴板中 CDB 不能为空。")
+        End If
+        If Not values.ContainsKey("PARAM") Then
+            Throw New FormatException("剪贴板中缺少 PARAM 字段。")
+        End If
+        If Not values.ContainsKey("DATAIN") Then
+            Throw New FormatException("剪贴板中缺少 DATAIN 字段。")
+        End If
+        TextBoxCDBData.Text = values("CDB").ToString()
+        TextBoxParamData.Text = values("PARAM").ToString()
+        TextBoxDataDir.Text = values("DATAIN").ToString()
     End Sub
 End Class

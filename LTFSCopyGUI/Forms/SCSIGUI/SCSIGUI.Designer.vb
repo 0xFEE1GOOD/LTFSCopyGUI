@@ -26,6 +26,20 @@ Partial Public Class SCSIGUI
     Friend WithEvents tabValues As TabPage
     Friend WithEvents tabDefinition As TabPage
     Friend WithEvents pnlValues As FlowLayoutPanel
+    Friend pnlStaticValues As TableLayoutPanel
+    Friend pnlActions As FlowLayoutPanel
+    Friend pnlHexAreas As TableLayoutPanel
+    Friend lblCommandInfo As Label
+    Friend WithEvents btnEncode As Button
+    Friend WithEvents btnDecode As Button
+    Friend lblCdbInput As Label
+    Friend WithEvents txtCdbInput As TextBox
+    Friend lblParamInput As Label
+    Friend WithEvents txtParamInput As TextBox
+    Friend lblCdbOutput As Label
+    Friend WithEvents txtCdbOutput As TextBox
+    Friend lblParamOutput As Label
+    Friend WithEvents txtParamOutput As TextBox
 
     ' 所有布局容器均为窗体字段，避免在 InitializeComponent 中使用局部容器，
     ' 使 Visual Studio WinForms 设计器能够识别并维护控件层级。
@@ -66,6 +80,7 @@ Partial Public Class SCSIGUI
         Me.topPanel = New System.Windows.Forms.FlowLayoutPanel()
         Me.lblTemplate = New System.Windows.Forms.Label()
         Me.cboTemplates = New System.Windows.Forms.ComboBox()
+        Me.SplitContainer1 = New System.Windows.Forms.SplitContainer()
         Me.leftLayout = New System.Windows.Forms.TableLayoutPanel()
         Me.chkEdit = New System.Windows.Forms.CheckBox()
         Me.lstCommands = New System.Windows.Forms.ListBox()
@@ -81,25 +96,43 @@ Partial Public Class SCSIGUI
         Me.tabs = New System.Windows.Forms.TabControl()
         Me.tabValues = New System.Windows.Forms.TabPage()
         Me.pnlValues = New System.Windows.Forms.FlowLayoutPanel()
+        Me.pnlStaticValues = New System.Windows.Forms.TableLayoutPanel()
+        Me.lblCommandInfo = New System.Windows.Forms.Label()
+        Me.pnlActions = New System.Windows.Forms.FlowLayoutPanel()
+        Me.btnEncode = New System.Windows.Forms.Button()
+        Me.btnDecode = New System.Windows.Forms.Button()
+        Me.pnlHexAreas = New System.Windows.Forms.TableLayoutPanel()
+        Me.lblCdbInput = New System.Windows.Forms.Label()
+        Me.txtCdbInput = New System.Windows.Forms.TextBox()
+        Me.lblParamInput = New System.Windows.Forms.Label()
+        Me.txtParamInput = New System.Windows.Forms.TextBox()
+        Me.lblCdbOutput = New System.Windows.Forms.Label()
+        Me.txtCdbOutput = New System.Windows.Forms.TextBox()
+        Me.lblParamOutput = New System.Windows.Forms.Label()
+        Me.txtParamOutput = New System.Windows.Forms.TextBox()
         Me.tabDefinition = New System.Windows.Forms.TabPage()
         Me.definitionLayout = New System.Windows.Forms.TableLayoutPanel()
         Me.tvElements = New System.Windows.Forms.TreeView()
         Me.pg = New System.Windows.Forms.PropertyGrid()
-        Me.SplitContainer1 = New System.Windows.Forms.SplitContainer()
+        Me.btnCopy = New System.Windows.Forms.Button()
+        Me.btnPaste = New System.Windows.Forms.Button()
         Me.rootLayout.SuspendLayout()
         Me.topPanel.SuspendLayout()
+        CType(Me.SplitContainer1, System.ComponentModel.ISupportInitialize).BeginInit()
+        Me.SplitContainer1.Panel1.SuspendLayout()
+        Me.SplitContainer1.Panel2.SuspendLayout()
+        Me.SplitContainer1.SuspendLayout()
         Me.leftLayout.SuspendLayout()
         Me.commandButtonsPanel.SuspendLayout()
         Me.rightLayout.SuspendLayout()
         Me.toolbarPanel.SuspendLayout()
         Me.tabs.SuspendLayout()
         Me.tabValues.SuspendLayout()
+        Me.pnlStaticValues.SuspendLayout()
+        Me.pnlActions.SuspendLayout()
+        Me.pnlHexAreas.SuspendLayout()
         Me.tabDefinition.SuspendLayout()
         Me.definitionLayout.SuspendLayout()
-        CType(Me.SplitContainer1, System.ComponentModel.ISupportInitialize).BeginInit()
-        Me.SplitContainer1.Panel1.SuspendLayout()
-        Me.SplitContainer1.Panel2.SuspendLayout()
-        Me.SplitContainer1.SuspendLayout()
         Me.SuspendLayout()
         '
         'rootLayout
@@ -118,7 +151,7 @@ Partial Public Class SCSIGUI
         Me.rootLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 34.0!))
         Me.rootLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0!))
         Me.rootLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20.0!))
-        Me.rootLayout.Size = New System.Drawing.Size(1058, 537)
+        Me.rootLayout.Size = New System.Drawing.Size(1125, 702)
         Me.rootLayout.TabIndex = 0
         '
         'topPanel
@@ -131,7 +164,7 @@ Partial Public Class SCSIGUI
         Me.topPanel.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.topPanel.Name = "topPanel"
         Me.topPanel.Padding = New System.Windows.Forms.Padding(7, 6, 3, 3)
-        Me.topPanel.Size = New System.Drawing.Size(1052, 30)
+        Me.topPanel.Size = New System.Drawing.Size(1119, 30)
         Me.topPanel.TabIndex = 0
         Me.topPanel.WrapContents = False
         '
@@ -154,6 +187,23 @@ Partial Public Class SCSIGUI
         Me.cboTemplates.Size = New System.Drawing.Size(198, 20)
         Me.cboTemplates.TabIndex = 1
         '
+        'SplitContainer1
+        '
+        Me.SplitContainer1.Dock = System.Windows.Forms.DockStyle.Fill
+        Me.SplitContainer1.Location = New System.Drawing.Point(3, 37)
+        Me.SplitContainer1.Name = "SplitContainer1"
+        '
+        'SplitContainer1.Panel1
+        '
+        Me.SplitContainer1.Panel1.Controls.Add(Me.leftLayout)
+        '
+        'SplitContainer1.Panel2
+        '
+        Me.SplitContainer1.Panel2.Controls.Add(Me.rightLayout)
+        Me.SplitContainer1.Size = New System.Drawing.Size(1119, 662)
+        Me.SplitContainer1.SplitterDistance = 389
+        Me.SplitContainer1.TabIndex = 3
+        '
         'leftLayout
         '
         Me.leftLayout.ColumnCount = 1
@@ -171,7 +221,7 @@ Partial Public Class SCSIGUI
         Me.leftLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0!))
         Me.leftLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 28.0!))
         Me.leftLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20.0!))
-        Me.leftLayout.Size = New System.Drawing.Size(366, 497)
+        Me.leftLayout.Size = New System.Drawing.Size(389, 662)
         Me.leftLayout.TabIndex = 1
         '
         'chkEdit
@@ -194,7 +244,7 @@ Partial Public Class SCSIGUI
         Me.lstCommands.Location = New System.Drawing.Point(10, 29)
         Me.lstCommands.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.lstCommands.Name = "lstCommands"
-        Me.lstCommands.Size = New System.Drawing.Size(346, 432)
+        Me.lstCommands.Size = New System.Drawing.Size(369, 597)
         Me.lstCommands.TabIndex = 1
         '
         'commandButtonsPanel
@@ -204,10 +254,10 @@ Partial Public Class SCSIGUI
         Me.commandButtonsPanel.Controls.Add(Me.btnUp)
         Me.commandButtonsPanel.Controls.Add(Me.btnDown)
         Me.commandButtonsPanel.Dock = System.Windows.Forms.DockStyle.Fill
-        Me.commandButtonsPanel.Location = New System.Drawing.Point(10, 465)
+        Me.commandButtonsPanel.Location = New System.Drawing.Point(10, 630)
         Me.commandButtonsPanel.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.commandButtonsPanel.Name = "commandButtonsPanel"
-        Me.commandButtonsPanel.Size = New System.Drawing.Size(346, 24)
+        Me.commandButtonsPanel.Size = New System.Drawing.Size(369, 24)
         Me.commandButtonsPanel.TabIndex = 2
         Me.commandButtonsPanel.WrapContents = False
         '
@@ -265,7 +315,7 @@ Partial Public Class SCSIGUI
         Me.rightLayout.RowCount = 2
         Me.rightLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 28.0!))
         Me.rightLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0!))
-        Me.rightLayout.Size = New System.Drawing.Size(682, 497)
+        Me.rightLayout.Size = New System.Drawing.Size(726, 662)
         Me.rightLayout.TabIndex = 2
         '
         'toolbarPanel
@@ -276,7 +326,7 @@ Partial Public Class SCSIGUI
         Me.toolbarPanel.Location = New System.Drawing.Point(6, 2)
         Me.toolbarPanel.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.toolbarPanel.Name = "toolbarPanel"
-        Me.toolbarPanel.Size = New System.Drawing.Size(666, 24)
+        Me.toolbarPanel.Size = New System.Drawing.Size(710, 24)
         Me.toolbarPanel.TabIndex = 0
         Me.toolbarPanel.WrapContents = False
         '
@@ -309,17 +359,18 @@ Partial Public Class SCSIGUI
         Me.tabs.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.tabs.Name = "tabs"
         Me.tabs.SelectedIndex = 0
-        Me.tabs.Size = New System.Drawing.Size(666, 459)
+        Me.tabs.Size = New System.Drawing.Size(710, 624)
         Me.tabs.TabIndex = 1
         '
         'tabValues
         '
         Me.tabValues.Controls.Add(Me.pnlValues)
+        Me.tabValues.Controls.Add(Me.pnlStaticValues)
         Me.tabValues.Location = New System.Drawing.Point(4, 22)
         Me.tabValues.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.tabValues.Name = "tabValues"
         Me.tabValues.Padding = New System.Windows.Forms.Padding(3, 2, 3, 2)
-        Me.tabValues.Size = New System.Drawing.Size(658, 433)
+        Me.tabValues.Size = New System.Drawing.Size(702, 598)
         Me.tabValues.TabIndex = 0
         Me.tabValues.Text = "参数值"
         Me.tabValues.UseVisualStyleBackColor = True
@@ -329,12 +380,174 @@ Partial Public Class SCSIGUI
         Me.pnlValues.AutoScroll = True
         Me.pnlValues.Dock = System.Windows.Forms.DockStyle.Fill
         Me.pnlValues.FlowDirection = System.Windows.Forms.FlowDirection.TopDown
-        Me.pnlValues.Location = New System.Drawing.Point(3, 2)
+        Me.pnlValues.Location = New System.Drawing.Point(3, 176)
         Me.pnlValues.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.pnlValues.Name = "pnlValues"
-        Me.pnlValues.Size = New System.Drawing.Size(652, 429)
+        Me.pnlValues.Size = New System.Drawing.Size(696, 420)
         Me.pnlValues.TabIndex = 0
         Me.pnlValues.WrapContents = False
+        '
+        'pnlStaticValues
+        '
+        Me.pnlStaticValues.ColumnCount = 1
+        Me.pnlStaticValues.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0!))
+        Me.pnlStaticValues.Controls.Add(Me.lblCommandInfo, 0, 0)
+        Me.pnlStaticValues.Controls.Add(Me.pnlActions, 0, 1)
+        Me.pnlStaticValues.Controls.Add(Me.pnlHexAreas, 0, 2)
+        Me.pnlStaticValues.Dock = System.Windows.Forms.DockStyle.Top
+        Me.pnlStaticValues.Location = New System.Drawing.Point(3, 2)
+        Me.pnlStaticValues.Name = "pnlStaticValues"
+        Me.pnlStaticValues.Padding = New System.Windows.Forms.Padding(2)
+        Me.pnlStaticValues.RowCount = 3
+        Me.pnlStaticValues.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 24.0!))
+        Me.pnlStaticValues.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 34.0!))
+        Me.pnlStaticValues.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 116.0!))
+        Me.pnlStaticValues.Size = New System.Drawing.Size(696, 174)
+        Me.pnlStaticValues.TabIndex = 1
+        '
+        'lblCommandInfo
+        '
+        Me.lblCommandInfo.AutoEllipsis = True
+        Me.lblCommandInfo.Dock = System.Windows.Forms.DockStyle.Fill
+        Me.lblCommandInfo.Location = New System.Drawing.Point(5, 2)
+        Me.lblCommandInfo.Name = "lblCommandInfo"
+        Me.lblCommandInfo.Size = New System.Drawing.Size(686, 24)
+        Me.lblCommandInfo.TabIndex = 0
+        Me.lblCommandInfo.Text = "请选择指令"
+        Me.lblCommandInfo.TextAlign = System.Drawing.ContentAlignment.MiddleLeft
+        '
+        'pnlActions
+        '
+        Me.pnlActions.Controls.Add(Me.btnEncode)
+        Me.pnlActions.Controls.Add(Me.btnDecode)
+        Me.pnlActions.Controls.Add(Me.btnCopy)
+        Me.pnlActions.Controls.Add(Me.btnPaste)
+        Me.pnlActions.Dock = System.Windows.Forms.DockStyle.Fill
+        Me.pnlActions.Location = New System.Drawing.Point(5, 29)
+        Me.pnlActions.Name = "pnlActions"
+        Me.pnlActions.Size = New System.Drawing.Size(686, 28)
+        Me.pnlActions.TabIndex = 1
+        Me.pnlActions.WrapContents = False
+        '
+        'btnEncode
+        '
+        Me.btnEncode.Location = New System.Drawing.Point(3, 3)
+        Me.btnEncode.Name = "btnEncode"
+        Me.btnEncode.Size = New System.Drawing.Size(113, 23)
+        Me.btnEncode.TabIndex = 0
+        Me.btnEncode.Text = "生成 CDB / Param"
+        Me.btnEncode.UseVisualStyleBackColor = True
+        '
+        'btnDecode
+        '
+        Me.btnDecode.Location = New System.Drawing.Point(122, 3)
+        Me.btnDecode.Name = "btnDecode"
+        Me.btnDecode.Size = New System.Drawing.Size(94, 23)
+        Me.btnDecode.TabIndex = 1
+        Me.btnDecode.Text = "解析输入字节"
+        Me.btnDecode.UseVisualStyleBackColor = True
+        '
+        'pnlHexAreas
+        '
+        Me.pnlHexAreas.ColumnCount = 2
+        Me.pnlHexAreas.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50.0!))
+        Me.pnlHexAreas.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50.0!))
+        Me.pnlHexAreas.Controls.Add(Me.lblCdbInput, 0, 0)
+        Me.pnlHexAreas.Controls.Add(Me.txtCdbInput, 0, 1)
+        Me.pnlHexAreas.Controls.Add(Me.lblParamInput, 1, 0)
+        Me.pnlHexAreas.Controls.Add(Me.txtParamInput, 1, 1)
+        Me.pnlHexAreas.Controls.Add(Me.lblCdbOutput, 0, 2)
+        Me.pnlHexAreas.Controls.Add(Me.txtCdbOutput, 0, 3)
+        Me.pnlHexAreas.Controls.Add(Me.lblParamOutput, 1, 2)
+        Me.pnlHexAreas.Controls.Add(Me.txtParamOutput, 1, 3)
+        Me.pnlHexAreas.Dock = System.Windows.Forms.DockStyle.Fill
+        Me.pnlHexAreas.Location = New System.Drawing.Point(5, 63)
+        Me.pnlHexAreas.Name = "pnlHexAreas"
+        Me.pnlHexAreas.RowCount = 4
+        Me.pnlHexAreas.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 16.0!))
+        Me.pnlHexAreas.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50.0!))
+        Me.pnlHexAreas.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 16.0!))
+        Me.pnlHexAreas.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50.0!))
+        Me.pnlHexAreas.Size = New System.Drawing.Size(686, 110)
+        Me.pnlHexAreas.TabIndex = 2
+        '
+        'lblCdbInput
+        '
+        Me.lblCdbInput.AutoSize = True
+        Me.lblCdbInput.Location = New System.Drawing.Point(3, 0)
+        Me.lblCdbInput.Name = "lblCdbInput"
+        Me.lblCdbInput.Size = New System.Drawing.Size(113, 12)
+        Me.lblCdbInput.TabIndex = 0
+        Me.lblCdbInput.Text = "CDB 输入（解析用）"
+        '
+        'txtCdbInput
+        '
+        Me.txtCdbInput.Dock = System.Windows.Forms.DockStyle.Fill
+        Me.txtCdbInput.Location = New System.Drawing.Point(3, 19)
+        Me.txtCdbInput.Multiline = True
+        Me.txtCdbInput.Name = "txtCdbInput"
+        Me.txtCdbInput.ScrollBars = System.Windows.Forms.ScrollBars.Vertical
+        Me.txtCdbInput.Size = New System.Drawing.Size(337, 33)
+        Me.txtCdbInput.TabIndex = 1
+        '
+        'lblParamInput
+        '
+        Me.lblParamInput.AutoSize = True
+        Me.lblParamInput.Location = New System.Drawing.Point(346, 0)
+        Me.lblParamInput.Name = "lblParamInput"
+        Me.lblParamInput.Size = New System.Drawing.Size(125, 12)
+        Me.lblParamInput.TabIndex = 2
+        Me.lblParamInput.Text = "Param 输入（解析用）"
+        '
+        'txtParamInput
+        '
+        Me.txtParamInput.Dock = System.Windows.Forms.DockStyle.Fill
+        Me.txtParamInput.Location = New System.Drawing.Point(346, 19)
+        Me.txtParamInput.Multiline = True
+        Me.txtParamInput.Name = "txtParamInput"
+        Me.txtParamInput.ScrollBars = System.Windows.Forms.ScrollBars.Vertical
+        Me.txtParamInput.Size = New System.Drawing.Size(337, 33)
+        Me.txtParamInput.TabIndex = 3
+        '
+        'lblCdbOutput
+        '
+        Me.lblCdbOutput.AutoSize = True
+        Me.lblCdbOutput.Location = New System.Drawing.Point(3, 55)
+        Me.lblCdbOutput.Name = "lblCdbOutput"
+        Me.lblCdbOutput.Size = New System.Drawing.Size(53, 12)
+        Me.lblCdbOutput.TabIndex = 4
+        Me.lblCdbOutput.Text = "CDB 输出"
+        '
+        'txtCdbOutput
+        '
+        Me.txtCdbOutput.Dock = System.Windows.Forms.DockStyle.Fill
+        Me.txtCdbOutput.Location = New System.Drawing.Point(3, 74)
+        Me.txtCdbOutput.Multiline = True
+        Me.txtCdbOutput.Name = "txtCdbOutput"
+        Me.txtCdbOutput.ReadOnly = True
+        Me.txtCdbOutput.ScrollBars = System.Windows.Forms.ScrollBars.Vertical
+        Me.txtCdbOutput.Size = New System.Drawing.Size(337, 33)
+        Me.txtCdbOutput.TabIndex = 5
+        '
+        'lblParamOutput
+        '
+        Me.lblParamOutput.AutoSize = True
+        Me.lblParamOutput.Location = New System.Drawing.Point(346, 55)
+        Me.lblParamOutput.Name = "lblParamOutput"
+        Me.lblParamOutput.Size = New System.Drawing.Size(65, 12)
+        Me.lblParamOutput.TabIndex = 6
+        Me.lblParamOutput.Text = "Param 输出"
+        '
+        'txtParamOutput
+        '
+        Me.txtParamOutput.Dock = System.Windows.Forms.DockStyle.Fill
+        Me.txtParamOutput.Location = New System.Drawing.Point(346, 74)
+        Me.txtParamOutput.Multiline = True
+        Me.txtParamOutput.Name = "txtParamOutput"
+        Me.txtParamOutput.ReadOnly = True
+        Me.txtParamOutput.ScrollBars = System.Windows.Forms.ScrollBars.Vertical
+        Me.txtParamOutput.Size = New System.Drawing.Size(337, 33)
+        Me.txtParamOutput.TabIndex = 7
         '
         'tabDefinition
         '
@@ -343,7 +556,7 @@ Partial Public Class SCSIGUI
         Me.tabDefinition.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.tabDefinition.Name = "tabDefinition"
         Me.tabDefinition.Padding = New System.Windows.Forms.Padding(3, 2, 3, 2)
-        Me.tabDefinition.Size = New System.Drawing.Size(770, 435)
+        Me.tabDefinition.Size = New System.Drawing.Size(658, 433)
         Me.tabDefinition.TabIndex = 1
         Me.tabDefinition.Text = "元素定义"
         Me.tabDefinition.UseVisualStyleBackColor = True
@@ -361,7 +574,7 @@ Partial Public Class SCSIGUI
         Me.definitionLayout.Name = "definitionLayout"
         Me.definitionLayout.RowCount = 1
         Me.definitionLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0!))
-        Me.definitionLayout.Size = New System.Drawing.Size(764, 431)
+        Me.definitionLayout.Size = New System.Drawing.Size(652, 429)
         Me.definitionLayout.TabIndex = 0
         '
         'tvElements
@@ -371,40 +584,41 @@ Partial Public Class SCSIGUI
         Me.tvElements.Location = New System.Drawing.Point(3, 2)
         Me.tvElements.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.tvElements.Name = "tvElements"
-        Me.tvElements.Size = New System.Drawing.Size(360, 427)
+        Me.tvElements.Size = New System.Drawing.Size(306, 425)
         Me.tvElements.TabIndex = 0
         '
         'pg
         '
         Me.pg.Dock = System.Windows.Forms.DockStyle.Fill
-        Me.pg.Location = New System.Drawing.Point(369, 2)
+        Me.pg.Location = New System.Drawing.Point(315, 2)
         Me.pg.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.pg.Name = "pg"
-        Me.pg.Size = New System.Drawing.Size(392, 427)
+        Me.pg.Size = New System.Drawing.Size(334, 425)
         Me.pg.TabIndex = 1
         '
-        'SplitContainer1
+        'btnCopy
         '
-        Me.SplitContainer1.Dock = System.Windows.Forms.DockStyle.Fill
-        Me.SplitContainer1.Location = New System.Drawing.Point(3, 37)
-        Me.SplitContainer1.Name = "SplitContainer1"
+        Me.btnCopy.Location = New System.Drawing.Point(222, 3)
+        Me.btnCopy.Name = "btnCopy"
+        Me.btnCopy.Size = New System.Drawing.Size(107, 23)
+        Me.btnCopy.TabIndex = 2
+        Me.btnCopy.Text = "复制输出的指令"
+        Me.btnCopy.UseVisualStyleBackColor = True
         '
-        'SplitContainer1.Panel1
+        'btnPaste
         '
-        Me.SplitContainer1.Panel1.Controls.Add(Me.leftLayout)
-        '
-        'SplitContainer1.Panel2
-        '
-        Me.SplitContainer1.Panel2.Controls.Add(Me.rightLayout)
-        Me.SplitContainer1.Size = New System.Drawing.Size(1052, 497)
-        Me.SplitContainer1.SplitterDistance = 366
-        Me.SplitContainer1.TabIndex = 3
+        Me.btnPaste.Location = New System.Drawing.Point(335, 3)
+        Me.btnPaste.Name = "btnPaste"
+        Me.btnPaste.Size = New System.Drawing.Size(89, 23)
+        Me.btnPaste.TabIndex = 3
+        Me.btnPaste.Text = "粘贴到输入"
+        Me.btnPaste.UseVisualStyleBackColor = True
         '
         'SCSIGUI
         '
         Me.AutoScaleDimensions = New System.Drawing.SizeF(6.0!, 12.0!)
         Me.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font
-        Me.ClientSize = New System.Drawing.Size(1058, 537)
+        Me.ClientSize = New System.Drawing.Size(1125, 702)
         Me.Controls.Add(Me.rootLayout)
         Me.Icon = CType(resources.GetObject("$this.Icon"), System.Drawing.Icon)
         Me.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
@@ -415,6 +629,10 @@ Partial Public Class SCSIGUI
         Me.rootLayout.ResumeLayout(False)
         Me.topPanel.ResumeLayout(False)
         Me.topPanel.PerformLayout()
+        Me.SplitContainer1.Panel1.ResumeLayout(False)
+        Me.SplitContainer1.Panel2.ResumeLayout(False)
+        CType(Me.SplitContainer1, System.ComponentModel.ISupportInitialize).EndInit()
+        Me.SplitContainer1.ResumeLayout(False)
         Me.leftLayout.ResumeLayout(False)
         Me.leftLayout.PerformLayout()
         Me.commandButtonsPanel.ResumeLayout(False)
@@ -423,15 +641,17 @@ Partial Public Class SCSIGUI
         Me.toolbarPanel.PerformLayout()
         Me.tabs.ResumeLayout(False)
         Me.tabValues.ResumeLayout(False)
+        Me.pnlStaticValues.ResumeLayout(False)
+        Me.pnlActions.ResumeLayout(False)
+        Me.pnlHexAreas.ResumeLayout(False)
+        Me.pnlHexAreas.PerformLayout()
         Me.tabDefinition.ResumeLayout(False)
         Me.definitionLayout.ResumeLayout(False)
-        Me.SplitContainer1.Panel1.ResumeLayout(False)
-        Me.SplitContainer1.Panel2.ResumeLayout(False)
-        CType(Me.SplitContainer1, System.ComponentModel.ISupportInitialize).EndInit()
-        Me.SplitContainer1.ResumeLayout(False)
         Me.ResumeLayout(False)
 
     End Sub
 
     Friend WithEvents SplitContainer1 As SplitContainer
+    Friend WithEvents btnCopy As Button
+    Friend WithEvents btnPaste As Button
 End Class

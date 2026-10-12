@@ -381,7 +381,14 @@ Public NotInheritable Class ScsiCodec
 
     Private Shared Sub DecodeNode(node As ScsiValueNode, source As Byte(), baseBit As Integer, root As Boolean, limitBytes As Integer)
         Dim d = node.Definition
-        If d Is Nothing OrElse Not IsNodePresent(node) Then Return
+        If d Is Nothing Then Return
+        If Not IsNodePresent(node) Then
+            ' 不生效的 PageList 必须清除上一次解码残留的页面。
+            If String.Equals(d.Kind, "PageList", StringComparison.OrdinalIgnoreCase) Then
+                node.Items.Clear()
+            End If
+            Return
+        End If
         Dim startBitLong As Long = If(root, 0L, CLng(baseBit)) + EffectiveOffsetBits(node)
         If startBitLong < 0 OrElse startBitLong > Integer.MaxValue Then Return
         Dim startBit = CInt(startBitLong)
