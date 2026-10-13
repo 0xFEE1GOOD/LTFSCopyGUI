@@ -615,12 +615,14 @@ Partial Public Class SCSIGUI
     Private Sub DefinitionPropertyChanged(sender As Object, e As PropertyValueChangedEventArgs) Handles pg.PropertyValueChanged
         If tvElements.SelectedNode IsNot Nothing AndAlso TypeOf tvElements.SelectedNode.Tag Is ScsiElementDef Then
             Dim el = DirectCast(tvElements.SelectedNode.Tag, ScsiElementDef)
-            tvElements.SelectedNode.Text = el.Name & " [" & el.Kind & "]"
+            ' 仅当 Name 属性发生变化时，更新当前树节点的显示名称
+            If e.ChangedItem IsNot Nothing AndAlso (String.Equals(e.ChangedItem.PropertyDescriptor.Name, NameOf(ScsiElementDef.Name), StringComparison.Ordinal) OrElse String.Equals(e.ChangedItem.PropertyDescriptor.Name, NameOf(ScsiElementDef.Kind), StringComparison.Ordinal)) Then
+                tvElements.SelectedNode.Text = el.Name & " [" & el.Kind & "]"
+            End If
             If _runtimeNodes IsNot Nothing Then
                 _runtimeNodes = ScsiCodec.CreateRuntimeNodes(_selectedCommand, _template)
                 RenderValueEditors()
             End If
-            RefreshDefinitionTree()
             Return
         End If
 

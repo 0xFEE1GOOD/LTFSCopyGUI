@@ -556,7 +556,7 @@ Partial Public Class SCSIGUI
         Me.tabDefinition.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.tabDefinition.Name = "tabDefinition"
         Me.tabDefinition.Padding = New System.Windows.Forms.Padding(3, 2, 3, 2)
-        Me.tabDefinition.Size = New System.Drawing.Size(658, 433)
+        Me.tabDefinition.Size = New System.Drawing.Size(702, 598)
         Me.tabDefinition.TabIndex = 1
         Me.tabDefinition.Text = "元素定义"
         Me.tabDefinition.UseVisualStyleBackColor = True
@@ -574,7 +574,7 @@ Partial Public Class SCSIGUI
         Me.definitionLayout.Name = "definitionLayout"
         Me.definitionLayout.RowCount = 1
         Me.definitionLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0!))
-        Me.definitionLayout.Size = New System.Drawing.Size(652, 429)
+        Me.definitionLayout.Size = New System.Drawing.Size(696, 594)
         Me.definitionLayout.TabIndex = 0
         '
         'tvElements
@@ -584,16 +584,16 @@ Partial Public Class SCSIGUI
         Me.tvElements.Location = New System.Drawing.Point(3, 2)
         Me.tvElements.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.tvElements.Name = "tvElements"
-        Me.tvElements.Size = New System.Drawing.Size(306, 425)
+        Me.tvElements.Size = New System.Drawing.Size(328, 590)
         Me.tvElements.TabIndex = 0
         '
         'pg
         '
         Me.pg.Dock = System.Windows.Forms.DockStyle.Fill
-        Me.pg.Location = New System.Drawing.Point(315, 2)
+        Me.pg.Location = New System.Drawing.Point(337, 2)
         Me.pg.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.pg.Name = "pg"
-        Me.pg.Size = New System.Drawing.Size(334, 425)
+        Me.pg.Size = New System.Drawing.Size(356, 590)
         Me.pg.TabIndex = 1
         '
         'btnCopy
