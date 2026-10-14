@@ -489,7 +489,7 @@ Public NotInheritable Class ScsiCodec
                 Dim size = DetermineDecodedPageLength(candidate, source, cursor, maxBytes)
                 If size <= 0 OrElse cursor + size > maxBytes Then Continue For
                 DecodeNode(candidate, source, cursor * 8, False, cursor + size)
-                If PageMatches(candidate, pageDef) Then
+                If PageMatches(candidate, pageDef) AndAlso PageLengthMatches(candidate, size) Then
                     chosen = candidate
                     chosenSize = size
                     Exit For
@@ -529,22 +529,32 @@ Public NotInheritable Class ScsiCodec
 
     Private Shared Function DetermineDecodedPageLength(pageNode As ScsiValueNode, source As Byte(), cursor As Integer, limitBytes As Integer) As Integer
         Dim d = pageNode.Definition
-        If d.ByteLength > 0 Then Return d.ByteLength
+        ' 1. 优先使用长度字段计算实际 Page 长度
         If Not String.IsNullOrWhiteSpace(d.LengthFieldId) Then
-            Dim lengthNode = Flatten(New List(Of ScsiValueNode) From {pageNode}).FirstOrDefault(Function(n) String.Equals(n.Definition.Id, d.LengthFieldId, StringComparison.OrdinalIgnoreCase))
+            Dim lengthNode = Flatten(New List(Of ScsiValueNode) From {pageNode}).FirstOrDefault(Function(n) n.Definition IsNot Nothing AndAlso String.Equals(n.Definition.Id, d.LengthFieldId, StringComparison.OrdinalIgnoreCase))
             If lengthNode IsNot Nothing Then
-                Dim value = ParseInteger(lengthNode.Value)
-                If value >= 0 AndAlso value <= Integer.MaxValue Then
-                    Dim total = CInt(value)
-                    If Not d.LengthIncludesHeader Then
-                        Dim relativeBits = RelativeBitOffset(pageNode, lengthNode)
-                        Dim headerBytes = CInt((relativeBits + ElementExtentBits(lengthNode) + 7) \ 8)
-                        total += headerBytes
+                Try
+                    Dim value = ParseInteger(lengthNode.Value)
+                    If value >= 0 AndAlso value <= Integer.MaxValue Then
+                        Dim total = CInt(value)
+                        ' LengthIncludesHeader=False 时，
+                        ' 长度值不包含长度字段之前的头部。
+                        If Not d.LengthIncludesHeader Then
+                            Dim relativeBits =
+                            RelativeBitOffset(pageNode, lengthNode)
+                            Dim headerBytes = CInt((relativeBits + ElementExtentBits(lengthNode) + 7) \ 8)
+                            total += headerBytes
+                        End If
+                        If total > 0 Then Return total
                     End If
-                    Return total
-                End If
+                Catch
+                    ' 长度字段无效时，继续尝试 ByteLength 兜底。
+                End Try
             End If
         End If
+        ' 2. 长度字段不可用时，使用固定长度
+        If d.ByteLength > 0 Then Return d.ByteLength
+        ' 3. 最后使用模板本身的结构长度
         Return CInt((ElementExtentBits(pageNode) + 7) \ 8)
     End Function
 
@@ -558,7 +568,21 @@ Public NotInheritable Class ScsiCodec
         If current Is Nothing Then Throw New InvalidOperationException("长度字段不属于 Page 模板：" & targetNode.Definition.Name)
         Return offset
     End Function
-
+    ' 检查 Page 的长度字段是否与模板定义的固定长度一致。
+    ' 如果模板没有同时配置 ByteLength 和 LengthFieldId，
+    ' 则不额外限制长度。
+    Private Shared Function PageLengthMatches(node As ScsiValueNode, decodedLength As Integer) As Boolean
+        If node Is Nothing OrElse node.Definition Is Nothing Then
+            Return False
+        End If
+        Dim d = node.Definition
+        ' 未配置固定长度或长度字段时，不启用长度二次匹配。
+        If d.ByteLength <= 0 OrElse String.IsNullOrWhiteSpace(d.LengthFieldId) Then
+            Return True
+        End If
+        ' 长度字段计算出的总长度必须与模板固定长度一致。
+        Return decodedLength = d.ByteLength
+    End Function
     Private Shared Function PageMatches(node As ScsiValueNode, def As ScsiElementDef) As Boolean
         If String.IsNullOrWhiteSpace(def.MatchFieldId) Then Return True
         Dim field = Flatten(New List(Of ScsiValueNode) From {node}).FirstOrDefault(Function(n) String.Equals(n.Definition.Id, def.MatchFieldId, StringComparison.OrdinalIgnoreCase))
