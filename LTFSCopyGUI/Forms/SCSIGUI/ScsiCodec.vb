@@ -271,15 +271,19 @@ Public NotInheritable Class ScsiCodec
         Dim d = node.Definition
         If d Is Nothing OrElse String.IsNullOrWhiteSpace(d.PresenceFormula) Then Return True
         Dim allNodes = If(_currentNodes, New List(Of ScsiValueNode)())
-        Return BitCodec.EvaluateOffsetFormula(d.PresenceFormula,
+        Return BitCodec.EvaluatePresenceFormula(d.PresenceFormula,
             Function(id)
                 Dim target = Flatten(allNodes).FirstOrDefault(Function(x) x.Definition IsNot Nothing AndAlso String.Equals(x.Definition.Id, id, StringComparison.OrdinalIgnoreCase))
-                If target Is Nothing Then Throw New InvalidOperationException("存在条件公式引用的元素不存在：" & id)
+                If target Is Nothing Then
+                    Throw New InvalidOperationException("存在条件公式引用的元素不存在：" & id)
+                End If
                 Return ParseInteger(target.Value)
             End Function,
             Function(id)
                 Dim target = Flatten(allNodes).FirstOrDefault(Function(x) x.Definition IsNot Nothing AndAlso String.Equals(x.Definition.Id, id, StringComparison.OrdinalIgnoreCase))
-                If target Is Nothing Then Throw New InvalidOperationException("存在条件公式引用的元素不存在：" & id)
+                If target Is Nothing Then
+                    Throw New InvalidOperationException("存在条件公式引用的元素不存在：" & id)
+                End If
                 Return ElementExtentBits(target)
             End Function) <> 0
     End Function

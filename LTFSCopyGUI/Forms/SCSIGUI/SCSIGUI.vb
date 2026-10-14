@@ -763,6 +763,7 @@ Partial Public Class SCSIGUI
         If Not chkEdit.Checked Then pg.SelectedObject = Nothing
         If chkEdit.Checked Then tabs.SelectedTab = tabDefinition Else tabs.SelectedTab = tabValues
         RefreshDefinitionTree()
+        btnGUIDInc.Visible = chkEdit.Checked
     End Sub
 
     Private Sub UpdateEditUi()
@@ -889,6 +890,13 @@ Partial Public Class SCSIGUI
         End If
         txtCdbInput.Text = values("CDB").ToString()
         txtParamInput.Text = values("PARAM").ToString()
+    End Sub
+
+    Private Sub Button1_Click(sender As Object, e As EventArgs) Handles btnGUIDInc.Click
+        If Clipboard.ContainsText Then
+            Clipboard.SetText(IOManager.IncrementGuidsInText(Clipboard.GetText()))
+            MessageBox.Show("OK")
+        End If
     End Sub
 End Class
 

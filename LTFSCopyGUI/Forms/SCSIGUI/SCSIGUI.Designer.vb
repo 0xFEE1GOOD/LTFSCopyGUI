@@ -101,6 +101,8 @@ Partial Public Class SCSIGUI
         Me.pnlActions = New System.Windows.Forms.FlowLayoutPanel()
         Me.btnEncode = New System.Windows.Forms.Button()
         Me.btnDecode = New System.Windows.Forms.Button()
+        Me.btnCopy = New System.Windows.Forms.Button()
+        Me.btnPaste = New System.Windows.Forms.Button()
         Me.pnlHexAreas = New System.Windows.Forms.TableLayoutPanel()
         Me.lblCdbInput = New System.Windows.Forms.Label()
         Me.txtCdbInput = New System.Windows.Forms.TextBox()
@@ -114,8 +116,7 @@ Partial Public Class SCSIGUI
         Me.definitionLayout = New System.Windows.Forms.TableLayoutPanel()
         Me.tvElements = New System.Windows.Forms.TreeView()
         Me.pg = New System.Windows.Forms.PropertyGrid()
-        Me.btnCopy = New System.Windows.Forms.Button()
-        Me.btnPaste = New System.Windows.Forms.Button()
+        Me.btnGUIDInc = New System.Windows.Forms.Button()
         Me.rootLayout.SuspendLayout()
         Me.topPanel.SuspendLayout()
         CType(Me.SplitContainer1, System.ComponentModel.ISupportInitialize).BeginInit()
@@ -322,6 +323,7 @@ Partial Public Class SCSIGUI
         '
         Me.toolbarPanel.Controls.Add(Me.btnSave)
         Me.toolbarPanel.Controls.Add(Me.lblHelp)
+        Me.toolbarPanel.Controls.Add(Me.btnGUIDInc)
         Me.toolbarPanel.Dock = System.Windows.Forms.DockStyle.Fill
         Me.toolbarPanel.Location = New System.Drawing.Point(6, 2)
         Me.toolbarPanel.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
@@ -446,6 +448,24 @@ Partial Public Class SCSIGUI
         Me.btnDecode.TabIndex = 1
         Me.btnDecode.Text = "解析输入字节"
         Me.btnDecode.UseVisualStyleBackColor = True
+        '
+        'btnCopy
+        '
+        Me.btnCopy.Location = New System.Drawing.Point(222, 3)
+        Me.btnCopy.Name = "btnCopy"
+        Me.btnCopy.Size = New System.Drawing.Size(107, 23)
+        Me.btnCopy.TabIndex = 2
+        Me.btnCopy.Text = "复制输出的指令"
+        Me.btnCopy.UseVisualStyleBackColor = True
+        '
+        'btnPaste
+        '
+        Me.btnPaste.Location = New System.Drawing.Point(335, 3)
+        Me.btnPaste.Name = "btnPaste"
+        Me.btnPaste.Size = New System.Drawing.Size(89, 23)
+        Me.btnPaste.TabIndex = 3
+        Me.btnPaste.Text = "粘贴到输入"
+        Me.btnPaste.UseVisualStyleBackColor = True
         '
         'pnlHexAreas
         '
@@ -596,23 +616,16 @@ Partial Public Class SCSIGUI
         Me.pg.Size = New System.Drawing.Size(356, 590)
         Me.pg.TabIndex = 1
         '
-        'btnCopy
+        'btnGUIDInc
         '
-        Me.btnCopy.Location = New System.Drawing.Point(222, 3)
-        Me.btnCopy.Name = "btnCopy"
-        Me.btnCopy.Size = New System.Drawing.Size(107, 23)
-        Me.btnCopy.TabIndex = 2
-        Me.btnCopy.Text = "复制输出的指令"
-        Me.btnCopy.UseVisualStyleBackColor = True
-        '
-        'btnPaste
-        '
-        Me.btnPaste.Location = New System.Drawing.Point(335, 3)
-        Me.btnPaste.Name = "btnPaste"
-        Me.btnPaste.Size = New System.Drawing.Size(89, 23)
-        Me.btnPaste.TabIndex = 3
-        Me.btnPaste.Text = "粘贴到输入"
-        Me.btnPaste.UseVisualStyleBackColor = True
+        Me.btnGUIDInc.Location = New System.Drawing.Point(419, 2)
+        Me.btnGUIDInc.Margin = New System.Windows.Forms.Padding(3, 2, 3, 2)
+        Me.btnGUIDInc.Name = "btnGUIDInc"
+        Me.btnGUIDInc.Size = New System.Drawing.Size(113, 21)
+        Me.btnGUIDInc.TabIndex = 2
+        Me.btnGUIDInc.Text = "剪贴板GUID+1"
+        Me.btnGUIDInc.UseVisualStyleBackColor = True
+        Me.btnGUIDInc.Visible = False
         '
         'SCSIGUI
         '
@@ -654,4 +667,5 @@ Partial Public Class SCSIGUI
     Friend WithEvents SplitContainer1 As SplitContainer
     Friend WithEvents btnCopy As Button
     Friend WithEvents btnPaste As Button
+    Friend WithEvents btnGUIDInc As Button
 End Class

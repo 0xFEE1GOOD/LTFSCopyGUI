@@ -61,7 +61,21 @@ Public NotInheritable Class BitCodec
 
         Return CLng(New SafeMathParser(expr).Parse())
     End Function
-
+    ' 存在条件公式，支持四则运算及等号比较。
+    ' 比较结果：True = 1，False = 0。
+    Public Shared Function EvaluatePresenceFormula(formula As String, valueById As Func(Of String, Long), lengthById As Func(Of String, Long)) As Long
+        If String.IsNullOrWhiteSpace(formula) Then Return 1
+        ' 先替换 .length，再替换 .value。
+        Dim expr As String = Regex.Replace(formula, "<([0-9a-fA-F\-]+)>\.length",
+            Function(m)
+                Return lengthById(m.Groups(1).Value).ToString(CultureInfo.InvariantCulture)
+            End Function, RegexOptions.IgnoreCase)
+        expr = Regex.Replace(expr, "<([0-9a-fA-F\-]+)>\.value",
+            Function(m)
+                Return valueById(m.Groups(1).Value).ToString(CultureInfo.InvariantCulture)
+            End Function, RegexOptions.IgnoreCase)
+        Return CLng(New SafeMathParser(expr).ParseComparison())
+    End Function
 
     ' Formula v1: supports integer constants, + - * / parentheses, and <GUID>.length tokens.
     ' Keep formulas deterministic and side-effect free; do not use VB Eval or scripting.
@@ -129,6 +143,22 @@ Public NotInheritable Class BitCodec
             End While
             If start = _p Then Throw New FormatException("公式需要数字。")
             Return Double.Parse(_s.Substring(start, _p - start), CultureInfo.InvariantCulture)
+        End Function
+        Public Function ParseComparison() As Double
+            Dim leftValue As Double = Expr()
+            SkipWs()
+            If Take("="c) Then
+                Dim rightValue As Double = Expr()
+                SkipWs()
+                If _p <> _s.Length Then
+                    Throw New FormatException("存在条件公式包含不支持的字符：" & _s.Substring(_p))
+                End If
+                Return If(leftValue = rightValue, 1.0R, 0.0R)
+            End If
+            If _p <> _s.Length Then
+                Throw New FormatException("存在条件公式包含不支持的字符：" & _s.Substring(_p))
+            End If
+            Return leftValue
         End Function
         Private Sub SkipWs()
             While _p < _s.Length AndAlso Char.IsWhiteSpace(_s(_p))
