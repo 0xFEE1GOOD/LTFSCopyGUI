@@ -162,6 +162,64 @@ Public Class IOManager
         Next
         Return New String(chars)
     End Function
+
+    ''' <summary>
+    ''' 将输入字符串中包含的所有 GUID 加 1（满值自动循环归零）
+    ''' </summary>
+    Public Shared Function IncrementGuidsInText(inputText As String) As String
+        If String.IsNullOrEmpty(inputText) Then Return inputText
+
+        ' 1. 定义匹配标准 GUID 格式的正则表达式 (8-4-4-4-12 格式)
+        Dim guidRegex As New System.Text.RegularExpressions.Regex("[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}")
+
+        ' 2. 使用 Lambda 表达式在内部直接处理每一个匹配到的 GUID
+        Return guidRegex.Replace(inputText, New System.Text.RegularExpressions.MatchEvaluator(
+            Function(m As System.Text.RegularExpressions.Match) As String
+                Dim currentGuid As Guid
+                ' 验证是否为合法 GUID，若解析失败则保持原样返回
+                If Not Guid.TryParse(m.Value, currentGuid) Then Return m.Value
+
+                ' 获取 .Net Guid 的原始 16 字节数组
+                Dim bytes() As Byte = currentGuid.ToByteArray()
+
+                ' 将字节重排为符合字符串字面量顺序的大端序数组（Big-Endian）
+                Dim bigEndianBytes(15) As Byte
+                bigEndianBytes(0) = bytes(3)
+                bigEndianBytes(1) = bytes(2)
+                bigEndianBytes(2) = bytes(1)
+                bigEndianBytes(3) = bytes(0)
+                bigEndianBytes(4) = bytes(5)
+                bigEndianBytes(5) = bytes(4)
+                bigEndianBytes(6) = bytes(7)
+                bigEndianBytes(7) = bytes(6)
+                Array.Copy(bytes, 8, bigEndianBytes, 8, 8)
+
+                ' 从最末尾的低位字节（索引 15）向高位（索引 0）进行加 1 进位处理
+                For i As Integer = 15 To 0 Step -1
+                    If bigEndianBytes(i) < 255 Then
+                        bigEndianBytes(i) = CByte((bigEndianBytes(i) + 1) And &HFF)
+                        Exit For ' 没有进位需求，成功加 1 后直接跳出循环
+                    Else
+                        bigEndianBytes(i) = 0 ' 满 255 自动归零并进位
+                    End If
+                Next
+
+                ' 将大端序数组重新还原回 .Net Guid 要求的内部字节序
+                Dim newBytes(15) As Byte
+                newBytes(0) = bigEndianBytes(3)
+                newBytes(1) = bigEndianBytes(2)
+                newBytes(2) = bigEndianBytes(1)
+                newBytes(3) = bigEndianBytes(0)
+                newBytes(4) = bigEndianBytes(5)
+                newBytes(5) = bigEndianBytes(4)
+                newBytes(6) = bigEndianBytes(7)
+                newBytes(7) = bigEndianBytes(6)
+                Array.Copy(bigEndianBytes, 8, newBytes, 8, 8)
+
+                ' 重新生成新的 Guid 并转换为标准的小写字符串形式返回
+                Return New Guid(newBytes).ToString()
+            End Function))
+    End Function
     Public Shared Function SHA1(filename As String, LogFile As String()) As String
         If LogFile.Contains("[hash] " & filename) Then
 
