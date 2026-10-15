@@ -1,15 +1,8 @@
 ﻿Option Strict On
 Option Explicit On
 
-Imports System
-Imports System.Collections.Generic
-Imports System.ComponentModel
-Imports System.Drawing
 Imports System.Globalization
-Imports System.Numerics
 Imports System.IO
-Imports System.Linq
-Imports System.Windows.Forms
 
 Partial Public Class SCSIGUI
     Private _template As ScsiTemplate

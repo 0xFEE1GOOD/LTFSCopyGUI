@@ -1,10 +1,7 @@
 ﻿Option Strict On
 Option Explicit On
 
-Imports System
-Imports System.Collections.Generic
 Imports System.Globalization
-Imports System.Linq
 Imports System.Text
 Imports System.Text.RegularExpressions
 

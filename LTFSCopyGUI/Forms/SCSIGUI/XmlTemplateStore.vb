@@ -1,11 +1,7 @@
 ﻿Option Strict On
 Option Explicit On
 
-Imports System
-Imports System.Collections.Generic
 Imports System.IO
-Imports System.Linq
-Imports System.Xml.Linq
 
 Public NotInheritable Class XmlTemplateStore
     Private Sub New()

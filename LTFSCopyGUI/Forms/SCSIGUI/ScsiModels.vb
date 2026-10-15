@@ -1,10 +1,7 @@
 ﻿Option Strict On
 Option Explicit On
 
-Imports System
-Imports System.Collections.Generic
 Imports System.ComponentModel
-Imports System.Linq
 
 Public Enum ScsiDataIn
     _0_HostToDevice = 0
