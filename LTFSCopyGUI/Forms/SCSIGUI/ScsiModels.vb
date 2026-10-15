@@ -66,6 +66,8 @@ Public Class ScsiElementDef
     Public Property BitLength As Integer = 8
     <Category("数据"), Description("数据长度 (字节)" & vbCrLf & "用于ASCII或者Binary类型，或作为定长 Group / Page 时可选")>
     Public Property ByteLength As Integer = 0
+    <Category("数据"), Description("数据长度表达式（字节）；优先于固定 ByteLength。支持 <GUID>.value、<GUID>.length 及 + - * / ()，引用的字段必须已解析。示例：<GUID>.value-3")>
+    Public Property ByteLengthExpression As String = ""
     <Category("数据"), Description("是否有符号")>
     Public Property IsSigned As Boolean = False
     <Category("数据"), Description("默认值")>

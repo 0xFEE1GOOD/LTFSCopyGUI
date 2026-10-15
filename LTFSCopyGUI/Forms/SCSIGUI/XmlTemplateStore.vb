@@ -83,6 +83,12 @@ Public NotInheritable Class XmlTemplateStore
         xd.Save(path)
     End Sub
 
+    Private Shared Function IsIntegerAttr(e As XElement, name As String) As Boolean
+        Dim value As String = Attr(e, name, "0")
+        Dim parsed As Integer
+        Return Integer.TryParse(value, Globalization.NumberStyles.Integer, Globalization.CultureInfo.InvariantCulture, parsed)
+    End Function
+
     Private Shared Function ParseElement(e As XElement) As ScsiElementDef
         Dim m As New ScsiElementDef With {
             .Id = Attr(e, "id", Guid.NewGuid().ToString()),
@@ -94,7 +100,8 @@ Public NotInheritable Class XmlTemplateStore
             .OffsetFormula = Attr(e, "offsetFormula", ""),
             .PresenceFormula = Attr(e, "presenceFormula", ""),
             .BitLength = IntAttr(e, "bitLength", 8),
-            .ByteLength = IntAttr(e, "byteLength", 0),
+            .ByteLength = If(IsIntegerAttr(e, "byteLength"), IntAttr(e, "byteLength", 0), 0),
+            .ByteLengthExpression = If(IsIntegerAttr(e, "byteLength"), "", Attr(e, "byteLength", "")),
             .IsSigned = BoolAttr(e, "signed", False),
             .DefaultValue = Attr(e, "default", "0"),
             .EnumItems = Attr(e, "enumItems", ""),
@@ -120,7 +127,7 @@ Public NotInheritable Class XmlTemplateStore
             New XAttribute("id", m.Id), New XAttribute("name", m.Name),
             New XAttribute("kind", m.Kind), New XAttribute("area", m.Area.ToString()),
             New XAttribute("fieldType", m.FieldType.ToString()), New XAttribute("bitOffset", m.BitOffset),
-            New XAttribute("offsetFormula", m.OffsetFormula), New XAttribute("presenceFormula", m.PresenceFormula), New XAttribute("bitLength", m.BitLength), New XAttribute("byteLength", m.ByteLength),
+            New XAttribute("offsetFormula", m.OffsetFormula), New XAttribute("presenceFormula", m.PresenceFormula), New XAttribute("bitLength", m.BitLength), New XAttribute("byteLength", If(Not String.IsNullOrWhiteSpace(m.ByteLengthExpression), m.ByteLengthExpression, m.ByteLength.ToString(Globalization.CultureInfo.InvariantCulture))),
             New XAttribute("signed", m.IsSigned), New XAttribute("default", m.DefaultValue),
             New XAttribute("enumItems", m.EnumItems), New XAttribute("formula", m.Formula),
             New XAttribute("calculated", m.ReadOnlyCalculated), New XAttribute("pageTemplateId", m.PageTemplateId),
