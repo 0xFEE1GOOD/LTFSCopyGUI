@@ -524,8 +524,13 @@ Public NotInheritable Class ScsiCodec
             Dim chosenSize As Integer = 0
             For Each pageDef In allowed
                 Dim candidate = CreateNode(pageDef, CurrentTemplate, listNode)
-                ' 先解析 Page 头部，供 ByteLength 表达式引用已经解析的字段。
+                ' 先解析 Page 头部，只用已解析的匹配字段判断候选模板是否适用。
+                ' 不匹配的候选必须立即跳过，不能继续计算 ByteLength / LengthFieldId，
+                ' 否则无关模板中的动态长度表达式可能因默认值或不适用字段而报错。
                 DecodePageHeaderFields(candidate, source, cursor * 8, maxBytes)
+                If Not PageMatches(candidate, pageDef) Then Continue For
+
+                ' 只有匹配成功的候选，才继续计算动态长度并解码完整 Page。
                 Dim minBytes = GetConfiguredByteLength(candidate)
                 If minBytes <= 0 Then minBytes = CInt((ElementExtentBits(candidate) + 7) \ 8)
                 If minBytes <= 0 OrElse cursor + minBytes > maxBytes Then
@@ -535,11 +540,9 @@ Public NotInheritable Class ScsiCodec
                 Dim size = DetermineDecodedPageLength(candidate, source, cursor, maxBytes)
                 If size <= 0 OrElse cursor + size > maxBytes Then Continue For
                 DecodeNode(candidate, source, cursor * 8, False, cursor + size)
-                If PageMatches(candidate, pageDef) Then
-                    chosen = candidate
-                    chosenSize = size
-                    Exit For
-                End If
+                chosen = candidate
+                chosenSize = size
+                Exit For
             Next
             If chosen Is Nothing OrElse chosenSize <= 0 Then Exit While
             chosen.Parent = listNode
