@@ -109,6 +109,14 @@ Partial Public Class SCSIGUI
     Private Sub RenderNode(node As ScsiValueNode, host As Control, indent As Integer)
         Dim d = node.Definition
         If d Is Nothing Then Return
+
+        ' PresenceFormula 不成立时，不在界面显示该节点。
+        Try
+            If Not ScsiCodec.IsNodePresent(node) Then Return
+        Catch ex As Exception
+            MessageBox.Show(ex.ToString())
+            Return
+        End Try
         Select Case d.Kind.ToUpperInvariant()
             Case "GROUP", "PAGE"
                 Dim group As New FlowLayoutPanel With {
@@ -206,6 +214,9 @@ Partial Public Class SCSIGUI
                                                     If cb.SelectedItem IsNot Nothing Then
                                                         node.Value = DirectCast(cb.SelectedItem, EnumOption).Value
                                                         ValuesChanged()
+                                                        ' 枚举字段可能被其他节点的 PresenceFormula 引用，
+                                                        ' 选择变化后重建界面，使条件字段立即显示/隐藏。
+                                                        RebuildValueEditors()
                                                     End If
                                                 End Sub
             editor = cb
@@ -833,56 +844,60 @@ Partial Public Class SCSIGUI
     End Sub
 
     Private Sub btnPaste_Click(sender As Object, e As EventArgs) Handles btnPaste.Click
-        Dim content As String = Clipboard.GetText()
-        If String.IsNullOrWhiteSpace(content) Then
-            Throw New FormatException("剪贴板为空。")
-        End If
-        Dim lines As String() = content.Split(New String() {vbCrLf, vbLf, vbCr}, StringSplitOptions.RemoveEmptyEntries)
-        Dim values As New Dictionary(Of String, System.Text.StringBuilder)(StringComparer.OrdinalIgnoreCase) From {{"CDB", New System.Text.StringBuilder()}, {"PARAM", New System.Text.StringBuilder()}}
-        Dim currentKey As String = Nothing
-        Dim hasStart As Boolean = False
-        Dim hasEnd As Boolean = False
+        Try
+            Dim content As String = Clipboard.GetText()
+            If String.IsNullOrWhiteSpace(content) Then
+                Throw New FormatException("剪贴板为空。")
+            End If
+            Dim lines As String() = content.Split(New String() {vbCrLf, vbLf, vbCr}, StringSplitOptions.RemoveEmptyEntries)
+            Dim values As New Dictionary(Of String, System.Text.StringBuilder)(StringComparer.OrdinalIgnoreCase) From {{"CDB", New System.Text.StringBuilder()}, {"PARAM", New System.Text.StringBuilder()}}
+            Dim currentKey As String = Nothing
+            Dim hasStart As Boolean = False
+            Dim hasEnd As Boolean = False
 
-        For Each rawLine As String In lines
-            Dim line As String = rawLine.Trim()
-            If line = "[SCSIGUI]" Then
-                hasStart = True
-                Continue For
-            End If
-            If line = "[/SCSIGUI]" Then
-                hasEnd = True
-                Exit For
-            End If
-            If Not hasStart Then Continue For
-            Select Case line.ToUpperInvariant()
-                Case "CDB:"
-                    currentKey = "CDB"
+            For Each rawLine As String In lines
+                Dim line As String = rawLine.Trim()
+                If line = "[SCSIGUI]" Then
+                    hasStart = True
                     Continue For
-                Case "PARAM:"
-                    currentKey = "PARAM"
-                    Continue For
-                Case "DATAIN:"
-                    currentKey = Nothing
-                    Continue For
-            End Select
-            If currentKey IsNot Nothing Then
-                If values(currentKey).Length > 0 Then
-                    values(currentKey).AppendLine()
                 End If
-                values(currentKey).Append(line)
+                If line = "[/SCSIGUI]" Then
+                    hasEnd = True
+                    Exit For
+                End If
+                If Not hasStart Then Continue For
+                Select Case line.ToUpperInvariant()
+                    Case "CDB:"
+                        currentKey = "CDB"
+                        Continue For
+                    Case "PARAM:"
+                        currentKey = "PARAM"
+                        Continue For
+                    Case "DATAIN:"
+                        currentKey = Nothing
+                        Continue For
+                End Select
+                If currentKey IsNot Nothing Then
+                    If values(currentKey).Length > 0 Then
+                        values(currentKey).AppendLine()
+                    End If
+                    values(currentKey).Append(line)
+                End If
+            Next
+            If Not hasStart OrElse Not hasEnd Then
+                Throw New FormatException("剪贴板内容不是有效的 SCSIGUI 数据。")
             End If
-        Next
-        If Not hasStart OrElse Not hasEnd Then
-            Throw New FormatException("剪贴板内容不是有效的 SCSIGUI 数据。")
-        End If
-        If Not values.ContainsKey("CDB") OrElse values("CDB").Length = 0 Then
-            Throw New FormatException("剪贴板中 CDB 不能为空。")
-        End If
-        If Not values.ContainsKey("PARAM") Then
-            Throw New FormatException("剪贴板中缺少 PARAM 字段。")
-        End If
-        txtCdbInput.Text = values("CDB").ToString()
-        txtParamInput.Text = values("PARAM").ToString()
+            If Not values.ContainsKey("CDB") OrElse values("CDB").Length = 0 Then
+                Throw New FormatException("剪贴板中 CDB 不能为空。")
+            End If
+            If Not values.ContainsKey("PARAM") Then
+                Throw New FormatException("剪贴板中缺少 PARAM 字段。")
+            End If
+            txtCdbInput.Text = values("CDB").ToString()
+            txtParamInput.Text = values("PARAM").ToString()
+        Catch ex As Exception
+            MessageBox.Show(ex.ToString())
+        End Try
     End Sub
 
     Private Sub Button1_Click(sender As Object, e As EventArgs) Handles btnGUIDInc.Click

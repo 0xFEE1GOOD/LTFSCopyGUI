@@ -19,6 +19,13 @@ Public NotInheritable Class ScsiCodec
         For Each def In command.Elements
             result.Add(CreateNode(def, template, Nothing))
         Next
+
+        ' UI 初次渲染时也需要跨顶层节点解析 PresenceFormula / OffsetFormula。
+        ' 例如 LOG SELECT 的 Param PageList 引用 CDB 中的 PC 字段；
+        ' 这些节点是同一命令的兄弟根节点，彼此没有 Parent 关系。
+        _currentTemplate = template
+        _currentNodes = result
+
         Return result
     End Function
 
@@ -234,16 +241,50 @@ Public NotInheritable Class ScsiCodec
 
     Private Shared _currentNodes As List(Of ScsiValueNode)
 
+    ' 按作用域查找公式引用：优先当前 Page 实例，再查当前节点子树，最后查完整解析树。
+    ' DecodePageList 试探候选 Page 时，候选节点尚未加入根节点，因此不能只查 _currentNodes。
+    Private Shared Function FindFormulaReference(node As ScsiValueNode, id As String) As ScsiValueNode
+        If node Is Nothing OrElse String.IsNullOrWhiteSpace(id) Then Return Nothing
+
+        ' 优先使用最近的 Page 实例，避免重复 Page 中相同 GUID 相互串用。
+        Dim pageScope As ScsiValueNode = node
+        While pageScope IsNot Nothing
+            If pageScope.Definition IsNot Nothing AndAlso
+               String.Equals(pageScope.Definition.Kind, "Page", StringComparison.OrdinalIgnoreCase) Then
+                Exit While
+            End If
+            pageScope = pageScope.Parent
+        End While
+
+        If pageScope IsNot Nothing Then
+            Dim target = Flatten(New List(Of ScsiValueNode) From {pageScope}).FirstOrDefault(
+                Function(x) x.Definition IsNot Nothing AndAlso
+                    String.Equals(x.Definition.Id, id, StringComparison.OrdinalIgnoreCase))
+            If target IsNot Nothing Then Return target
+        End If
+
+        ' 兼容尚未归属于 Page 的临时节点，以及当前节点子树内的引用。
+        Dim localTarget = Flatten(New List(Of ScsiValueNode) From {node}).FirstOrDefault(
+            Function(x) x.Definition IsNot Nothing AndAlso
+                String.Equals(x.Definition.Id, id, StringComparison.OrdinalIgnoreCase))
+        If localTarget IsNot Nothing Then Return localTarget
+
+        ' 最后回退到常规解析树。
+        Dim allNodes = If(_currentNodes, New List(Of ScsiValueNode)())
+        Return Flatten(allNodes).FirstOrDefault(
+            Function(x) x.Definition IsNot Nothing AndAlso
+                String.Equals(x.Definition.Id, id, StringComparison.OrdinalIgnoreCase))
+    End Function
+
     ' 返回元素相对父节点的有效偏移（固定 BitOffset + 动态 OffsetFormula）。
     Private Shared Function EffectiveOffsetBits(node As ScsiValueNode) As Long
         Dim d = node.Definition
         If d Is Nothing Then Return 0
         Dim result As Long = d.BitOffset
         If Not String.IsNullOrWhiteSpace(d.OffsetFormula) Then
-            Dim allNodes = If(_currentNodes, New List(Of ScsiValueNode)())
             result += BitCodec.EvaluateOffsetFormula(d.OffsetFormula,
                 Function(id)
-                    Dim target = Flatten(allNodes).FirstOrDefault(Function(x) x.Definition IsNot Nothing AndAlso String.Equals(x.Definition.Id, id, StringComparison.OrdinalIgnoreCase))
+                    Dim target = FindFormulaReference(node, id)
                     If target Is Nothing Then
                         Throw New InvalidOperationException("动态偏移公式引用的元素不存在：" & id)
                     End If
@@ -251,7 +292,7 @@ Public NotInheritable Class ScsiCodec
                     Return ParseInteger(target.Value)
                 End Function,
                 Function(id)
-                    Dim target = Flatten(allNodes).FirstOrDefault(Function(x) x.Definition IsNot Nothing AndAlso String.Equals(x.Definition.Id, id, StringComparison.OrdinalIgnoreCase))
+                    Dim target = FindFormulaReference(node, id)
 
                     If target Is Nothing Then
                         Throw New InvalidOperationException("动态偏移公式引用的元素不存在：" & id)
@@ -264,20 +305,19 @@ Public NotInheritable Class ScsiCodec
         Return result
     End Function
 
-    Private Shared Function IsNodePresent(node As ScsiValueNode) As Boolean
+    Public Shared Function IsNodePresent(node As ScsiValueNode) As Boolean
         Dim d = node.Definition
         If d Is Nothing OrElse String.IsNullOrWhiteSpace(d.PresenceFormula) Then Return True
-        Dim allNodes = If(_currentNodes, New List(Of ScsiValueNode)())
         Return BitCodec.EvaluatePresenceFormula(d.PresenceFormula,
             Function(id)
-                Dim target = Flatten(allNodes).FirstOrDefault(Function(x) x.Definition IsNot Nothing AndAlso String.Equals(x.Definition.Id, id, StringComparison.OrdinalIgnoreCase))
+                Dim target = FindFormulaReference(node, id)
                 If target Is Nothing Then
                     Throw New InvalidOperationException("存在条件公式引用的元素不存在：" & id)
                 End If
                 Return ParseInteger(target.Value)
             End Function,
             Function(id)
-                Dim target = Flatten(allNodes).FirstOrDefault(Function(x) x.Definition IsNot Nothing AndAlso String.Equals(x.Definition.Id, id, StringComparison.OrdinalIgnoreCase))
+                Dim target = FindFormulaReference(node, id)
                 If target Is Nothing Then
                     Throw New InvalidOperationException("存在条件公式引用的元素不存在：" & id)
                 End If
