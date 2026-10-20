@@ -35,6 +35,38 @@ Public Class TapeUtils
         Return SCSILockManager.GetLock(handle)
     End Function
 
+    ' --- SCSI timeout unit ------------------------------------------------------
+    ' SCSI_PASS_THROUGH_DIRECT.TimeOutValue is specified in SECONDS, and every
+    ' TimeOut/timeout argument below is handed to it verbatim (see
+    ' LTFSCopyGUI.Native/NativeMethods.cpp). Seconds is therefore the single unit
+    ' used here. The historical 60000 defaults were written as if they were
+    ' milliseconds, so the port driver read them as 16.7 hours - effectively no
+    ' timeout at all, which is why a wedged command hung the app instead of
+    ' returning an error.
+
+    ' Block data I/O and tape motion - the value Write(handle, IntPtr, ...) already uses.
+    Public Const SCSI_TIMEOUT_DATA_SECONDS As Integer = 900
+
+    ' Shared default for callers that do not state a timeout. It has to cover the
+    ' slowest command that can reach such a caller - SPACE/LOCATE across a full
+    ' LTO-7 tape, SET CAPACITY, MOVE MEDIUM on a changer - so it is deliberately
+    ' one hour rather than a tight value. The commands that need longer do not
+    ' inherit it: FORMAT MEDIUM states SCSI_TIMEOUT_FORMAT_SECONDS at every call
+    ' site, and the ERASE LONG sites in LTFSConfigurator keep the explicit 320/240
+    ' they already had - short for a real LTO-7 full erase, but raising them is a
+    ' separate change rather than something to retune silently here.
+    Public Const SCSI_TIMEOUT_DEFAULT_SECONDS As Integer = 3600
+
+    ' FORMAT MEDIUM and ERASE LONG. Both run with IMMED=0, so the command blocks
+    ' for the whole operation, and on LTO the drive may take a full-length pass.
+    ' Never let these inherit the shared default - an expiry aborts a format that
+    ' is already in flight and leaves the cartridge in an indeterminate state.
+    Public Const SCSI_TIMEOUT_FORMAT_SECONDS As Integer = 14400
+
+    ' Ceiling enforced in IOCtl.IOCtlDirect. Equal to the largest deliberate
+    ' timeout in the tree (iSCSIService's 24 * 3600), so it shortens nothing.
+    Public Const SCSI_TIMEOUT_MAX_SECONDS As UInteger = 86400UI
+
     Public Shared Function IOCtlDirect(TapeDrive As String,
                                            cdb As Byte(),
                                            dataBuffer As IntPtr,
@@ -98,6 +130,15 @@ Public Class TapeUtils
                 Return False
             End If
 
+            ' Normalise the seconds-based timeout once, here, because this is the
+            ' only place every managed SCSI command passes through. 0 is replaced
+            ' because several port drivers read TimeOutValue = 0 as no timeout at
+            ' all, and the ceiling guarantees a wedged command eventually fails
+            ' instead of blocking the caller (and this device's lock) forever.
+            Dim timeoutSeconds As UInt32 = timeoutValue
+            If timeoutSeconds = 0UI Then timeoutSeconds = CUInt(TapeUtils.SCSI_TIMEOUT_DEFAULT_SECONDS)
+            If timeoutSeconds > TapeUtils.SCSI_TIMEOUT_MAX_SECONDS Then timeoutSeconds = TapeUtils.SCSI_TIMEOUT_MAX_SECONDS
+
             Dim operationScope As IDisposable = SCSIDeviceLockManager.Instance.EnterOperation(handle)
             If operationScope Is Nothing Then
                 SetLastNativeError(170)
@@ -111,7 +152,7 @@ Public Class TapeUtils
                     dataBuffer,
                     bufferLength,
                     dataIn,
-                    timeoutValue,
+                    timeoutSeconds,
                     TargetID,
                     LUN)
                 BytesReturned = nativeResult.BytesReturned
@@ -611,8 +652,25 @@ Public Class TapeUtils
             Case DriverType.TapeStream
                 Return New BlockLimits With {.MinimumBlockLength = 0, .MaximumBlockLength = 16777216}
             Case Else
+                ' SCSIReadParam hands back a zero-filled parameter buffer whatever the ioctl did,
+                ' so a failed READ BLOCK LIMITS parsed as MaximumBlockLength = 0 and was assigned
+                ' straight into GlobalBlockLimit, which then clamps every later block size to 0:
+                ' zero-length READ(6)/WRITE(6) (SSC-3: not an error, so the ReadToFileMark and
+                ' ReadBuffer loops never terminate) and plabel.blocksize = 0 written into the
+                ' on-tape LTFS label by mkltfs. The sense key cannot tell "drive said 0" from
+                ' "command never ran" - IOCtlDirect's early Return False, RESERVATION CONFLICT and
+                ' BUSY all leave the sense buffer all zeros - so validate the returned value
+                ' instead, and substitute only for a zero: Case Else also covers 3592/T10K/SLR,
+                ' and a drive that legitimately reports a small maximum must not have it raised
+                ' to a limit it would reject.
                 Dim data As Byte() = SCSIReadParam(handle, {5, 0, 0, 0, 0, 0}, 6)
-                Return New BlockLimits With {.MaximumBlockLength = CULng(data(1)) << 16 Or CULng(data(2)) << 8 Or data(3),
+                Dim MaxBlockLen As UInt64 = CULng(data(1)) << 16 Or CULng(data(2)) << 8 Or data(3)
+                ' 1048576 is GlobalBlockLimit's own declared default. GlobalBlockLimit can itself
+                ' be 0 here - the BlockLenLimit setter is unguarded and the persisted drive
+                ' settings are reloaded over the probe result - and falling back to that value
+                ' would pin every later tape record at zero length for good.
+                If MaxBlockLen = 0UL Then MaxBlockLen = CULng(If(GlobalBlockLimit > 0, GlobalBlockLimit, 1048576))
+                Return New BlockLimits With {.MaximumBlockLength = MaxBlockLen,
             .MinimumBlockLength = CUShort(data(4)) << 8 Or data(5)}
         End Select
     End Function
@@ -1022,7 +1080,10 @@ Public Class TapeUtils
     Public Shared Function SCSIReadParam(handle As IntPtr, cdbData As Byte(), paramLen As Integer) As Byte()
         Return SCSIReadParam(handle, cdbData, paramLen, Nothing)
     End Function
-    Public Shared Function SCSIReadParam(handle As IntPtr, cdbData As Byte(), paramLen As Integer, ByVal senseReport As Func(Of Byte(), Boolean), Optional ByVal timeout As Integer = 60000) As Byte()
+    ' Seconds. Callers that inherit this default include Space6 (SPACE), MoveMedium
+    ' (MOVE MEDIUM) and ChangerTool's SET CAPACITY, all of which can legitimately run
+    ' for many minutes, so this stays at the long shared default.
+    Public Shared Function SCSIReadParam(handle As IntPtr, cdbData As Byte(), paramLen As Integer, ByVal senseReport As Func(Of Byte(), Boolean), Optional ByVal timeout As Integer = SCSI_TIMEOUT_DEFAULT_SECONDS) As Byte()
         Dim paramData(paramLen - 1) As Byte
         Dim dataBuffer As IntPtr = Marshal.AllocHGlobal(paramLen)
         Marshal.Copy(paramData, 0, dataBuffer, paramLen)
@@ -1036,11 +1097,13 @@ Public Class TapeUtils
     Public Shared Function SCSIReadParam(TapeDrive As String, cdbData As Byte(), paramLen As Integer) As Byte()
         Return SCSIReadParam(TapeDrive, cdbData, paramLen, Nothing)
     End Function
-    Public Shared Function SCSIReadParam(TapeDrive As String, cdbData As Byte(), paramLen As Integer, ByVal senseReport As Func(Of Byte(), Boolean)) As Byte()
+    ' Seconds, forwarded to the handle overload. Optional so existing callers keep
+    ' the shared default; ChangerTool needs it to state the FORMAT MEDIUM tier.
+    Public Shared Function SCSIReadParam(TapeDrive As String, cdbData As Byte(), paramLen As Integer, ByVal senseReport As Func(Of Byte(), Boolean), Optional ByVal timeout As Integer = SCSI_TIMEOUT_DEFAULT_SECONDS) As Byte()
         SyncLock SCSILockManager.GetLock(TapeDrive)
             Dim handle As IntPtr
             If Not OpenTapeDrive(TapeDrive, handle) Then Throw New Exception($"Cannot open {TapeDrive}")
-            Dim result As Byte() = SCSIReadParam(handle, cdbData, paramLen, senseReport)
+            Dim result As Byte() = SCSIReadParam(handle, cdbData, paramLen, senseReport, timeout)
             If Not CloseTapeDrive(handle) Then Throw New Exception($"Cannot close {TapeDrive}")
             Return result
         End SyncLock
@@ -1053,7 +1116,9 @@ Public Class TapeUtils
         Dim dataBuffer As IntPtr = Marshal.AllocHGlobal(paramLen)
         Marshal.Copy(paramData, 0, dataBuffer, paramLen)
         Dim senseData(63) As Byte
-        While Not TapeSCSIIOCtlUnmanaged(handle, cdbData, dataBuffer, CUInt(paramLen), 1, 60000, senseData)
+        ' Data tier, not the parameter tier: this helper also carries the block reads
+        ' issued by ReadBlock (READ(6)) and FileDataProvider (READ(10)).
+        While Not TapeSCSIIOCtlUnmanaged(handle, cdbData, dataBuffer, CUInt(paramLen), 1, CUInt(SCSI_TIMEOUT_DATA_SECONDS), senseData)
             Dim ErrCode As Integer = LastWin32Error
             Dim win32ex As New Win32Exception(ErrCode)
             Dim ActiveFrm = ApplicationWheels.GetActiveWindow()
@@ -1227,7 +1292,12 @@ Public Class TapeUtils
                 Return True
             Case DriverType.IBM3592
                 Dim mode23 As Byte() = ModeSense(handle, &H23)
-                If mode23 Is Nothing OrElse mode23.Length < 12 Then Return False
+                ' mode23(12) is written below, so 13 bytes are needed; the old `< 12` test admitted a
+                ' page of exactly 12 bytes and raised IndexOutOfRangeException - which escapes into
+                ' the caller's Catch as a bare stack trace - instead of reporting failure. Bail out
+                ' rather than zero-extending: fabricating capacity-scaling bytes and sending them to
+                ' the drive via ModeSelect would be worse than returning False.
+                If mode23 Is Nothing OrElse mode23.Length < 13 Then Return False
                 mode23(11) = 1
                 If Capacity >= &HFE80 Then
                     mode23(12) = 0
@@ -1279,7 +1349,10 @@ Public Class TapeUtils
     Public Shared Function SetBlockSize(handle As IntPtr, BlockSize As Int64) As Byte()
         Return SetBlockSize(handle, CULng(BlockSize))
     End Function
-    Public Shared Function SetBlockSize(handle As IntPtr, ByVal BlockSize As UInt64) As Byte()
+    ' Succ reports the transport-level result of the ioctl. On a transport failure the sense
+    ' buffer is never written, so it stays all zero and a sense-key test alone reads as success.
+    Public Shared Function SetBlockSize(handle As IntPtr, ByVal BlockSize As UInt64, Optional ByRef Succ As Boolean = True) As Byte()
+        Succ = True
         Select Case DriverTypeSetting
             Case DriverType.TapeStream
                 Return TapeImage.SenseData.NoSense
@@ -1288,7 +1361,7 @@ Public Class TapeUtils
                 SyncLock SCSILockManager.GetLock(handle)
                     Dim DensityCode As Byte = ReadDensityCode(handle:=handle)
                     BlockSize = CULng(Math.Min(BlockSize, GlobalBlockLimit))
-                    SendSCSICommand(handle:=handle, cdbData:=New Byte() {&H15, &H10, 0, 0, &HC, 0},
+                    Succ = SendSCSICommand(handle:=handle, cdbData:=New Byte() {&H15, &H10, 0, 0, &HC, 0},
                                      Data:=New Byte() {0, 0, &H10, 8, DensityCode, 0, 0, 0, 0, CByte(BlockSize >> 16 And &HFFUL), CByte(BlockSize >> 8 And &HFFUL), CByte(BlockSize And &HFFUL)}, DataIn:=0,
                                     senseReport:=Function(senseData As Byte()) As Boolean
                                                      sense = senseData
@@ -6531,6 +6604,19 @@ Public Class TapeUtils
             FileNumber = data.FileNumber
             SetNumber = data.SetNumber
         End Sub
+        ' Value copy of a position already in hand, so a caller can snapshot it
+        ' without a second READ POSITION.  Must copy, not alias: PositionData is
+        ' a reference type and live position cursors are mutated in place.
+        Public Sub New(data As PositionData)
+            BOP = data.BOP
+            EOP = data.EOP
+            MPU = data.MPU
+            AddSenseKey = data.AddSenseKey
+            PartitionNumber = data.PartitionNumber
+            BlockNumber = data.BlockNumber
+            FileNumber = data.FileNumber
+            SetNumber = data.SetNumber
+        End Sub
         Public Overrides Function ToString() As String
             Dim Xtrs As String = ""
             If BOP Then Xtrs &= " BOP"
@@ -6692,7 +6778,11 @@ Public Class TapeUtils
         Return sense
     End Function
     Public Shared Function Write(TapeDrive As String, Data As IntPtr, Length As Integer) As Byte()
-        Return Write(TapeDrive:=TapeDrive, Data:=Data, Length:=Length)
+        ' This called itself: Integer -> UInteger is a narrowing conversion, so under Option Strict
+        ' the UInteger overload below was not an applicable candidate and overload resolution picked
+        ' this exact-match signature again - unbounded recursion ending in an uncatchable
+        ' StackOverflowException. Convert explicitly so the UInteger overload is selected.
+        Return Write(TapeDrive:=TapeDrive, Data:=Data, Length:=CUInt(Length))
     End Function
     Public Shared Function Write(TapeDrive As String, Data As IntPtr, Length As UInteger) As Byte()
         Return Write(TapeDrive, Data, Length, False)
@@ -6780,7 +6870,7 @@ Public Class TapeUtils
                     ts.WriteBlock(dataArr)
                     sense = TapeImage.SenseData.NoSense
                 Case Else
-                    Dim succ As Boolean = TapeSCSIIOCtlUnmanaged(handle, cdbData, dataBuffer, TransferLen, 0, 60000, sense)
+                    Dim succ As Boolean = TapeSCSIIOCtlUnmanaged(handle, cdbData, dataBuffer, TransferLen, 0, CUInt(SCSI_TIMEOUT_DATA_SECONDS), sense)
                     If Not succ Then
                         Marshal.FreeHGlobal(dataBuffer)
                         Dim ErrCode As Integer = LastWin32Error
@@ -6809,6 +6899,30 @@ Public Class TapeUtils
             Return result
         End SyncLock
     End Function
+    ' Rank a sense key so that the worst-sense latch in the Write overloads below lets a
+    ' later fatal condition replace an earlier benign one: 0 (NO SENSE) < 1 (RECOVERED
+    ' ERROR - the drive completed the command after internal retries) < anything else
+    ' (MEDIUM ERROR, VOLUME OVERFLOW, ...). Only the key is ranked; the EOM/early-warning
+    ' flag is not an error on its own, so it does not make one sense outrank another.
+    Private Shared Function SenseRank(ByVal senseByte2 As Byte) As Integer
+        Dim key As Integer = senseByte2 And &HF
+        If key = 0 Then Return 0
+        If key = 1 Then Return 1
+        Return 2
+    End Function
+    ' Stream.Read is allowed to return fewer bytes than requested without being at end of stream, so
+    ' sizing a tape record from a single Read can emit a short record in the middle of a file; the
+    ' extent then claims more bytes than the record holds and the reader rejects the block. Fill the
+    ' buffer first so that only the genuine final record of a stream is short.
+    Private Shared Function ReadFill(s As Stream, buf As Byte(), count As Integer) As Integer
+        Dim filled As Integer = 0
+        While filled < count
+            Dim n As Integer = s.Read(buf, filled, count - filled)
+            If n <= 0 Then Exit While
+            filled += n
+        End While
+        Return filled
+    End Function
     Public Shared Function Write(handle As IntPtr, Data As Stream, ByVal BlockSize As Integer, senseEnabled As Boolean, Optional ByVal ProgressReport As Action(Of Long) = Nothing, Optional ByVal DataRead As Action(Of Byte(), Integer, Integer) = Nothing) As Byte()
         Dim sense(63) As Byte
         Dim ts As TapeImage = Nothing
@@ -6823,8 +6937,12 @@ Public Class TapeUtils
         BlockSize = Math.Min(BlockSize, GlobalBlockLimit)
         Dim DataBuffer(BlockSize - 1) As Byte
         Dim DataPtr As IntPtr = Marshal.AllocHGlobal(BlockSize)
-        Dim DataLen As Integer = Data.Read(DataBuffer, 0, BlockSize)
+        Dim DataLen As Integer = ReadFill(Data, DataBuffer, BlockSize)
         Dim succ As Boolean
+        ' The sense buffer is replaced on every block of this write, so remember the
+        ' worst sense seen and report that to the caller - otherwise a block the drive
+        ' rejected is indistinguishable from a clean write once a later block succeeds.
+        Dim worstSense As Byte() = Nothing
 
         While DataLen > 0
             If DataRead IsNot Nothing Then DataRead(DataBuffer, 0, DataLen)
@@ -6833,12 +6951,29 @@ Public Class TapeUtils
             Do
                 Select Case DriverTypeSetting
                     Case DriverType.TapeStream
-                        ts.WriteBlock(DataBuffer)
+                        ' Two fixes, both copied from the file-based overload below, which gets them
+                        ' right: (1) the length was omitted, so TapeImage.WriteBlock defaulted to the
+                        ' whole buffer and padded the final short record of every stream with stale
+                        ' bytes left by the previous block; (2) succ was never assigned, so a
+                        ' *successful* virtual-tape write fell into the SCSI-failure dialog below -
+                        ' where each Retry appended another copy of the block and all-Ignore ended in
+                        ' the bogus "SCSI Failure" throw - and ProgressReport never fired.
+                        ts.WriteBlock(DataBuffer, DataLen)
                         sense = TapeImage.SenseData.NoSense
+                        succ = True
                     Case Else
-                        succ = TapeSCSIIOCtlUnmanaged(handle, cdbData, DataPtr, CUInt(DataLen), 0, 60000, sense)
+                        succ = TapeSCSIIOCtlUnmanaged(handle, cdbData, DataPtr, CUInt(DataLen), 0, CUInt(SCSI_TIMEOUT_DATA_SECONDS), sense)
 
                 End Select
+                ' Latch the worst sense seen (ranked by SenseRank above), so a tape that
+                ' crosses the early warning - or hits a recovered error - and then fills up
+                ' still reports the VOLUME OVERFLOW and not the earlier benign sense. Copy
+                ' it, because the next command overwrites the buffer.
+                If sense IsNot Nothing AndAlso sense.Length > 2 AndAlso (sense(2) And &H4F) <> 0 Then
+                    If worstSense Is Nothing OrElse SenseRank(sense(2)) > SenseRank(worstSense(2)) Then
+                        worstSense = DirectCast(sense.Clone(), Byte())
+                    End If
+                End If
                 If succ Then
                     If ProgressReport IsNot Nothing Then
                         ProgressReport(DataLen)
@@ -6857,7 +6992,7 @@ Public Class TapeUtils
                     End Select
                 End If
             Loop
-            DataLen = Data.Read(DataBuffer, 0, BlockSize)
+            DataLen = ReadFill(Data, DataBuffer, BlockSize)
         End While
         Data.Close()
         Marshal.FreeHGlobal(DataPtr)
@@ -6866,6 +7001,13 @@ Public Class TapeUtils
             Dim win32ex As New Win32Exception(ErrCode)
             Throw New Exception($"SCSI Failure. {vbCrLf}ErrCode: 0x{ErrCode.ToString("X8")}h{vbCrLf}{win32ex.Message}")
         End If
+        ' Honour senseEnabled instead of hard-coding a clean sense: the caller could not
+        ' otherwise tell a rejected write from a good one. Callers passing False keep the
+        ' old 3-byte {0, 0, 0} result; callers passing True always get at least 3 bytes,
+        ' because every sense check in this solution reads sense(2).
+        If Not senseEnabled Then Return {0, 0, 0}
+        If worstSense IsNot Nothing Then Return worstSense
+        If sense IsNot Nothing AndAlso sense.Length > 2 Then Return sense
         Return {0, 0, 0}
     End Function
     Public Shared Function Write(TapeDrive As String, sourceFile As String) As Byte()
@@ -6888,12 +7030,9 @@ Public Class TapeUtils
     End Function
     Public Shared Function Write(handle As IntPtr, sourceFile As String, ByVal BlockLen As Integer, ByVal senseEnabled As Boolean) As Byte()
         Dim sense(63) As Byte
-        BlockLen = Math.Min(BlockLen, GlobalBlockLimit)
-        Dim DataBuffer(BlockLen - 1) As Byte
-        Dim DataPtr As IntPtr = Marshal.AllocHGlobal(BlockLen)
-        Dim fs As New FileStream(sourceFile, FileMode.Open, FileAccess.Read, FileShare.Read)
-        Dim DataLen As Integer = fs.Read(DataBuffer, 0, BlockLen)
-        Dim succ As Boolean
+        ' Resolve the virtual-tape mapping before allocating anything, so the "not present" early
+        ' return no longer leaks the unmanaged block and the open FileStream. The Stream overload
+        ' above already orders it this way.
         Dim ts As TapeImage = Nothing
         Select Case DriverTypeSetting
             Case DriverType.TapeStream
@@ -6903,41 +7042,89 @@ Public Class TapeUtils
                     Return sense
                 End If
         End Select
+        BlockLen = Math.Min(BlockLen, GlobalBlockLimit)
+        ' A non-positive block length writes nothing. That used to surface as the bogus SCSI Failure
+        ' throw below (succ left False); with the verdict now carried by anyFailed it would instead be
+        ' reported as a successful write, so reject it before allocating anything.
+        If BlockLen <= 0 Then Throw New ArgumentOutOfRangeException(NameOf(BlockLen))
+        Dim DataBuffer(BlockLen - 1) As Byte
+        Dim DataPtr As IntPtr = Marshal.AllocHGlobal(BlockLen)
+        Dim fs As New FileStream(sourceFile, FileMode.Open, FileAccess.Read, FileShare.Read)
+        ' An empty source file skipped the loop below and then threw "SCSI Failure" carrying an
+        ' unrelated Win32 error code, sending diagnosis in the wrong direction. Every caller of this
+        ' overload writes a serialized LTFS index, so an empty file is always a real fault - report it
+        ' as one. It has to stay an exception: the verdict below is now anyFailed, which a zero-block
+        ' write would leave False.
+        If fs.Length = 0 Then
+            fs.Close()
+            Marshal.FreeHGlobal(DataPtr)
+            Throw New IOException($"Refusing to write empty source file: {sourceFile}")
+        End If
+        Dim DataLen As Integer = ReadFill(fs, DataBuffer, BlockLen)
+        ' anyFailed is the verdict for the whole file. succ (now scoped to the SCSI arm) is only a
+        ' per-attempt retry flag: it was reassigned for every block, so one later success masked every
+        ' earlier block the operator chose to Ignore and a structurally broken index was reported as
+        ' fully written.
+        Dim anyFailed As Boolean = False
+        ' Error code of the failure that condemned the file. It has to be taken here and not at the
+        ' throw below: with anyFailed the throw can fire after an Ignored block was followed by many
+        ' successful ones, and LastWin32Error would then belong to an unrelated later call.
+        Dim FailErrCode As Integer = 0
+        ' As in the Stream overload: keep the worst sense across the blocks of this
+        ' write so a rejected block is not masked by a later clean one.
+        Dim worstSense As Byte() = Nothing
         While DataLen > 0
             Select Case DriverTypeSetting
                 Case DriverType.TapeStream
                     ts.WriteBlock(DataBuffer, DataLen)
-                    succ = True
                 Case Else
+                    Dim succ As Boolean
                     Do
                         Dim cdbData As Byte() = {&HA, 0, CByte((DataLen >> 16) And &HFF), CByte((DataLen >> 8) And &HFF), CByte(DataLen And &HFF), 0}
                         Marshal.Copy(DataBuffer, 0, DataPtr, DataLen)
-                        succ = TapeSCSIIOCtlUnmanaged(handle, cdbData, DataPtr, CUInt(DataLen), 0, 60000, sense)
+                        succ = TapeSCSIIOCtlUnmanaged(handle, cdbData, DataPtr, CUInt(DataLen), 0, CUInt(SCSI_TIMEOUT_DATA_SECONDS), sense)
+                        ' Latch the worst sense seen - see SenseRank/the Stream overload above.
+                        If sense IsNot Nothing AndAlso sense.Length > 2 AndAlso (sense(2) And &H4F) <> 0 Then
+                            If worstSense Is Nothing OrElse SenseRank(sense(2)) > SenseRank(worstSense(2)) Then
+                                worstSense = DirectCast(sense.Clone(), Byte())
+                            End If
+                        End If
                         If succ Then
                             Exit Do
                         Else
+                            If Not anyFailed Then FailErrCode = LastWin32Error
                             Dim ActiveFrm = ApplicationWheels.GetActiveWindow()
                             Dim dResult As DialogResult
                             ActiveFrm.Invoke(Sub() dResult = MessageBox.Show(ActiveFrm, $"写入出错：SCSI指令执行失败", "警告", MessageBoxButtons.AbortRetryIgnore))
                             Select Case dResult
                                 Case DialogResult.Abort
+                                    ' Abort used to be reported only through succ staying False, so
+                                    ' it has to mark the file bad explicitly now.
+                                    anyFailed = True
                                     Exit While
                                 Case DialogResult.Retry
                                 Case DialogResult.Ignore
+                                    anyFailed = True
                                     Exit Do
                             End Select
                         End If
                     Loop
             End Select
-            DataLen = fs.Read(DataBuffer, 0, BlockLen)
+            DataLen = ReadFill(fs, DataBuffer, BlockLen)
         End While
         fs.Close()
         Marshal.FreeHGlobal(DataPtr)
-        If Not succ Then
-            Dim ErrCode As Integer = LastWin32Error
+        If anyFailed Then
+            Dim ErrCode As Integer = FailErrCode
             Dim win32ex As New Win32Exception(ErrCode)
             Throw New Exception($"SCSI Failure. {vbCrLf}ErrCode: 0x{ErrCode.ToString("X8")}h{vbCrLf}{win32ex.Message}")
         End If
+        ' Honour senseEnabled instead of hard-coding a clean sense - see the Stream
+        ' overload above. The LTFS index payload is written through this overload, so
+        ' without this its caller has no way to notice the drive refused it.
+        If Not senseEnabled Then Return {0, 0, 0}
+        If worstSense IsNot Nothing Then Return worstSense
+        If sense IsNot Nothing AndAlso sense.Length > 2 Then Return sense
         Return {0, 0, 0}
     End Function
     Public Shared Function Flush(TapeDrive As String) As Byte()
@@ -6961,8 +7148,11 @@ Public Class TapeUtils
     Public Shared Function WriteFileMark(handle As IntPtr) As Byte()
         Return WriteFileMark(handle, 1)
     End Function
-    Public Shared Function WriteFileMark(handle As IntPtr, ByVal Number As UInteger) As Byte()
+    ' Succ reports the transport-level result of the ioctl. On a transport failure the sense
+    ' buffer is never written, so it stays all zero and a sense-key test alone reads as success.
+    Public Shared Function WriteFileMark(handle As IntPtr, ByVal Number As UInteger, Optional ByRef Succ As Boolean = True) As Byte()
         Dim sense(63) As Byte
+        Succ = True
         Select Case DriverTypeSetting
             Case DriverType.TapeStream
                 Dim ts As TapeImage = Nothing
@@ -6974,7 +7164,7 @@ Public Class TapeUtils
                     ts.WriteFilemark(CInt(Number))
                 End If
             Case Else
-                SendSCSICommandUnmanaged(handle, {&H10, CByte(Math.Min(Number, 1)), CByte(Number >> 16 And &HFF), CByte(Number >> 8 And &HFF), CByte(Number And &HFF), 0}, {}, 1,
+                Succ = SendSCSICommandUnmanaged(handle, {&H10, CByte(Math.Min(Number, 1)), CByte(Number >> 16 And &HFF), CByte(Number >> 8 And &HFF), CByte(Number And &HFF), 0}, {}, 1,
                                 Function(senseData As Byte()) As Boolean
                                     sense = senseData
                                     Return True
@@ -7029,7 +7219,7 @@ Public Class TapeUtils
                 Dim succ As Boolean = False
                 SyncLock SCSILockManager.GetLock(handle)
                     Try
-                        succ = TapeSCSIIOCtlUnmanaged(handle, cdbData, dataBuffer, CUInt(DATA_LEN + 9), 1, 60000, sense)
+                        succ = TapeSCSIIOCtlUnmanaged(handle, cdbData, dataBuffer, CUInt(DATA_LEN + 9), 1, CUInt(SCSI_TIMEOUT_DATA_SECONDS), sense)
                     Catch ex As Exception
                         Marshal.FreeHGlobal(dataBuffer)
                         Throw New Exception("SCSIIOError")
@@ -7050,7 +7240,7 @@ Public Class TapeUtils
                                 CByte((DATA_LEN + 9) And &HFF), 0, 0}
                             succ = False
                             Try
-                                succ = TapeSCSIIOCtlUnmanaged(handle, cdbData, dataBuffer2, CUInt(DATA_LEN + 9), 1, 60000, sense)
+                                succ = TapeSCSIIOCtlUnmanaged(handle, cdbData, dataBuffer2, CUInt(DATA_LEN + 9), 1, CUInt(SCSI_TIMEOUT_DATA_SECONDS), sense)
                             Catch ex As Exception
                                 Marshal.FreeHGlobal(dataBuffer)
                                 Marshal.FreeHGlobal(dataBuffer2)
@@ -7284,7 +7474,10 @@ Public Class TapeUtils
             Return sb.ToString
         End Function
     End Class
-    Public Shared Function SendSCSICommand(handle As IntPtr, cdbData As Byte(), Optional ByRef Data As Byte() = Nothing, Optional DataIn As Byte = 2, Optional ByVal senseReport As Func(Of Byte(), Boolean) = Nothing, Optional ByVal TimeOut As Integer = 60000) As Boolean
+    ' TimeOut is SECONDS. LOAD/UNLOAD, SET CAPACITY and WRITE FILEMARKS reach these
+    ' overloads without stating a timeout, so the default is the long one; FORMAT
+    ' MEDIUM states SCSI_TIMEOUT_FORMAT_SECONDS at its call sites instead.
+    Public Shared Function SendSCSICommand(handle As IntPtr, cdbData As Byte(), Optional ByRef Data As Byte() = Nothing, Optional DataIn As Byte = 2, Optional ByVal senseReport As Func(Of Byte(), Boolean) = Nothing, Optional ByVal TimeOut As Integer = SCSI_TIMEOUT_DEFAULT_SECONDS) As Boolean
         Dim dataBufferPtr As IntPtr
         Dim dataLen As Integer = 0
         If Data IsNot Nothing Then
@@ -7303,7 +7496,7 @@ Public Class TapeUtils
         Marshal.FreeHGlobal(dataBufferPtr)
         Return succ
     End Function
-    Public Shared Function SendSCSICommand(handle As IntPtr, cdbData As Byte(), ByRef Data As Byte(), ByVal DataLen As Integer, Optional DataIn As Byte = 2, Optional ByVal senseReport As Func(Of Byte(), Boolean) = Nothing, Optional ByVal TimeOut As Integer = 60000) As Boolean
+    Public Shared Function SendSCSICommand(handle As IntPtr, cdbData As Byte(), ByRef Data As Byte(), ByVal DataLen As Integer, Optional DataIn As Byte = 2, Optional ByVal senseReport As Func(Of Byte(), Boolean) = Nothing, Optional ByVal TimeOut As Integer = SCSI_TIMEOUT_DEFAULT_SECONDS) As Boolean
         Dim dataBufferPtr As IntPtr
         If Data IsNot Nothing AndAlso Data.Length > 0 Then
             If DataLen > Data.Length Then Return False
@@ -7322,7 +7515,7 @@ Public Class TapeUtils
         Marshal.FreeHGlobal(dataBufferPtr)
         Return succ
     End Function
-    Public Shared Function SendSCSICommand(TapeDrive As String, cdbData As Byte(), Optional ByRef Data As Byte() = Nothing, Optional DataIn As Byte = 2, Optional ByVal senseReport As Func(Of Byte(), Boolean) = Nothing, Optional ByVal TimeOut As Integer = 60000) As Boolean
+    Public Shared Function SendSCSICommand(TapeDrive As String, cdbData As Byte(), Optional ByRef Data As Byte() = Nothing, Optional DataIn As Byte = 2, Optional ByVal senseReport As Func(Of Byte(), Boolean) = Nothing, Optional ByVal TimeOut As Integer = SCSI_TIMEOUT_DEFAULT_SECONDS) As Boolean
         SyncLock SCSILockManager.GetLock(TapeDrive)
             Dim handle As IntPtr
             If Not OpenTapeDrive(TapeDrive, handle) Then Throw New Exception($"Cannot open {TapeDrive}")
@@ -7331,7 +7524,7 @@ Public Class TapeUtils
             Return result
         End SyncLock
     End Function
-    Public Shared Function SendSCSICommandUnmanaged(handle As IntPtr, cdbData As Byte(), Optional ByRef Data As Byte() = Nothing, Optional DataIn As Byte = 2, Optional ByVal senseReport As Func(Of Byte(), Boolean) = Nothing, Optional ByVal TimeOut As Integer = 60000) As Boolean
+    Public Shared Function SendSCSICommandUnmanaged(handle As IntPtr, cdbData As Byte(), Optional ByRef Data As Byte() = Nothing, Optional DataIn As Byte = 2, Optional ByVal senseReport As Func(Of Byte(), Boolean) = Nothing, Optional ByVal TimeOut As Integer = SCSI_TIMEOUT_DEFAULT_SECONDS) As Boolean
         Dim dataBufferPtr As IntPtr
         Dim dataLen As Integer = 0
         If Data IsNot Nothing Then
@@ -7954,6 +8147,35 @@ Public Class TapeUtils
                                                                           ProgressReport($"{ParseSenseData(sense)}")
                                                                           Return False
                                                                       End Function
+                    ' Write and WriteFileMark always return a non-empty sense buffer, so the `.Length > 0`
+                    ' tests below could never fail and every Fail branch in this formatter was dead code.
+                    ' Gate on the sense key instead. That needs a looser predicate than senseReportFunc,
+                    ' which is left as it is for the non-data commands that use it: a WRITE(6)/WRITE
+                    ' FILEMARKS reporting sense key 1 (RECOVERED ERROR), or only setting the EOM/EW bit
+                    ' (byte 2 bit 6), did put the block on tape - failing those would abort formats that
+                    ' succeed today. Same split as the write loop in LTFSWriter.vb.
+                    Dim writeOkFunc As Func(Of Byte(), Boolean) = Function(sense As Byte()) As Boolean
+                                                                      If sense Is Nothing OrElse sense.Length < 3 Then
+                                                                          ' Nothing to check: report a failure rather than assume the write landed.
+                                                                          ProgressReport("No sense data - write result cannot be verified" & vbCrLf)
+                                                                          Return False
+                                                                      End If
+                                                                      Dim SenseKey As Integer = sense(2) And &HF
+                                                                      ' Keep printing whatever the discarded senseReportFunc calls used to print.
+                                                                      If SenseKey <> 0 OrElse ((sense(2) >> 6) And &H1) = 1 Then ProgressReport($"{ParseSenseData(sense)}")
+                                                                      Return SenseKey = 0 OrElse SenseKey = 1
+                                                                  End Function
+                    ' WriteFileMark throws away the Boolean from SendSCSICommandUnmanaged, so capture it
+                    ' here: a transport failure never fills the sense buffer, so it stays all zero and
+                    ' reads as sense key 0 = OK. Nothing marks that case and writeOkFunc rejects it. The
+                    ' public WriteFileMark contract is unchanged - only mkltfs ever sees Nothing, so the
+                    ' bulk-write paths that dereference sense(2) are not affected.
+                    Dim writeFileMarkFunc As Func(Of Integer, Byte()) = Function(FileMarkCount As Integer) As Byte()
+                                                                            Dim FMSucc As Boolean = True
+                                                                            Dim FMSense As Byte() = WriteFileMark(handle, CUInt(FileMarkCount), FMSucc)
+                                                                            If Not FMSucc Then Return Nothing
+                                                                            Return FMSense
+                                                                        End Function
 
                     If DriverTypeSetting = DriverType.TapeStream Then
                         TapeStreamMapping.MappingTable(handle).ResetPartitionNumber(ExtraPartitionCount + 1)
@@ -8006,7 +8228,7 @@ Public Class TapeUtils
                     ElseIf DriverTypeSetting = DriverType.TapeStream Then
                         ProgressReport("Incompatible drive detected, skip initialization" & vbCrLf)
                     Else
-                        If SendSCSICommand(handle, {4, 0, 0, 0, 0, 0}, senseReport:=senseReportFunc) Then
+                        If SendSCSICommand(handle, {4, 0, 0, 0, 0, 0}, senseReport:=senseReportFunc, TimeOut:=SCSI_TIMEOUT_FORMAT_SECONDS) Then
                             ProgressReport("Initialization OK" & vbCrLf)
                         Else
                             OnError("Initialization Fail" & vbCrLf)
@@ -8030,7 +8252,7 @@ Public Class TapeUtils
                         ProgressReport("Partitioning..")
                         Select Case DriverTypeSetting
                             Case DriverType.T10K
-                                If SendSCSICommand(handle, {4, 0, 2, 0, 0, 0}, Nothing, 0, senseReport:=senseReportFunc) Then
+                                If SendSCSICommand(handle, {4, 0, 2, 0, 0, 0}, Nothing, 0, senseReport:=senseReportFunc, TimeOut:=SCSI_TIMEOUT_FORMAT_SECONDS) Then
                                     ProgressReport("     OK" & vbCrLf)
                                 Else
                                     OnError("     Fail" & vbCrLf)
@@ -8039,7 +8261,7 @@ Public Class TapeUtils
                             Case DriverType.TapeStream
 
                             Case Else
-                                If SendSCSICommand(handle, {4, 0, 1, 0, 0, 0}, Nothing, 0, senseReport:=senseReportFunc) Then
+                                If SendSCSICommand(handle, {4, 0, 1, 0, 0, 0}, Nothing, 0, senseReport:=senseReportFunc, TimeOut:=SCSI_TIMEOUT_FORMAT_SECONDS) Then
                                     ProgressReport("     OK" & vbCrLf)
                                 Else
                                     OnError("     Fail" & vbCrLf)
@@ -8109,9 +8331,12 @@ Public Class TapeUtils
                     End If
                     'Mode Select:Block Length
                     ProgressReport($"MODE SELECT - Block Size {BlockLen}..")
-                    Dim blkSenseData As Byte() = SetBlockSize(handle:=handle, BlockSize:=0)
-                    senseReportFunc(blkSenseData)
-                    If blkSenseData.Length > 0 Then
+                    ' SetBlockSize also returns a fixed-size sense buffer, so the old length test could
+                    ' never fail. Gate on the parsed sense and on the transport result instead. Passing
+                    ' Succ:= also binds this call to the UInt64 overload, the one that reaches the drive.
+                    Dim blkSucc As Boolean = True
+                    Dim blkSenseData As Byte() = SetBlockSize(handle:=handle, BlockSize:=CULng(0), Succ:=blkSucc)
+                    If blkSucc AndAlso senseReportFunc(blkSenseData) Then
                         ProgressReport($"MODE SELECT - Block Size {BlockLen} OK" & vbCrLf)
                     Else
                         OnError($"MODE SELECT - Block Size {BlockLen} Fail" & vbCrLf)
@@ -8130,7 +8355,8 @@ Public Class TapeUtils
                     SetEncryption(handle, EncryptionKey, SenseReport:=senseReportFunc)
                     'Write VOL1Label
                     ProgressReport("Write VOL1Label..")
-                    If Write(handle, New Vol1Label().GenerateRawData(Barcode)).Length > 0 Then
+                    Dim WriteSenseData As Byte() = Write(handle, New Vol1Label().GenerateRawData(Barcode))
+                    If writeOkFunc(WriteSenseData) Then
                         ProgressReport("Write VOL1Label OK" & vbCrLf)
                     Else
                         OnError("Write VOL1Label Fail" & vbCrLf)
@@ -8139,7 +8365,8 @@ Public Class TapeUtils
 
                     'Write FileMark
                     ProgressReport("Write FileMark..")
-                    If WriteFileMark(handle).Length > 0 Then
+                    WriteSenseData = writeFileMarkFunc(1)
+                    If writeOkFunc(WriteSenseData) Then
                         ProgressReport("Write FileMark OK" & vbCrLf)
                     Else
                         OnError("Write FileMark Fail" & vbCrLf)
@@ -8155,9 +8382,8 @@ Public Class TapeUtils
 
                     'Write ltfslabel
                     ProgressReport("Write ltfslabel..")
-                    Dim WriteSenseData As Byte() = Write(handle, Encoding.UTF8.GetBytes(plabel.GetSerializedText()))
-                    senseReportFunc(WriteSenseData)
-                    If WriteSenseData.Length > 0 Then
+                    WriteSenseData = Write(handle, Encoding.UTF8.GetBytes(plabel.GetSerializedText()))
+                    If writeOkFunc(WriteSenseData) Then
                         ProgressReport("Write ltfslabel OK" & vbCrLf)
                     Else
                         OnError("Write ltfslabel Fail" & vbCrLf)
@@ -8166,9 +8392,8 @@ Public Class TapeUtils
 
                     'Write FileMark
                     ProgressReport("Write FileMark..")
-                    WriteSenseData = WriteFileMark(handle, 2)
-                    senseReportFunc(WriteSenseData)
-                    If WriteSenseData.Length > 0 Then
+                    WriteSenseData = writeFileMarkFunc(2)
+                    If writeOkFunc(WriteSenseData) Then
                         ProgressReport("Write 2FileMark OK" & vbCrLf)
                     Else
                         OnError("Write 2FileMark Fail" & vbCrLf)
@@ -8193,8 +8418,7 @@ Public Class TapeUtils
                     'Write ltfsindex
                     ProgressReport("Write ltfsindex..")
                     WriteSenseData = Write(handle, Encoding.UTF8.GetBytes(pindex.GetSerializedText()))
-                    senseReportFunc(WriteSenseData)
-                    If WriteSenseData.Length > 0 Then
+                    If writeOkFunc(WriteSenseData) Then
                         ProgressReport("Write ltfsindex OK" & vbCrLf)
                     Else
                         OnError("Write ltfsindex Fail" & vbCrLf)
@@ -8203,9 +8427,8 @@ Public Class TapeUtils
 
                     'Write FileMark
                     ProgressReport("Write FileMark..")
-                    WriteSenseData = WriteFileMark(handle)
-                    senseReportFunc(WriteSenseData)
-                    If WriteSenseData.Length > 0 Then
+                    WriteSenseData = writeFileMarkFunc(1)
+                    If writeOkFunc(WriteSenseData) Then
                         ProgressReport("Write FileMark OK" & vbCrLf)
                     Else
                         OnError("Write FileMark Fail" & vbCrLf)
@@ -8225,8 +8448,7 @@ Public Class TapeUtils
                         'Write VOL1Label
                         ProgressReport("Write VOL1Label..")
                         WriteSenseData = Write(handle, New Vol1Label().GenerateRawData(Barcode))
-                        senseReportFunc(WriteSenseData)
-                        If WriteSenseData.Length > 0 Then
+                        If writeOkFunc(WriteSenseData) Then
                             ProgressReport("Write VOL1Label OK" & vbCrLf)
                         Else
                             OnError("Write VOL1Label Fail" & vbCrLf)
@@ -8234,9 +8456,8 @@ Public Class TapeUtils
                         End If
                         'Write FileMark
                         ProgressReport("Write FileMark..")
-                        WriteSenseData = WriteFileMark(handle)
-                        senseReportFunc(WriteSenseData)
-                        If WriteSenseData.Length > 0 Then
+                        WriteSenseData = writeFileMarkFunc(1)
+                        If writeOkFunc(WriteSenseData) Then
                             ProgressReport("Write FileMark OK" & vbCrLf)
                         Else
                             OnError("Write FileMark Fail" & vbCrLf)
@@ -8246,8 +8467,7 @@ Public Class TapeUtils
                         plabel.location.partition = ltfslabel.PartitionLabel.a
                         ProgressReport("Write ltfslabel..")
                         WriteSenseData = Write(handle, Encoding.UTF8.GetBytes(plabel.GetSerializedText()))
-                        senseReportFunc(WriteSenseData)
-                        If WriteSenseData.Length > 0 Then
+                        If writeOkFunc(WriteSenseData) Then
                             ProgressReport("Write ltfslabel OK" & vbCrLf)
                         Else
                             OnError("Write ltfslabel Fail" & vbCrLf)
@@ -8255,9 +8475,8 @@ Public Class TapeUtils
                         End If
                         'Write FileMark
                         ProgressReport("Write FileMark..")
-                        WriteSenseData = WriteFileMark(handle, 1)
-                        senseReportFunc(WriteSenseData)
-                        If WriteSenseData.Length > 0 Then
+                        WriteSenseData = writeFileMarkFunc(1)
+                        If writeOkFunc(WriteSenseData) Then
                             ProgressReport("Write FileMark OK" & vbCrLf)
                         Else
                             OnError("Write FileMark Fail" & vbCrLf)
@@ -8266,9 +8485,8 @@ Public Class TapeUtils
                         If Not WORM Then
                             'Write FileMark
                             ProgressReport("Write FileMark..")
-                            WriteSenseData = WriteFileMark(handle, 1)
-                            senseReportFunc(WriteSenseData)
-                            If WriteSenseData.Length > 0 Then
+                            WriteSenseData = writeFileMarkFunc(1)
+                            If writeOkFunc(WriteSenseData) Then
                                 ProgressReport("Write FileMark OK" & vbCrLf)
                             Else
                                 OnError("Write FileMark Fail" & vbCrLf)
@@ -8283,8 +8501,7 @@ Public Class TapeUtils
                             block0 = pindex.location.startblock
                             ProgressReport("Write ltfsindex..")
                             WriteSenseData = Write(handle, Encoding.UTF8.GetBytes(pindex.GetSerializedText()))
-                            senseReportFunc(WriteSenseData)
-                            If WriteSenseData.Length > 0 Then
+                            If writeOkFunc(WriteSenseData) Then
                                 ProgressReport("Write ltfsindex OK" & vbCrLf)
                             Else
                                 OnError("Write ltfsindex Fail" & vbCrLf)
@@ -8292,9 +8509,8 @@ Public Class TapeUtils
                             End If
                             'Write FileMark
                             ProgressReport("Write FileMark..")
-                            WriteSenseData = WriteFileMark(handle)
-                            senseReportFunc(WriteSenseData)
-                            If WriteSenseData.Length > 0 Then
+                            WriteSenseData = writeFileMarkFunc(1)
+                            If writeOkFunc(WriteSenseData) Then
                                 ProgressReport("Write FileMark OK" & vbCrLf)
                             Else
                                 OnError("Write FileMark Fail" & vbCrLf)

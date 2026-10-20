@@ -297,6 +297,12 @@ Public Class LTFSWriter
     Private _listDisplayRefreshVersion As Long
     Private ReadOnly _writeCompletionLock As New Object()
     Private ReadOnly _completedWriteFiles As New HashSet(Of ltfsindex.file)
+    'Files for which the drive refused at least one block while the session
+    'carried on because the operator chose Ignore.  The extent is appended
+    'before the data is written, so such a file still looks whole in the
+    'index; track it here so it can neither become a dedupe source nor
+    'publish content hashes.
+    Private ReadOnly _degradedWriteFiles As New HashSet(Of ltfsindex.file)
     Private ReadOnly _validationColorCacheLock As New Object()
     Private ReadOnly _validationColorCache As New Dictionary(Of Long, Dictionary(Of String, Color))
     Private _validationColorCacheSchema As ltfsindex
@@ -1742,6 +1748,7 @@ Public Class LTFSWriter
     Private Sub ClearWriteCompletionState()
         SyncLock _writeCompletionLock
             _completedWriteFiles.Clear()
+            _degradedWriteFiles.Clear()
         End SyncLock
     End Sub
 
@@ -1756,6 +1763,23 @@ Public Class LTFSWriter
         If file Is Nothing Then Return False
         SyncLock _writeCompletionLock
             Return _completedWriteFiles.Contains(file)
+        End SyncLock
+    End Function
+
+    'Record that a block of this file never reached the tape even though the
+    'write loop went on to report success.  Called both from the writer thread
+    'and from the blockwise write tasks, hence the completion set's lock.
+    Private Sub MarkWriteDegraded(file As ltfsindex.file)
+        If file Is Nothing Then Return
+        SyncLock _writeCompletionLock
+            _degradedWriteFiles.Add(file)
+        End SyncLock
+    End Sub
+
+    Private Function IsWriteDegraded(file As ltfsindex.file) As Boolean
+        If file Is Nothing Then Return False
+        SyncLock _writeCompletionLock
+            Return _degradedWriteFiles.Contains(file)
         End SyncLock
     End Function
 
@@ -2547,7 +2571,10 @@ Public Class LTFSWriter
                 End If
                 LastRefresh = Now
                 PrintMsg($"[RefreshCapacity] Finished {result(0)} {result(1)} {result(2)} {result(3)}", LogOnly:=True)
-                GC.Collect()
+                ' Dropped a forced GC.Collect() here: RefreshCapacity runs on the writer thread
+                ' from the per-file path, so a blocking gen-2 collection stalled the whole write
+                ' pipeline and overrode GCLatencyMode.SustainedLowLatency. Opt-in periodic
+                ' collection during writes already exists via My.Settings.LTFSWriter_GCInterval.
             Catch ex As Exception
                 PrintMsg(My.Resources.ResText_RCErr, TooltipText:=ex.ToString)
                 SetStatusLight(LWStatus.Err)
@@ -4264,19 +4291,56 @@ Public Class LTFSWriter
             'Dim sdata As Byte() = Encoding.UTF8.GetBytes(schema.GetSerializedText())
             PrintMsg(My.Resources.ResText_WI)
             'TapeUtils.Write(TapeDrive, sdata, plabel.blocksize)
-            TapeUtils.Write(driveHandle, tmpf, plabel.blocksize, False)
+            ' Ask for the sense data and check it. This write commits the new index
+            ' generation, so a drive that refused it must leave the Try block and let the
+            ' Catch below roll generationnumber/location/previousgenerationlocation back.
+            ' Deliberately not routed through TryExecute: TryExecute reports VOLUME
+            ' OVERFLOW as success (see the sense key 13 branch above), and its Retry would
+            ' re-issue the payload from a tape position that no longer matches the
+            ' schema.location.startblock latched before the write.
+            Dim idxSense As Byte() = TapeUtils.Write(driveHandle, tmpf, plabel.blocksize, True)
+            If idxSense IsNot Nothing AndAlso idxSense.Length > 2 Then
+                If ((idxSense(2) >> 6) And &H1) = 1 Then
+                    If (idxSense(2) And &HF) = 13 Then
+                        ' Unlike a data block (which LTFSWriter_IgnoreVolumeOverflow may
+                        ' skip), a refused index block cannot be ignored: it orphans
+                        ' everything written since the previous generation.
+                        Throw New IO.IOException($"{My.Resources.ResText_VOF}{vbCrLf}{TapeUtils.ParseSenseData(idxSense)}")
+                    Else
+                        ' Early Warning / EOM only - the index itself did reach the tape.
+                        PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
+                    End If
+                ElseIf (idxSense(2) And &HF) = 1 Then
+                    ' Sense key 1 is RECOVERED ERROR: the drive completed the command after
+                    ' its own retries, so the index IS on tape. Throwing here would abort a
+                    ' write that succeeded, and because UpdataAllIndex has no Try/Catch the
+                    ' exception escapes past ReleaseUnit/AllowMediumRemoval/LockGUI(False),
+                    ' leaving the drive reserved and the GUI locked. Warn only.
+                    PrintMsg($"index write recovered error {TapeUtils.Byte2Hex(idxSense, True)}", IsWarn:=True, LogOnly:=True)
+                ElseIf (idxSense(2) And &HF) <> 0 Then
+                    PrintMsg($"sense err {TapeUtils.Byte2Hex(idxSense, True)}", IsWarn:=True, LogOnly:=True)
+                    Throw New IO.IOException(TapeUtils.ParseSenseData(idxSense))
+                End If
+            End If
             'While sdata.Length > 0
             '    Dim wdata As Byte() = sdata.Take(Math.Min(plabel.blocksize, sdata.Length)).ToArray
             '    sdata = sdata.Skip(Math.Min(plabel.blocksize, sdata.Length)).ToArray()
             '    TapeUtils.Write(TapeDrive, wdata)
             '    If sdata.Length = 0 Then Exit While
             'End While
-            TotalBytesUnindexed = 0
             If ClearCurrentStat Then
                 CurrentBytesProcessed = 0
                 CurrentFilesProcessed = 0
             End If
-            TapeUtils.WriteFileMark(driveHandle)
+            ' Check the closing filemark the way the opening one above already is; an
+            ' index that is not terminated by a filemark cannot be read back.
+            TryExecute(Function() As Byte()
+                           Return TapeUtils.WriteFileMark(driveHandle)
+                       End Function)
+            ' Only now is the index complete on tape. The Catch below does not restore
+            ' TotalBytesUnindexed, so zeroing it any earlier would mark the data as
+            ' indexed even when one of the writes above threw.
+            TotalBytesUnindexed = 0
             PrintMsg(My.Resources.ResText_WIF)
             CurrentPos = GetPos
             CurrentHeight = CLng(CurrentPos.BlockNumber)
@@ -4300,6 +4364,9 @@ Public Class LTFSWriter
     End Sub
     Public Sub RefreshIndexPartition()
         If TapeEjectedReadOnly Then Exit Sub
+        ' No drive is opened in OfflineMode (and TapeEjectedReadOnly is bypassed under a dev
+        ' license), so every tape command is a no-op - do not report a VCI failure for it.
+        If OfflineMode OrElse driveHandle = IntPtr.Zero Then Exit Sub
         SetStatusLight(LWStatus.Busy)
         Dim originalLocationPartition As ltfsindex.PartitionLabel = schema.location.partition
         Dim originalLocationStartBlock As ULong = schema.location.startblock
@@ -4334,12 +4401,49 @@ Public Class LTFSWriter
                 tmpf = LazySchemaStore.CreateTempFilePath("index-write")
                 If Not schema.SaveFile(tmpf) Then Throw New IO.IOException("无法保存索引到临时文件。")
                 PrintMsg(My.Resources.ResText_WI)
-                TapeUtils.Write(driveHandle, tmpf, plabel.blocksize, False)
-                TapeUtils.WriteFileMark(driveHandle)
+                ' Same check as WriteCurrentIndex. A refused index write must not reach
+                ' the WriteVCI below, or the Volume Coherency Info would advertise an
+                ' index generation that is not on the tape. The Catch restores
+                ' schema.location on the way out.
+                Dim idxSense As Byte() = TapeUtils.Write(driveHandle, tmpf, plabel.blocksize, True)
+                If idxSense IsNot Nothing AndAlso idxSense.Length > 2 Then
+                    If ((idxSense(2) >> 6) And &H1) = 1 Then
+                        If (idxSense(2) And &HF) = 13 Then
+                            Throw New IO.IOException($"{My.Resources.ResText_VOF}{vbCrLf}{TapeUtils.ParseSenseData(idxSense)}")
+                        Else
+                            ' Early Warning / EOM only - the index itself did reach the tape.
+                            PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
+                        End If
+                    ElseIf (idxSense(2) And &HF) = 1 Then
+                        ' RECOVERED ERROR - the drive completed the write internally, so the
+                        ' index is on tape and the WriteVCI below may proceed. Warn only.
+                        PrintMsg($"index write recovered error {TapeUtils.Byte2Hex(idxSense, True)}", IsWarn:=True, LogOnly:=True)
+                    ElseIf (idxSense(2) And &HF) <> 0 Then
+                        PrintMsg($"sense err {TapeUtils.Byte2Hex(idxSense, True)}", IsWarn:=True, LogOnly:=True)
+                        Throw New IO.IOException(TapeUtils.ParseSenseData(idxSense))
+                    End If
+                End If
+                TryExecute(Function() As Byte()
+                               Return TapeUtils.WriteFileMark(driveHandle)
+                           End Function)
                 PrintMsg(My.Resources.ResText_WIF)
                 PrintMsg($"Position = {GetPos.ToString()}", LogOnly:=True)
             End If
-            TapeUtils.WriteVCI(driveHandle, schema.generationnumber, block0, block1, schema.volumeuuid.ToString(), ExtraPartitionCount)
+            ' A failed VCI (MAM 0x80C) update must not be reported as success: the index is on
+            ' tape, but the coherency info still names the previous generation, so an LTFS
+            ' driver mounts the old index and everything written in this session is invisible.
+            ' Capture the sense data of the failing WRITE ATTRIBUTE as well, otherwise the
+            ' failure cannot be told apart from a write-protect or a transient bus error.
+            Dim vciSense As Byte() = Nothing
+            Dim vciSenseReport As Func(Of Byte(), Boolean) = Function(s As Byte()) As Boolean
+                                                                 vciSense = s
+                                                                 Return True
+                                                             End Function
+            If Not TapeUtils.WriteVCI(driveHandle, schema.generationnumber, block0, block1, schema.volumeuuid.ToString(), ExtraPartitionCount, vciSenseReport) Then
+                ' Byte2Hex is Nothing-safe here: WriteVCI also fails before issuing any command
+                ' when the MAM 0x0009 read returns nothing, in which case there is no sense data.
+                Throw New IO.IOException($"Volume coherency info (MAM 0x80C) could not be updated. Sense: {TapeUtils.Byte2Hex(vciSense)}")
+            End If
             Modified = False
             SetStatusLight(LWStatus.Succ)
         Catch ex As Exception
@@ -4421,10 +4525,25 @@ Public Class LTFSWriter
                 tmpf = LazySchemaStore.CreateTempFilePath("file-transfer")
                 RestoreFile(tmpf, f)
             End If
-            Dim fs As New IO.FileStream(tmpf, IO.FileMode.Open)
-            Dim len As Long = fs.Length
-            Dim startblock As Integer = CInt(DumpDataToIndexPartition(fs))
-            f.extentinfo = {New ltfsindex.file.extent With {.startblock = startblock, .bytecount = len, .byteoffset = 0, .fileoffset = 0, .partition = ltfsindex.PartitionLabel.a}}.ToList()
+            ' Using: the early-return failure paths in DumpDataToIndexPartition (tape
+            ' ejected, no extra partition, ReadFileMark failure) never reach
+            ' TapeUtils.Write, which is the only thing that closes the stream, so the
+            ' handle stayed open and made IO.File.Delete below throw a sharing violation.
+            Using fs As New IO.FileStream(tmpf, IO.FileMode.Open)
+                Dim len As Long = fs.Length
+                ' extent.startblock is Long; CInt() also overflowed past 2^31 blocks.
+                Dim startblock As Long = DumpDataToIndexPartition(fs)
+                ' DumpDataToIndexPartition returns -1 on every failure path. The assignment
+                ' below REPLACES f.extentinfo, so storing the sentinel overwrote the file's
+                ' only valid extent - which the check above guarantees is still on partition
+                ' b - and orphaned the data already written to tape. Leave the extent as it
+                ' is, and do not delete tmpf: on failure it is the only host-side copy left.
+                If startblock < 0 Then
+                    PrintMsg($"{f.name}: index partition dump failed; extent left unchanged, data copy kept at {tmpf}", IsWarn:=True)
+                    Exit Sub
+                End If
+                f.extentinfo = {New ltfsindex.file.extent With {.startblock = startblock, .bytecount = len, .byteoffset = 0, .fileoffset = 0, .partition = ltfsindex.PartitionLabel.a}}.ToList()
+            End Using
             IO.File.Delete(tmpf)
         Catch ex As Exception
             MessageBox.Show(New Form With {.TopMost = True}, $"{ex.ToString}")
@@ -5867,6 +5986,20 @@ Public Class LTFSWriter
                 If writeLength <= 0 OrElse writeLength > Integer.MaxValue Then
                     Throw New IO.EndOfStreamException("The tape block does not contain extent data")
                 End If
+                ' requested = Min(blockSize, remaining + byteOffset), so a short read always leaves
+                ' extent bytes owed that the loop would satisfy from the NEXT tape block, shifting
+                ' the rest of the file while still filling its declared length - and the only
+                ' completeness check below is on the byte count, which would still pass.  There is
+                ' no benign short read here, so refuse regardless of LTFSWriter_IgnoreILI.  Throwing
+                ' rather than prompting keeps CommitExtractionFile from replacing the target with a
+                ' correct-length but wrong file, which IsExtractionTargetComplete would thereafter
+                ' report as already restored.
+                If data.Length < requested Then
+                    Throw New IO.InvalidDataException($"{work.FileWork.Request.FileIndex.name}: short tape block " &
+                                                      $"at P{work.PhysicalPartition} B{extent.startblock}: read {data.Length} of {requested} " &
+                                                      $"bytes with {remaining} extent bytes outstanding; refusing to shift the " &
+                                                      $"remaining {remaining - writeLength} bytes")
+                End If
                 output.Write(data, CInt(byteOffset), CInt(writeLength))
                 remaining -= writeLength
                 Threading.Interlocked.Add(TotalBytesProcessed, writeLength)
@@ -6241,6 +6374,12 @@ Public Class LTFSWriter
                                     RestorePosition.BlockNumber = CULng(RestorePosition.BlockNumber + 1)
                                 End SyncLock
                                 If Data.Length <> CurrentBlockLen OrElse CurrentBlockLen = 0 Then
+                                    ' CurrentBlockLen is already Min(blocksize, bytes still owed), so a block SHORTER
+                                    ' than requested always leaves bytes owed that the loop would take from the NEXT
+                                    ' block, shifting the rest of the file while still filling its declared length.
+                                    ' Only a LONGER block (HI_ILI_LONG) can be safely truncated and ignored, so a
+                                    ' short block must fail the file even when IgnoreILI is set.
+                                    Dim shortBlock As Boolean = Data.Length < CurrentBlockLen
                                     Dim errmsg As String = $"Error reading at p{RestorePosition.PartitionNumber}b{RestorePosition.BlockNumber}: readed length {Data.Length} should be {CurrentBlockLen}"
                                     PrintMsg(errmsg, LogOnly:=True, IsWarn:=True)
                                     If (Not ignored) AndAlso (Not My.Settings.LTFSWriter_IgnoreILI) Then
@@ -6259,7 +6398,7 @@ Public Class LTFSWriter
                                             End Select
                                         End While
                                     End If
-                                    If (Not ignored) AndAlso (Not My.Settings.LTFSWriter_IgnoreILI) Then
+                                    If shortBlock OrElse ((Not ignored) AndAlso (Not My.Settings.LTFSWriter_IgnoreILI)) Then
                                         succ = False
                                         SetStatusLight(LWStatus.Err)
                                         Exit Do
@@ -6967,6 +7106,9 @@ Public Class LTFSWriter
         If rb Is Nothing Then Return -1
         Try
             Dim n As Integer = rb.AvailableToRead()
+            ' 与 Pipe 重载对称：缓冲区低于暂停水位时置起 PipePause。原先环形缓冲路径没有任何
+            ' PipePause 写入点，回填门控因此没有输入；水位按环形缓冲容量取比例（见 WaitForRingRefill）。
+            If My.Settings.LTFSWriter_WaitOnBufferEmpty AndAlso CLng(n) <= GetFastReaderWatermark(rb.Capacity, FastReaderPauseWatermarkFraction) Then PipePause = True
             Return CLng(n)
         Catch ex As Exception
             PrintMsg(ex.ToString, LogOnly:=True, IsWarn:=True)
@@ -7057,7 +7199,11 @@ Public Class LTFSWriter
             If seg.Count = 0 Then
                 Throw New EndOfStreamException($"Ring buffer ended before {count} bytes were read; received {filled}.")
             End If
-            PipeBufferLength = rb.AvailableToRead()
+            Dim avail As Integer = rb.AvailableToRead()
+            PipeBufferLength = avail
+            ' 与 Pipe 重载对称：缓冲区低于暂停水位时置起 PipePause，使下一块写入前门控能够生效。
+            ' 判据用局部量而非刚写回的 PipeBufferLength：该属性是共享状态，别的线程也在写。
+            If My.Settings.LTFSWriter_WaitOnBufferEmpty AndAlso CLng(avail) <= GetFastReaderWatermark(rb.Capacity, FastReaderPauseWatermarkFraction) Then PipePause = True
 
             Dim need As Integer = count - filled
             Dim toCopy As Integer = Math.Min(need, seg.Count)
@@ -7689,6 +7835,72 @@ Public Class LTFSWriter
         Return Math.Max(plabel.blocksize, Math.Min(capacity, CLng(Math.Ceiling(CDbl(capacity) * fraction))))
     End Function
 
+    ' 环形缓冲路径的防磨带门控，形状与 WaitForFastReaderRefill 一致：低水位暂停、高水位恢复，
+    ' 让驱动器能先攒出一段缓冲再整段写出，而不是每块到齿就写、反复回绕。
+    ' 水位沿用已有的 FastReader Pause/Resume 比例（不另加配置项）；MinimumSegmentSize 是
+    ' System.IO.Pipelines 的参数，对 SpscRingBuffer 没有意义，故按环形缓冲容量取比例。
+    Private Sub WaitForRingRefill(rb As SpscRingBuffer, producerCompleted As Func(Of Boolean))
+        If rb Is Nothing OrElse StopFlag Then Return
+        ' 门控完全由原有的 LTFSWriter_WaitOnBufferEmpty 开关决定：开关关闭（出厂默认）时直接返回，
+        ' 环形缓冲路径的行为与本补丁之前逐字相同，没有主动开启该选项的用户不受影响。
+        If Not My.Settings.LTFSWriter_WaitOnBufferEmpty Then Return
+        ' 容量不大于块大小时迟滞毫无意义（一次读取就能把环清空），同时这也排除了水位算式的退化情形：
+        ' GetFastReaderWatermark 的 plabel.blocksize 下限是为 FastReader 写的（其容量必 >= 块大小），
+        ' 且该下限在容量夹紧之后才取，容量更小时算出的水位大于容量，下面的等待循环会永远等不到。
+        If rb.Capacity <= plabel.blocksize Then
+            ' 这里也要落下 PipePause：上面两处环形缓冲重载的阈值没有夹紧，容量小于块大小时它们
+            ' 每次都会把标志置起，而本例程在这个配置下不接管它，不清就会一直挂着。
+            PipePause = False
+            Return
+        End If
+
+        Dim lowWater As Long = GetFastReaderWatermark(rb.Capacity, FastReaderPauseWatermarkFraction)
+        Dim highWater As Long = GetFastReaderWatermark(rb.Capacity, FastReaderResumeWatermarkFraction)
+        ' 再夹一次：让水位不超过容量成为无条件的不变量，日后改动水位算式也不会退化成死等
+        lowWater = Math.Min(lowWater, rb.Capacity)
+        highWater = Math.Min(highWater, rb.Capacity)
+        Dim buffered As Long = CLng(rb.AvailableToRead())
+        PipeBufferLength = buffered
+        ' 与 WaitForFastReaderRefill 同形的迟滞锁存：PipePause 已置起时，高于低水位也要等到高水位
+        If Not PipePause AndAlso buffered > lowWater Then Return
+        ' 生产端已结束或环形缓冲已标记完成时不可能再回填，立即放行，否则作业末尾会死等
+        If rb.IsCompleted OrElse (producerCompleted IsNot Nothing AndAlso producerCompleted()) Then
+            PipePause = False
+            Return
+        End If
+
+        PipePause = True
+        PrintMsg($"ring refill paused: buffered={IOManager.FormatSize(buffered)} low_water={IOManager.FormatSize(lowWater)} resume_water={IOManager.FormatSize(highWater)}",
+                 LogOnly:=True,
+                 IsWarn:=False)
+        ' 逃生阀，对应 Pipe 路径原有的那条 10 秒 lastlen 分支：缓冲在约 10 秒内毫无增长就放行。
+        ' 两种情形都需要它。一是生产端卡住（例如 SMB 源挂了），写入线程不该跟着永久阻塞；
+        ' 二是环形缓冲太小：SpscRingBuffer.GetWriteSegment 要等到 AvailableToWrite >= minChunk
+        ' 才返回（FileDataProvider 的 minChunk 是 1 MiB），容量不足 highWater + minChunk 时
+        ' 生产端会停在高水位之下，没有逃生阀就是互等死锁。
+        Dim lastBuffered As Long = buffered
+        Dim stallTicks As Integer = 0
+        Try
+            While PipePause AndAlso Not StopFlag
+                buffered = CLng(rb.AvailableToRead())
+                PipeBufferLength = buffered
+                If buffered >= highWater Then Exit While
+                If rb.IsCompleted OrElse (producerCompleted IsNot Nothing AndAlso producerCompleted()) Then Exit While
+                If buffered > lastBuffered Then
+                    lastBuffered = buffered
+                    stallTicks = 0
+                Else
+                    stallTicks += 1
+                    ' 1000 次 * 10 ms，与 Pipe 路径的 pCounter2 >= 1000 同一量级
+                    If stallTicks >= 1000 Then Exit While
+                End If
+                Threading.Thread.Sleep(10)
+            End While
+        Finally
+            PipePause = False
+        End Try
+    End Sub
+
     Private Sub WaitForFastReaderRefill(fastProvider As IFastReaderConsumer)
         If Not My.Settings.LTFSWriter_WaitOnBufferEmpty OrElse
            StopFlag OrElse
@@ -7969,6 +8181,8 @@ Public Class LTFSWriter
                                     StopFlag = True
                                     Throw New IOException("Direct tape-copy target write cannot ignore an error")
                                 End If
+                                'This block was never written, so the file is incomplete from here on.
+                                MarkWriteDegraded(fr.File)
                                 succ = True
                                 Exit While
                         End Select
@@ -7976,13 +8190,20 @@ Public Class LTFSWriter
                         Continue While
                     End Try
                     If (((sense(2) >> 6) And &H1) = 1) Then
-                        If ((sense(2) And &HF) = 13) AndAlso (Not My.Settings.LTFSWriter_IgnoreVolumeOverflow) Then
+                        ' Sense key 0xD (VOLUME OVERFLOW) means the medium is full and the drive did NOT write
+                        ' this block. Accepting it would commit index extents and per-file checksums for data
+                        ' that is absent from tape, so it must stop the job whatever IgnoreVolumeOverflow says;
+                        ' the setting now only suppresses the modal dialog.
+                        If ((sense(2) And &HF) = 13) Then
                             PrintMsg(My.Resources.ResText_VOF, IsWarn:=True)
-                            Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_VOF))
+                            If Not My.Settings.LTFSWriter_IgnoreVolumeOverflow Then
+                                Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_VOF))
+                            End If
                             StopFlag = True
                             Exit While
                         Else
-                            PrintMsg(If(((sense(2) And &HF) = 13), My.Resources.ResText_VOF, My.Resources.ResText_EWEOM), ShowOnWarningLabel:=True, DeDupe:=True)
+                            ' Key 0xD now stops above, so this branch is the EOM early warning only: the block WAS written.
+                            PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
                             succ = True
                             Exit While
                         End If
@@ -8004,6 +8225,8 @@ Public Class LTFSWriter
                                     StopFlag = True
                                     Throw New IOException("Direct tape-copy target write cannot ignore an error")
                                 End If
+                                'This block was never written, so the file is incomplete from here on.
+                                MarkWriteDegraded(fr.File)
                                 succ = True
                                 Exit While
                         End Select
@@ -8141,9 +8364,14 @@ Public Class LTFSWriter
                 If Not actualDedupeHash.Equals(expectedDedupeHash, StringComparison.OrdinalIgnoreCase) Then
                     Throw New IO.IOException($"Source file changed after dedupe pre-scan: {fr.SourcePath}")
                 End If
-                SetFileDedupeHash(fr.File, actualDedupeHash)
+                'The hash matches what was read from disk, but a refused block means the
+                'tape copy differs from it.  Publishing it would certify bytes the drive
+                'never stored and would recruit later files onto this extent.
+                If Not IsWriteDegraded(fr.File) Then SetFileDedupeHash(fr.File, actualDedupeHash)
             End If
-            If HashOnWrite Then ApplyFastReaderHashes(fr, hashes)
+            'Same reason: checksums computed over the source would certify tape
+            'contents that are missing a block.
+            If HashOnWrite AndAlso Not IsWriteDegraded(fr.File) Then ApplyFastReaderHashes(fr, hashes)
             Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSWriter))
                 Using categoryScope As IDisposable = LogContext.PushProperty("Category", "FastReader")
                     Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
@@ -8455,13 +8683,26 @@ Public Class LTFSWriter
                                                 referenceRecord = WriteList(currentPlan.NewReferenceIndex)
                                             End If
                                             If referenceRecord IsNot Nothing Then dupeFile = referenceRecord.File
-                                            If dupeFile Is Nothing OrElse dupeFile.extentinfo Is Nothing OrElse dupeFile.extentinfo.Count = 0 Then
+                                            'extentinfo.Count cannot detect an unwritten canonical, because the extent
+                                            'is appended before the data is written.  An in-batch canonical always has a
+                                            'lower WriteList index than its duplicate and the loop exits on any failure,
+                                            'so by the time this runs the canonical has either been marked completed or
+                                            'is unreachable - which makes both markers meaningful on this path.
+                                            If dupeFile Is Nothing OrElse dupeFile.extentinfo Is Nothing OrElse dupeFile.extentinfo.Count = 0 OrElse
+                                               Not IsWriteFileCompleted(dupeFile) OrElse IsWriteDegraded(dupeFile) Then
                                                 Throw New IO.IOException($"Dedupe reference was not written successfully: {fr.SourcePath}")
                                             End If
                                         End If
                                         If dupeFile Is Nothing Then Throw New IO.IOException($"Missing dedupe reference: {fr.SourcePath}")
                                         If dupeFile.extentinfo Is Nothing OrElse dupeFile.extentinfo.Count = 0 Then
                                             Throw New IO.IOException($"Dedupe reference has no extent: {fr.SourcePath}")
+                                        End If
+                                        'Catch-all for every way dupeFile can be resolved.  IsWriteFileCompleted is
+                                        'deliberately NOT tested here: a cross-session reference is rebuilt from the
+                                        'on-tape index and is never in the completion set, so requiring it would
+                                        'reject every legitimate cross-session dedupe hit.
+                                        If IsWriteDegraded(dupeFile) Then
+                                            Throw New IO.IOException($"Dedupe reference was not written successfully: {fr.SourcePath}")
                                         End If
                                         CopyDedupeMetadata(fr.File, dupeFile)
                                         SetFileDedupeHash(fr.File, currentPlan.ExpectedDedupeHash)
@@ -8489,6 +8730,16 @@ Public Class LTFSWriter
                                             PipeDrain(provider.Reader, fr.File.length)
                                         End If
                                     Else
+                                        ' A data-partition record always covers a whole file, so it gets exactly one
+                                        ' extent.  With LTFSWriter_KeepUnwrittenFilesOnAbort the same FileRecord is
+                                        ' re-queued after an abort, and the append below would then leave it with two
+                                        ' extents both claiming fileoffset 0 - which GetExtractionExtents misreads as
+                                        ' an LTFS 1.0 index and rejects, failing the restore.  Segmented records
+                                        ' (FileOffset > 0) legitimately append, so leave those alone.
+                                        If fr.FileOffset = 0 Then
+                                            If fr.File.extentinfo IsNot Nothing AndAlso fr.File.extentinfo.Count > 0 Then fr.File.extentinfo.Clear()
+                                            fr.File.WrittenBytes = 0
+                                        End If
                                         Dim fileextent As New ltfsindex.file.extent With
                                             {.partition = CType(DataPartition, ltfsindex.PartitionLabel),
                                             .startblock = CLng(p.BlockNumber),
@@ -8523,6 +8774,14 @@ Public Class LTFSWriter
                                             fileextent.startblock = DumpDataToIndexPartition(fr.fs, False, IsFirstFile, IsLastFile, tarDataRead)
                                             fr.Close()
                                             If IsLastFile Then TapeUtils.Locate(driveHandle, lastpos.BlockNumber, lastpos.PartitionNumber)
+                                            ' -1 is DumpDataToIndexPartition's failure sentinel. Adding it as an extent
+                                            ' would record a negative startblock in the index while the file is still
+                                            ' counted as fully written and hashed as a success, so the loss only shows up
+                                            ' at restore time. Fail the file instead: the per-file handler reports the
+                                            ' error, sets StopFlag and leaves the loop. Checked after fr.Close() and the
+                                            ' Locate above so the source handle is released and the drive has left the
+                                            ' index partition before the exception unwinds.
+                                            If fileextent.startblock < 0 Then Throw New IO.IOException($"Index partition dump failed: {fr.SourcePath}")
                                         Else
                                             If p.PartitionNumber <> lastpos.PartitionNumber OrElse p.BlockNumber <> lastpos.BlockNumber Then
                                                 TapeUtils.Locate(driveHandle, lastpos.BlockNumber, lastpos.PartitionNumber)
@@ -8612,6 +8871,8 @@ Public Class LTFSWriter
                                                         Case DialogResult.Retry
                                                             succ = False
                                                         Case DialogResult.Ignore
+                                                            'This block was never written, so the file is incomplete.
+                                                            MarkWriteDegraded(fr.File)
                                                             succ = True
                                                             Exit While
                                                     End Select
@@ -8619,13 +8880,20 @@ Public Class LTFSWriter
                                                     Continue While
                                                 End Try
                                                 If ((sense(2) >> 6) And &H1) = 1 Then
-                                                    If ((sense(2) And &HF) = 13) AndAlso (Not My.Settings.LTFSWriter_IgnoreVolumeOverflow) Then
+                                                    ' Sense key 0xD (VOLUME OVERFLOW) means the medium is full and the drive did NOT write
+                                                    ' this block. Accepting it would commit index extents and per-file checksums for data
+                                                    ' that is absent from tape, so it must stop the job whatever IgnoreVolumeOverflow says;
+                                                    ' the setting now only suppresses the modal dialog.
+                                                    If ((sense(2) And &HF) = 13) Then
                                                         PrintMsg(My.Resources.ResText_VOF, IsWarn:=True)
-                                                        Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_VOF))
+                                                        If Not My.Settings.LTFSWriter_IgnoreVolumeOverflow Then
+                                                            Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_VOF))
+                                                        End If
                                                         StopFlag = True
                                                         Exit For
                                                     Else
-                                                        PrintMsg(If(((sense(2) And &HF) = 13), My.Resources.ResText_VOF, My.Resources.ResText_EWEOM), ShowOnWarningLabel:=True, DeDupe:=True)
+                                                        ' Key 0xD now stops above, so this branch is the EOM early warning only: the block WAS written.
+                                                        PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
                                                         succ = True
                                                         Exit While
                                                     End If
@@ -8644,6 +8912,8 @@ Public Class LTFSWriter
                                                             Case DialogResult.Retry
                                                                 succ = False
                                                             Case DialogResult.Ignore
+                                                                'This block was never written, so the file is incomplete.
+                                                                MarkWriteDegraded(fr.File)
                                                                 succ = True
                                                                 Exit While
                                                         End Select
@@ -8654,7 +8924,9 @@ Public Class LTFSWriter
                                                     succ = True
                                                 End If
                                             End While
-                                            If succ AndAlso HashOnWrite Then
+                                            'A refused block means the bytes on tape are not the bytes that were
+                                            'hashed, so do not publish checksums for them.
+                                            If succ AndAlso HashOnWrite AndAlso Not IsWriteDegraded(fr.File) Then
                                                 Dim hashTask As Task = Task.Factory.StartNew(
                                                       Sub(state As Object)
                                                           Dim hashState = DirectCast(state, Tuple(Of FileRecord, Byte()))
@@ -8730,8 +9002,12 @@ Public Class LTFSWriter
 
                                                 ' 从 Pipe 读取当前文件需要的字节
                                                 Try
+                                                    ' 防磨带门控：下面的 While PipePause 原先只在 Else 分支内，而 RingBufferEnabled 默认为 True，
+                                                    ' 所以环形缓冲路径上它从未执行——每读满一个块就立刻发出 SCSI WRITE，驱动器无法积累缓冲余量而持续回绕。
+                                                    ' 现在两条路径在取数之前各有一个等水位的环节：环形缓冲走 WaitForRingRefill，Pipe 仍走原来的 While PipePause。
                                                     If RingBufferEnabled Then
-                                                        BytesReaded = PipeReadExactly(RingBufferReader, buffer, toRead)
+                                                        ' 环形缓冲的容量与完成标志不在 PipeBufferLength 里，交由专用例程判水位；委托是因为两种 Provider 没有公共接口
+                                                        WaitForRingRefill(RingBufferReader, Function() provider.ProducerCompleted)
                                                     Else
                                                         Dim pCounter1 As Integer = 0
                                                         Dim pCounter2 As Integer = 0
@@ -8741,6 +9017,11 @@ Public Class LTFSWriter
                                                             Threading.Interlocked.Increment(pCounter1)
                                                             pCounter1 += 1
                                                             pCounter2 += 1
+                                                            ' 生产端已结束时缓冲区不可能再回填，立即放行，否则要空等下面那条 10 秒的 lastlen 逃生分支
+                                                            If provider.ProducerCompleted Then
+                                                                PipePause = False
+                                                                Exit While
+                                                            End If
                                                             If pCounter1 >= 100 Then
                                                                 pCounter1 = 0
                                                                 If RingBufferEnabled Then
@@ -8761,13 +9042,16 @@ Public Class LTFSWriter
                                                                 End If
                                                             End If
                                                         End While
-                                                        If StopFlag Then
-                                                            IOManager.PublicArrayPool.Return(buffer)
-                                                            ExitWhileFlag = True
-                                                            Exit While
-                                                        End If
+                                                    End If
+                                                    If StopFlag Then
+                                                        IOManager.PublicArrayPool.Return(buffer)
+                                                        ExitWhileFlag = True
+                                                        Exit While
+                                                    End If
+                                                    If RingBufferEnabled Then
+                                                        BytesReaded = PipeReadExactly(RingBufferReader, buffer, toRead)
+                                                    Else
                                                         BytesReaded = PipeReadExactly(PipeReader, buffer, toRead)
-
                                                     End If
                                                     If BytesReaded = 0 Then
                                                         IOManager.PublicArrayPool.Return(buffer)
@@ -8863,6 +9147,8 @@ Public Class LTFSWriter
                                                                          Case DialogResult.Retry
                                                                              succ = False
                                                                          Case DialogResult.Ignore
+                                                                             'This block was never written, so the file is incomplete from here on.
+                                                                             MarkWriteDegraded(fr.File)
                                                                              succ = True
                                                                              Exit While
                                                                      End Select
@@ -8870,9 +9156,15 @@ Public Class LTFSWriter
                                                                      Continue While
                                                                  End Try
                                                                  If (((sense(2) >> 6) And &H1) = 1) Then
-                                                                     If ((sense(2) And &HF) = 13) AndAlso (Not My.Settings.LTFSWriter_IgnoreVolumeOverflow) Then
+                                                                     ' Sense key 0xD (VOLUME OVERFLOW) means the medium is full and the drive did NOT write
+                                                                     ' this block. Accepting it would commit index extents and per-file checksums for data
+                                                                     ' that is absent from tape, so it must stop the job whatever IgnoreVolumeOverflow says;
+                                                                     ' the setting now only suppresses the modal dialog.
+                                                                     If ((sense(2) And &HF) = 13) Then
                                                                          PrintMsg(My.Resources.ResText_VOF, IsWarn:=True)
-                                                                         Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_VOF))
+                                                                         If Not My.Settings.LTFSWriter_IgnoreVolumeOverflow Then
+                                                                             Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_VOF))
+                                                                         End If
                                                                          StopFlag = True
                                                                          Try
                                                                              PipeBufferLength = 0
@@ -8883,7 +9175,8 @@ Public Class LTFSWriter
                                                                          End Try
                                                                          Exit Sub
                                                                      Else
-                                                                         PrintMsg(If(((sense(2) And &HF) = 13), My.Resources.ResText_VOF, My.Resources.ResText_EWEOM), ShowOnWarningLabel:=True, DeDupe:=True)
+                                                                         ' Key 0xD now stops above, so this branch is the EOM early warning only: the block WAS written.
+                                                                         PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
                                                                          succ = True
                                                                          Exit While
                                                                      End If
@@ -8900,6 +9193,8 @@ Public Class LTFSWriter
                                                                              Case DialogResult.Retry
                                                                                  succ = False
                                                                              Case DialogResult.Ignore
+                                                                                 'This block was never written, so the file is incomplete from here on.
+                                                                                 MarkWriteDegraded(fr.File)
                                                                                  succ = True
                                                                                  Exit While
                                                                          End Select
@@ -9023,7 +9318,9 @@ Public Class LTFSWriter
                                                 writeTasks.Remove(LastWriteTask)
                                             End If
                                             fr.Close()
-                                            If HashOnWrite AndAlso sh IsNot Nothing AndAlso Not StopFlag Then
+                                            'A refused block means the bytes on tape are not the bytes that were
+                                            'hashed, so do not publish checksums for them.
+                                            If HashOnWrite AndAlso sh IsNot Nothing AndAlso Not StopFlag AndAlso Not IsWriteDegraded(fr.File) Then
                                                 Dim hashTask As Task = Task.Factory.StartNew(
                                                       Sub(state As Object)
                                                           Dim hashState = DirectCast(state, Tuple(Of FileRecord, IOManager.CheckSumBlockwiseCalculator))
@@ -9058,12 +9355,24 @@ Public Class LTFSWriter
                                                 sh.StopFlag = True
                                             End If
                                         End If
-                                        If Not String.IsNullOrEmpty(currentPlan.ExpectedDedupeHash) Then
+                                        'Only publish the pre-scan dedupe hash when the drive accepted every byte:
+                                        'the extent is pre-declared at full length, so stamping a full-content hash
+                                        'onto an incomplete file makes the truncation undetectable and poisons the
+                                        'dedupe catalog, which later sessions read back as ground truth.  The last
+                                        'write task is awaited above, so WrittenBytes is final here.  FileOffset is
+                                        'always 0 and SegmentLength always equals length in this build; if segmented
+                                        'writes are introduced, compare against fr.FileOffset + fr.SegmentLength.
+                                        If Not String.IsNullOrEmpty(currentPlan.ExpectedDedupeHash) AndAlso
+                                           Not IsWriteDegraded(fr.File) AndAlso
+                                           fr.File.WrittenBytes = fr.File.length Then
                                             SetFileDedupeHash(fr.File, currentPlan.ExpectedDedupeHash)
                                         End If
                                         p = New TapeUtils.PositionData(driveHandle)
                                         If Not IsIndexPartition Then
-                                            lastpos = New TapeUtils.PositionData(driveHandle)
+                                            ' Snapshot the position read on the line above instead of issuing a
+                                            ' second, identical READ POSITION - nothing moves the tape between
+                                            ' them.  Copy, never alias: p is mutated in place under SyncLock p.
+                                            lastpos = New TapeUtils.PositionData(p)
                                             CurrentHeight = CLng(p.BlockNumber)
                                         End If
                                         If p.EOP Then PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
@@ -9079,6 +9388,33 @@ Public Class LTFSWriter
                                     fr.File.SetXattr(ltfsindex.file.xattr.HashType.XxHash3, "2D06800538D394C2")
                                     fr.File.SetXattr(ltfsindex.file.xattr.HashType.XxHash128, IOManager.Byte2Hex(IO.Hashing.XxHash128.Hash({})).Replace(" ", "").Replace("|", "").ToUpper())
                                     TotalBytesUnindexed += 1
+                                End If
+                                ' A write cut short mid-file (operator Cancel, or VOLUME OVERFLOW
+                                ' with the default IgnoreVolumeOverflow=False) leaves the extent
+                                ' that was built before any data was written still claiming the
+                                ' file's full length.  Committing that record publishes an index
+                                ' entry of the right size whose tail is silently read back from
+                                ' whatever follows on tape, so discard the record instead and let
+                                ' it stay in the pending queue, which LTFSWriter_KeepUnwrittenFilesOnAbort
+                                ' then retains or clears - the same thing the fast-reader and
+                                ' single-block branches already do when their write is aborted.
+                                ' Duplicate plans are excluded: their extents are copied from the
+                                ' reference file, so WrittenBytes legitimately stays at 0.
+                                Dim expectedWritten As Long = If(useFastReader, fr.File.length, fr.SegmentLength)
+                                If currentPlan.Kind <> PlannedWriteKind.Duplicate AndAlso
+                                    fr.File.length > 0 AndAlso
+                                    fr.File.WrittenBytes < expectedWritten Then
+                                    PrintMsg($"Discarding incomplete file {fr.File.name} ({fr.SourcePath}): {fr.File.WrittenBytes}/{expectedWritten} bytes written", IsWarn:=True)
+                                    ' Drop the over-long extent and reset the counter so that a retry
+                                    ' of this same record starts clean and cannot satisfy the test
+                                    ' above with bytes carried over from this attempt.
+                                    If fr.File.extentinfo IsNot Nothing Then fr.File.extentinfo.Clear()
+                                    fr.File.WrittenBytes = 0
+                                    fr.File.MarkLazyRecordDirty()
+                                    ' Required: a short read can end the block loop without setting
+                                    ' StopFlag, and the job would then be reported as finished.
+                                    StopFlag = True
+                                    Exit For
                                 End If
                                 If tarScanner IsNot Nothing AndAlso Not StopFlag Then
                                     CommitTarMetadata(fr, tarScanner)
@@ -9129,7 +9465,8 @@ Public Class LTFSWriter
                                     completedWriteRecords.Clear()
                                     If CheckUnindexedDataLimit() Then
                                         p = New TapeUtils.PositionData(driveHandle)
-                                        lastpos = New TapeUtils.PositionData(driveHandle)
+                                        ' Same redundant pair: snapshot instead of a second READ POSITION.
+                                        lastpos = New TapeUtils.PositionData(p)
                                         CurrentHeight = CLng(p.BlockNumber)
                                         SetStatusLight(LWStatus.Busy)
                                     End If
@@ -9436,16 +9773,50 @@ Public Class LTFSWriter
                     PrintMsg($"Position = {CurrentPos.ToString()}", LogOnly:=True)
                     If CurrentPos.PartitionNumber < ExtraPartitionCount Then
                         Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_IPCanc))
+                        ' Nothing was written on this path, so take the light out of Busy without
+                        ' claiming success - the epilogue no longer does it for us.
+                        SetStatusLight(LWStatus.Idle)
                         Exit Try
                     End If
+                    ' WriteFileMark below sets EOD and discards every block beyond it; that cannot be
+                    ' undone.  So validate the index we just read back BEFORE touching the tape: if it
+                    ' is empty, unparseable, or not the index we located to, the tape must be left as
+                    ' it is.  NativeSchemaXml.LoadIndex throws on a bad schema, whereas
+                    ' ltfsindex.FromSchFile swallows the error, pops a modal dialog on this worker
+                    ' thread and returns Nothing - which used to be assigned straight into schema,
+                    ' losing the in-memory index too, leaving nothing left to re-write.
+                    PrintMsg(My.Resources.ResText_AI)
+                    Dim readBack As New IO.FileInfo(outputfile)
+                    If Not readBack.Exists OrElse readBack.Length = 0 Then
+                        Throw New IO.InvalidDataException($"Index read back from tape is empty: {outputfile}")
+                    End If
+                    Dim reloaded As ltfsindex = Nothing
+                    Try
+                        reloaded = NativeSchemaXml.LoadIndex(outputfile)
+                    Catch parseEx As Exception
+                        Throw New IO.InvalidDataException($"Index read back from tape is unusable: {outputfile}", parseEx)
+                    End Try
+                    If reloaded Is Nothing Then
+                        Throw New IO.InvalidDataException($"Index read back from tape is unusable: {outputfile}")
+                    End If
+                    ' A well-formed but WRONG index means the drive mispositioned, and setting EOD
+                    ' here would then truncate at the wrong block.  An index records where it lives,
+                    ' so it must match the location we located to above.  startblock 0 is never a
+                    ' valid index location, so treat it as "not recorded" and skip the comparison.
+                    If schema IsNot Nothing AndAlso schema.location IsNot Nothing AndAlso
+                        reloaded.location IsNot Nothing AndAlso
+                        schema.location.startblock <> 0UL AndAlso reloaded.location.startblock <> 0UL AndAlso
+                        (reloaded.location.partition <> schema.location.partition OrElse reloaded.location.startblock <> schema.location.startblock) Then
+                        Throw New IO.InvalidDataException($"Read-back index is p{reloaded.location.partition} block{reloaded.location.startblock}, expected p{schema.location.partition} block{schema.location.startblock}; refusing to set EOD")
+                    End If
+                    PrintMsg(My.Resources.ResText_AISucc)
+                    ' Only now is the destructive step safe.
                     TapeUtils.Locate(driveHandle, CULng(CurrentPos.BlockNumber - 1), CurrentPos.PartitionNumber, TapeUtils.LocateDestType.Block)
                     PrintMsg($"Position = {GetPos.ToString()}", LogOnly:=True)
                     TapeUtils.WriteFileMark(driveHandle)
                     PrintMsg($"FileMark written", LogOnly:=True)
                     PrintMsg($"Position = {GetPos.ToString()}", LogOnly:=True)
-                    PrintMsg(My.Resources.ResText_AI)
-                    schema = ltfsindex.FromSchFile(outputfile)
-                    PrintMsg(My.Resources.ResText_AISucc)
+                    schema = reloaded
                     Modified = False
                     Dim p As TapeUtils.PositionData = GetPos
                     PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
@@ -9468,14 +9839,18 @@ Public Class LTFSWriter
                     End While
                     RefreshDisplay()
                     RefreshCapacity()
+                    ' Success reporting has to live inside the Try.  Below End Try it also ran after
+                    ' the Catch, and after the Exit Try above, so a failed or cancelled set-EOD still
+                    ' cleared Modified - suppressing the prompt in LTFSWriter_Closing - and painted
+                    ' the status light green.  The duplicate Modified = False is dropped; it is already
+                    ' cleared above, once the validated index is actually in place.
+                    PrintMsg(My.Resources.ResText_RollBacked)
+                    SetStatusLight(LWStatus.Succ)
                 Catch ex As Exception
                     PrintMsg(My.Resources.ResText_RFailed, IsWarn:=True)
                     PrintMsg(ex.ToString(), LogOnly:=True, IsWarn:=True)
                     SetStatusLight(LWStatus.Err)
                 End Try
-                Modified = False
-                PrintMsg(My.Resources.ResText_RollBacked)
-                SetStatusLight(LWStatus.Succ)
                 Try
                     Dim Loc As String = GetLocInfo()
                     Invoke(Sub() Text = Loc)
@@ -9516,7 +9891,24 @@ Public Class LTFSWriter
                     TapeUtils.ReadToFileMark(driveHandle, outputfile, plabel.blocksize)
                     PrintMsg($"Position = {GetPos.ToString()}", LogOnly:=True)
                     PrintMsg(My.Resources.ResText_AI)
-                    schema = ltfsindex.FromSchFile(outputfile)
+                    ' Load into a local and check it before replacing schema: FromSchFile returns
+                    ' Nothing on an unreadable read-back, so assigning it directly threw away the
+                    ' still-good in-memory index and then NullReferenced on schema.generationnumber
+                    ' below.  LoadIndex throws instead of swallowing, so the Catch sees the cause.
+                    Dim readBack As New IO.FileInfo(outputfile)
+                    If Not readBack.Exists OrElse readBack.Length = 0 Then
+                        Throw New IO.InvalidDataException($"Index read back from tape is empty: {outputfile}")
+                    End If
+                    Dim reloaded As ltfsindex = Nothing
+                    Try
+                        reloaded = NativeSchemaXml.LoadIndex(outputfile)
+                    Catch parseEx As Exception
+                        Throw New IO.InvalidDataException($"Index read back from tape is unusable: {outputfile}", parseEx)
+                    End Try
+                    If reloaded Is Nothing Then
+                        Throw New IO.InvalidDataException($"Index read back from tape is unusable: {outputfile}")
+                    End If
+                    schema = reloaded
                     PrintMsg(My.Resources.ResText_AISucc)
                     Modified = False
                     Dim p As TapeUtils.PositionData = GetPos
@@ -9537,6 +9929,9 @@ Public Class LTFSWriter
                               End Sub)
                     RefreshDisplay()
                     RefreshCapacity()
+                    ' Was below End Try, where it repainted the light green even after the Catch had
+                    ' set it red, so a failed rollback was indistinguishable from a successful one.
+                    SetStatusLight(LWStatus.Succ)
                 Catch ex As Exception
                     PrintMsg(My.Resources.ResText_RFailed, IsWarn:=True)
                     PrintMsg(ex.ToString(), LogOnly:=True, IsWarn:=True)
@@ -9551,7 +9946,6 @@ Public Class LTFSWriter
                               LockGUI(False)
                               PrintMsg(My.Resources.ResText_RBFin)
                           End Sub)
-                SetStatusLight(LWStatus.Succ)
             End Sub)
         LockGUI()
         th.Start()
@@ -14134,6 +14528,14 @@ Public Class LTFSWriter
                                             .bytecount = 0,
                                             .byteoffset = 0,
                                             .fileoffset = 0}
+                            ' This handler reuses a pending record that may already carry an extent from an
+                            ' aborted attempt - its abort tail never calls ClearPendingWriteQueues - so the
+                            ' append below would leave the file with two extents both claiming fileoffset 0.
+                            ' A record always covers a whole file here, so reset instead of accumulating.
+                            If fr.FileOffset = 0 Then
+                                If fr.File.extentinfo IsNot Nothing AndAlso fr.File.extentinfo.Count > 0 Then fr.File.extentinfo.Clear()
+                                fr.File.WrittenBytes = 0
+                            End If
                             fr.File.extentinfo.Add(fileextent)
                             PrintMsg($"{My.Resources.ResText_Writing} {fr.File.name}  {My.Resources.ResText_Size} {IOManager.FormatSize(fr.File.length)}", False,
                                  $"{My.Resources.ResText_Writing}: {fr.SourcePath}{vbCrLf}{My.Resources.ResText_Size}: {IOManager.FormatSize(fr.File.length)}{vbCrLf _
@@ -16429,8 +16831,12 @@ Public Class LTFSWriter
 
                                  ' 从 Pipe 读取当前文件需要的字节
                                  Try
+                                     ' 防磨带门控：下面的 While PipePause 原先只在 Else 分支内，而 RingBufferEnabled 默认为 True，
+                                     ' 所以环形缓冲路径上它从未执行——每读满一个块就立刻发出 SCSI WRITE，驱动器无法积累缓冲余量而持续回绕。
+                                     ' 现在两条路径在取数之前各有一个等水位的环节：环形缓冲走 WaitForRingRefill，Pipe 仍走原来的 While PipePause。
                                      If RingBufferEnabled Then
-                                         BytesReaded = PipeReadExactly(RingBufferReader, buffer, toRead)
+                                         ' 环形缓冲的容量与完成标志不在 PipeBufferLength 里，交由专用例程判水位；委托是因为两种 Provider 没有公共接口
+                                         WaitForRingRefill(RingBufferReader, Function() provider.ProducerCompleted)
                                      Else
                                          Dim pCounter1 As Integer = 0
                                          Dim pCounter2 As Integer = 0
@@ -16440,6 +16846,11 @@ Public Class LTFSWriter
                                              Threading.Interlocked.Increment(pCounter1)
                                              pCounter1 += 1
                                              pCounter2 += 1
+                                             ' 生产端已结束时缓冲区不可能再回填，立即放行，否则要空等下面那条 10 秒的 lastlen 逃生分支
+                                             If provider.ProducerCompleted Then
+                                                 PipePause = False
+                                                 Exit While
+                                             End If
                                              If pCounter1 >= 100 Then
                                                  pCounter1 = 0
                                                  If RingBufferEnabled Then
@@ -16460,13 +16871,16 @@ Public Class LTFSWriter
                                                  End If
                                              End If
                                          End While
-                                         If StopFlag Then
-                                             IOManager.PublicArrayPool.Return(buffer)
-                                             ExitWhileFlag = True
-                                             Exit While
-                                         End If
+                                     End If
+                                     If StopFlag Then
+                                         IOManager.PublicArrayPool.Return(buffer)
+                                         ExitWhileFlag = True
+                                         Exit While
+                                     End If
+                                     If RingBufferEnabled Then
+                                         BytesReaded = PipeReadExactly(RingBufferReader, buffer, toRead)
+                                     Else
                                          BytesReaded = PipeReadExactly(PipeReader, buffer, toRead)
-
                                      End If
                                      If BytesReaded = 0 Then
                                          IOManager.PublicArrayPool.Return(buffer)
@@ -16563,9 +16977,15 @@ Public Class LTFSWriter
                                                       Continue While
                                                   End Try
                                                   If (((sense(2) >> 6) And &H1) = 1) Then
-                                                      If ((sense(2) And &HF) = 13) AndAlso (Not My.Settings.LTFSWriter_IgnoreVolumeOverflow) Then
+                                                      ' Sense key 0xD (VOLUME OVERFLOW) means the medium is full and the drive did NOT write
+                                                      ' this block. Accepting it would commit index extents and per-file checksums for data
+                                                      ' that is absent from tape, so it must stop the job whatever IgnoreVolumeOverflow says;
+                                                      ' the setting now only suppresses the modal dialog.
+                                                      If ((sense(2) And &HF) = 13) Then
                                                           PrintMsg(My.Resources.ResText_VOF, IsWarn:=True)
-                                                          Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_VOF))
+                                                          If Not My.Settings.LTFSWriter_IgnoreVolumeOverflow Then
+                                                              Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_VOF))
+                                                          End If
                                                           StopFlag = True
                                                           Try
                                                               PipeBufferLength = 0
@@ -16576,7 +16996,8 @@ Public Class LTFSWriter
                                                           End Try
                                                           Exit Sub
                                                       Else
-                                                          PrintMsg(If(((sense(2) And &HF) = 13), My.Resources.ResText_VOF, My.Resources.ResText_EWEOM), ShowOnWarningLabel:=True, DeDupe:=True)
+                                                          ' Key 0xD now stops above, so this branch is the EOM early warning only: the block WAS written.
+                                                          PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
                                                           succ = True
                                                           Exit While
                                                       End If

@@ -641,7 +641,7 @@ Public Class ChangerTool
                                                                                SCSIReadParam(TapeDrive:=drvMapping(drv).DevicePath, {4, 0, 1, 0, 0, 0}, 0, Function(s As Byte())
                                                                                                                                                                senseReturn = s
                                                                                                                                                                Return True
-                                                                                                                                                           End Function)
+                                                                                                                                                           End Function, timeout:=SCSI_TIMEOUT_FORMAT_SECONDS)
                                                                                Return senseReturn
                                                                            End Function, 1)
                                               SyncLock finList

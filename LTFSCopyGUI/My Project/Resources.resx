@@ -896,7 +896,7 @@ P0Size和P1Size如果都不为65535，则两者总和不得超过磁带容量</v
     <value>容量损失检测触发后等待毫秒数</value>
   </data>
   <data name="PropertyDescription_LTFSWriter_IgnoreVolumeOverflow" xml:space="preserve">
-    <value>忽略Volume Overflow</value>
+    <value>仅抑制Volume Overflow弹窗（任务仍会停止）</value>
   </data>
   <data name="PropertyDescription_LTFSWriter_ColumnIndex" xml:space="preserve">
     <value>列表顺序</value>
