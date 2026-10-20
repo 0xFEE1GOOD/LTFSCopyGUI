@@ -771,7 +771,7 @@ Public Class LTFSConfigurator
 
                                 'Format
                                 Invoke(Sub() TextBoxDebugOutput.AppendText("Partitioning.."))
-                                If TapeUtils.SendSCSICommand(ConfTapeDrive, {4, 0, 1, 0, 0, 0}, Nothing, 0) Then
+                                If TapeUtils.SendSCSICommand(ConfTapeDrive, {4, 0, 1, 0, 0, 0}, Nothing, 0, TimeOut:=TapeUtils.SCSI_TIMEOUT_FORMAT_SECONDS) Then
                                     Invoke(Sub() TextBoxDebugOutput.AppendText("     OK" & vbCrLf))
                                 Else
                                     Invoke(Sub() TextBoxDebugOutput.AppendText("     Fail" & vbCrLf))
@@ -822,7 +822,7 @@ Public Class LTFSConfigurator
                                 End If
                                 'Remove Partition
                                 Invoke(Sub() TextBoxDebugOutput.AppendText("Reinitializing.."))
-                                If TapeUtils.SendSCSICommand(ConfTapeDrive, {4, 0, 0, 0, 0, 0}) Then
+                                If TapeUtils.SendSCSICommand(ConfTapeDrive, {4, 0, 0, 0, 0, 0}, TimeOut:=TapeUtils.SCSI_TIMEOUT_FORMAT_SECONDS) Then
                                     Invoke(Sub() TextBoxDebugOutput.AppendText("     OK" & vbCrLf))
                                 Else
                                     Invoke(Sub() TextBoxDebugOutput.AppendText("     Fail" & vbCrLf))
@@ -1143,7 +1143,7 @@ Public Class LTFSConfigurator
                          Dim handle As IntPtr
                          SyncLock TapeUtils.GetSCSIOperationLock(ConfTapeDrive)
                              TapeUtils.OpenTapeDrive(ConfTapeDrive, handle)
-                             TapeUtils.TapeSCSIIOCtlUnmanaged(handle, cdb, data, 0, 1, 60000, senseData)
+                             TapeUtils.TapeSCSIIOCtlUnmanaged(handle, cdb, data, 0, 1, CUInt(TapeUtils.SCSI_TIMEOUT_DATA_SECONDS), senseData)
                              TapeUtils.CloseTapeDrive(handle)
                          End SyncLock
                          Marshal.FreeHGlobal(data)
@@ -2345,7 +2345,7 @@ DatasetResidue = {ts.CurrentSetResidueBytes}{vbCrLf}"
                      Dim handle As IntPtr
                      SyncLock TapeUtils.GetSCSIOperationLock(ConfTapeDrive)
                          TapeUtils.OpenTapeDrive(ConfTapeDrive, handle)
-                         TapeUtils.TapeSCSIIOCtlUnmanaged(handle, cdbData, data, 0, 1, 60000, senseData)
+                         TapeUtils.TapeSCSIIOCtlUnmanaged(handle, cdbData, data, 0, 1, CUInt(TapeUtils.SCSI_TIMEOUT_FORMAT_SECONDS), senseData)
                          TapeUtils.CloseTapeDrive(handle)
                      End SyncLock
                      Marshal.FreeHGlobal(data)
@@ -2365,7 +2365,7 @@ DatasetResidue = {ts.CurrentSetResidueBytes}{vbCrLf}"
                      Dim handle As IntPtr
                      SyncLock TapeUtils.GetSCSIOperationLock(ConfTapeDrive)
                          TapeUtils.OpenTapeDrive(ConfTapeDrive, handle)
-                         TapeUtils.TapeSCSIIOCtlUnmanaged(handle, cdbData, data, 0, 1, 60000, senseData)
+                         TapeUtils.TapeSCSIIOCtlUnmanaged(handle, cdbData, data, 0, 1, CUInt(TapeUtils.SCSI_TIMEOUT_DEFAULT_SECONDS), senseData)
                          TapeUtils.CloseTapeDrive(handle)
                      End SyncLock
                      Marshal.FreeHGlobal(data)

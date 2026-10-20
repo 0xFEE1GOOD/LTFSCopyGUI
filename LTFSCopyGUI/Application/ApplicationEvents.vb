@@ -312,7 +312,8 @@ Namespace My
                                 Dim cdb As Byte() = IOManager.HexStringToByteArray(param(i + 2))
                                 Dim data As Byte() = IOManager.HexStringToByteArray(param(i + 3))
                                 Dim dataDir As Byte = Byte.Parse(param(i + 4))
-                                Dim TimeOut As Integer = 60000
+                                ' Seconds, as SCSI_PASS_THROUGH_DIRECT expects; overridable on the command line.
+                                Dim TimeOut As Integer = TapeUtils.SCSI_TIMEOUT_DEFAULT_SECONDS
                                 If i + 5 <= param.Length - 1 Then
                                     TimeOut = Integer.Parse(param(i + 5))
                                 End If
@@ -841,7 +842,8 @@ dataDir:{dataDir}
                                 Dim cdb As Byte() = IOManager.HexStringToByteArray(param(i + 4))
                                 Dim data As Byte() = IOManager.HexStringToByteArray(param(i + 5))
                                 Dim dataDir As Byte = CByte(Val(param(i + 6)))
-                                Dim TimeOut As Integer = 60000
+                                ' Seconds, as SCSI_PASS_THROUGH_DIRECT expects; overridable on the command line.
+                                Dim TimeOut As Integer = TapeUtils.SCSI_TIMEOUT_DEFAULT_SECONDS
                                 If i + 7 <= param.Length - 1 Then
                                     TimeOut = CInt(Val(param(i + 7)))
                                 End If
