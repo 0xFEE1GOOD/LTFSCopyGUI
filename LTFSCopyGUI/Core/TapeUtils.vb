@@ -484,6 +484,23 @@ Public Class TapeUtils
         End Select
 
     End Function
+
+    ''' <summary>
+    ''' Drains a pending UNIT ATTENTION (sense key 6) by issuing TEST UNIT READY until it clears.
+    ''' A medium-state change - FORMAT MEDIUM completing, a partition MODE SELECT, a load - makes
+    ''' the drive report UNIT ATTENTION on the NEXT command and ABORT that command WITHOUT
+    ''' executing it. Draining it here lets the following write be judged on its own result
+    ''' instead of inheriting a stale notification.
+    ''' Deliberately does NOT treat key 6 as success: under UNIT ATTENTION the command did not
+    ''' run, so accepting it would silently skip the write it was meant to verify.
+    ''' </summary>
+    Public Shared Sub ClearUnitAttention(handle As IntPtr, Optional MaxTries As Integer = 8)
+        For i As Integer = 1 To MaxTries
+            Dim s As Byte() = TestUnitReady(handle)
+            If s Is Nothing OrElse s.Length < 3 Then Exit Sub
+            If (s(2) And &HF) <> 6 Then Exit Sub
+        Next
+    End Sub
     Public Shared Function CheckSwitchConfig(handle As IntPtr) As Boolean
         Return CheckSwitchConfig(Inquiry(handle))
     End Function
@@ -8230,6 +8247,10 @@ Public Class TapeUtils
                     Else
                         If SendSCSICommand(handle, {4, 0, 0, 0, 0, 0}, senseReport:=senseReportFunc, TimeOut:=SCSI_TIMEOUT_FORMAT_SECONDS) Then
                             ProgressReport("Initialization OK" & vbCrLf)
+                            ' FORMAT MEDIUM completing raises UNIT ATTENTION on the next command, which the
+                            ' drive then aborts without executing. Drain it so the label writes below are
+                            ' judged on their own sense rather than failing on a stale notification.
+                            ClearUnitAttention(handle)
                         Else
                             OnError("Initialization Fail" & vbCrLf)
                             Return False
@@ -8355,6 +8376,9 @@ Public Class TapeUtils
                     SetEncryption(handle, EncryptionKey, SenseReport:=senseReportFunc)
                     'Write VOL1Label
                     ProgressReport("Write VOL1Label..")
+                    ' The partition MODE SELECT above is also a medium-state change, so drain any
+                    ' UNIT ATTENTION it raised before the first real write of the label sequence.
+                    ClearUnitAttention(handle)
                     Dim WriteSenseData As Byte() = Write(handle, New Vol1Label().GenerateRawData(Barcode))
                     If writeOkFunc(WriteSenseData) Then
                         ProgressReport("Write VOL1Label OK" & vbCrLf)
