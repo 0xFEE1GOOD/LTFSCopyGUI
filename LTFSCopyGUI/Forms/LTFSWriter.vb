@@ -4614,6 +4614,12 @@ Public Class LTFSWriter
 
         SetStatusLight(LWStatus.Succ)
     End Sub
+    ''' <summary>The post-write index update failed: report it and mark the job failed (red light).</summary>
+    Private Sub OnWriteFinishedFailed(ex As Exception)
+        PrintMsg($"{ex.ToString()}{vbCrLf}{ex.StackTrace}", IsWarn:=True)
+        SetStatusLight(LWStatus.Err)
+        StopFlag = True
+    End Sub
     Public Sub OnWriteFinished()
         If WA0ToolStripMenuItem.Checked Then Exit Sub
         If WA1ToolStripMenuItem.Checked Then
@@ -4625,8 +4631,7 @@ Public Class LTFSWriter
                     TapeUtils.Flush(driveHandle)
                 End If
             Catch ex As Exception
-                PrintMsg($"{ex.ToString()}{vbCrLf}{ex.StackTrace}", IsWarn:=True)
-                SetStatusLight(LWStatus.Err)
+                OnWriteFinishedFailed(ex)
             End Try
             SilentMode = SilentBefore
             Exit Sub
@@ -4635,14 +4640,23 @@ Public Class LTFSWriter
             Dim SilentBefore As Boolean = SilentMode
             SilentMode = True
             SilentAutoEject = False
-            UpdataAllIndex()
-            SilentMode = SilentBefore
+            Try
+                UpdataAllIndex()
+            Catch ex As Exception
+                OnWriteFinishedFailed(ex)
+            Finally
+                SilentMode = SilentBefore
+            End Try
             Exit Sub
         End If
         If WA3ToolStripMenuItem.Checked Then
             SilentMode = True
             SilentAutoEject = True
-            UpdataAllIndex()
+            Try
+                UpdataAllIndex()
+            Catch ex As Exception
+                OnWriteFinishedFailed(ex)
+            End Try
             Exit Sub
         End If
     End Sub
@@ -9599,6 +9613,7 @@ Public Class LTFSWriter
                         Dim TimeCost As TimeSpan = Now - StartTime
                         OnWriteFinishMessage = ($"{My.Resources.ResText_WFTime}{(Math.Floor(TimeCost.TotalHours)).ToString().PadLeft(2, "0"c)}:{TimeCost.Minutes.ToString().PadLeft(2, "0"c)}:{TimeCost.Seconds.ToString().PadLeft(2, "0"c)} {My.Resources.ResText_AvgS}{IOManager.FormatSize(TotalBytesWritten \ CLng(Math.Max(1, TimeCost.TotalSeconds)))}/s")
                         OnWriteFinished()
+                        If StopFlag Then OnWriteFinishMessage = My.Resources.ResText_DPIWFailed ' index update failed
                     Else
                         OnWriteFinishMessage = (My.Resources.ResText_WCnd)
                     End If
@@ -9625,6 +9640,9 @@ Public Class LTFSWriter
                     Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"{My.Resources.ResText_WErr}{vbCrLf}{ex.ToString}"))
                     PrintMsg($"{My.Resources.ResText_WErr}{ex.Message}", IsWarn:=True)
                     SetStatusLight(LWStatus.Err)
+                    ' The success text may already be set; without this the job ended green and "finished".
+                    StopFlag = True
+                    OnWriteFinishMessage = $"{My.Resources.ResText_WErr}{ex.Message}"
                 Finally
                     If locateTask IsNot Nothing Then
                         Try
@@ -17301,6 +17319,7 @@ Public Class LTFSWriter
                              Dim TimeCost As TimeSpan = Now - StartTime
                              OnWriteFinishMessage = ($"{My.Resources.ResText_WFTime}{(Math.Floor(TimeCost.TotalHours)).ToString().PadLeft(2, "0"c)}:{TimeCost.Minutes.ToString().PadLeft(2, "0"c)}:{TimeCost.Seconds.ToString().PadLeft(2, "0"c)} {My.Resources.ResText_AvgS}{IOManager.FormatSize(TotalBytesWritten \ CLng(Math.Max(1, TimeCost.TotalSeconds)))}/s")
                              OnWriteFinished()
+                             If StopFlag Then OnWriteFinishMessage = My.Resources.ResText_DPIWFailed ' index update failed
                          Else
                              OnWriteFinishMessage = (My.Resources.ResText_WCnd)
                          End If
