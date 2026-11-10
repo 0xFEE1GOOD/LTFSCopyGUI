@@ -5992,11 +5992,41 @@ Public Class LTFSWriter
         End While
     End Sub
 
+    ' Last tape record read by RestoreExtractionExtent (see the single-record branch there).
+    Private _extractCache As Byte()
+    Private _extractCacheBlock As Long = -1
+    Private _extractCachePartition As Byte
     Private Sub RestoreExtractionExtent(work As ExtractionExtentWork,
                                        blockSize As Long)
         If work Is Nothing OrElse work.FileWork Is Nothing OrElse work.Extent Is Nothing Then Return
         Dim extent As ltfsindex.file.extent = work.Extent
         If extent.bytecount <= 0 Then Return
+
+        ' A record can hold several packed small files. Read a single-record extent whole and keep
+        ' the last record, so the next file in the same record needs no LOCATE back to it.
+        If extent.byteoffset + extent.bytecount <= blockSize Then
+            Dim part As Byte = work.PhysicalPartition
+            If _extractCache Is Nothing OrElse _extractCacheBlock <> extent.startblock OrElse _extractCachePartition <> part Then
+                EnsureExtractionPosition(extent)
+                Dim sense As Byte() = Nothing
+                Dim record As Byte() = TapeUtils.ReadBlock(driveHandle, sense, CUInt(blockSize), True)
+                If sense IsNot Nothing AndAlso sense.Length > 2 AndAlso (sense(2) And &HF) > 1 Then Throw New IO.IOException(TapeUtils.ParseSenseData(sense))
+                AdvanceExtractionPosition()
+                _extractCache = record
+                _extractCacheBlock = extent.startblock
+                _extractCachePartition = part
+            End If
+            If _extractCache.Length < extent.byteoffset + extent.bytecount Then
+                Throw New IO.InvalidDataException($"{work.FileWork.Request.FileIndex.name}: record P{part} B{extent.startblock} has {_extractCache.Length} bytes, extent needs {extent.byteoffset + extent.bytecount}")
+            End If
+            Using output As New IO.FileStream(work.FileWork.TempPath, IO.FileMode.Open, IO.FileAccess.ReadWrite, IO.FileShare.Read, 1048576, IO.FileOptions.RandomAccess)
+                output.Seek(extent.fileoffset, IO.SeekOrigin.Begin)
+                output.Write(_extractCache, CInt(extent.byteoffset), CInt(extent.bytecount))
+            End Using
+            Threading.Interlocked.Add(TotalBytesProcessed, extent.bytecount)
+            Threading.Interlocked.Add(CurrentBytesProcessed, extent.bytecount)
+            Return
+        End If
 
         EnsureExtractionPosition(extent)
         PrintMsg($"Extent {work.ExtentIndex}: P={work.PhysicalPartition} B={extent.startblock} BO={extent.byteoffset} BC={extent.bytecount} FO={extent.fileoffset}", LogOnly:=True)
@@ -6213,6 +6243,7 @@ Public Class LTFSWriter
                                         outputRoot As String,
                                         Optional directoryRequests As List(Of ExtractionDirectoryRequest) = Nothing)
         If StopFlag Then Return
+        _extractCache = Nothing ' records may belong to another tape or session
         ValidateExtractionPaths(requests, outputRoot, directoryRequests)
         If StopFlag Then Return
         PrepareExtractionDirectories(directoryRequests)
@@ -8738,6 +8769,57 @@ Public Class LTFSWriter
 
                         Dim lastpos As New TapeUtils.PositionData(driveHandle)
                         Dim filesSincePosCheck As Integer = 0
+                        ' Block packing (LTFSWriter_PackSmallFiles): small files are copied into one record and
+                        ' written together; each extent points into it (startblock + byteoffset, LTFS "shared
+                        ' blocks"). A packed file is committed only after its record reached the tape.
+                        Dim packEnabled As Boolean = My.Settings.LTFSWriter_PackSmallFiles AndAlso Not useFastReader
+                        Dim packBuf As Byte() = If(packEnabled, New Byte(plabel.blocksize - 1) {}, Nothing)
+                        Dim packFill As Integer = 0
+                        Dim packPending As New List(Of FileRecord)
+                        Dim flushPack As Action =
+                            Sub()
+                                If packFill = 0 Then Return
+                                Dim why As String = Nothing
+                                Try
+                                    Dim record(packFill - 1) As Byte
+                                    Buffer.BlockCopy(packBuf, 0, record, 0, packFill)
+                                    Dim sense As Byte() = TapeUtils.Write(driveHandle, record)
+                                    If sense IsNot Nothing AndAlso sense.Length > 2 AndAlso (sense(2) And &HF) > 1 Then
+                                        why = TapeUtils.ParseSenseData(sense)
+                                    Else
+                                        SyncLock p
+                                            p.BlockNumber = CULng(p.BlockNumber + 1)
+                                        End SyncLock
+                                        lastpos = New TapeUtils.PositionData(p)
+                                        CurrentHeight = CLng(p.BlockNumber)
+                                        If sense IsNot Nothing AndAlso sense.Length > 2 AndAlso ((sense(2) >> 6) And &H1) = 1 Then
+                                            PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
+                                            EarlyWarningSeen = True
+                                        End If
+                                    End If
+                                Catch ex As Exception
+                                    why = ex.Message
+                                End Try
+                                If why Is Nothing Then
+                                    For Each r As FileRecord In packPending
+                                        MarkWriteFileCompleted(r.File)
+                                        completedWriteRecords.Add(r)
+                                    Next
+                                Else
+                                    ' The record is not on tape, so none of its files may be indexed.
+                                    PrintMsg($"Packed block write failed, {packPending.Count} file(s) not written: {why}", IsWarn:=True, ShowOnWarningLabel:=True)
+                                    For Each r As FileRecord In packPending
+                                        If r.File.extentinfo IsNot Nothing Then r.File.extentinfo.Clear()
+                                        r.File.WrittenBytes = 0
+                                        r.File.MarkLazyRecordDirty()
+                                    Next
+                                    SetStatusLight(LWStatus.Err)
+                                    StopFlag = True
+                                    p = New TapeUtils.PositionData(driveHandle)
+                                End If
+                                packPending.Clear()
+                                packFill = 0
+                            End Sub
                         TapeUtils.SetBlockSize(driveHandle, plabel.blocksize)
                         EarlyWarningSeen = False
                         For i As Integer = 0 To WriteList.Count - 1
@@ -8796,6 +8878,9 @@ Public Class LTFSWriter
                                     'If p.EOP Then PrintMsg(My.Resources.ResText_EWEOM.Text, True)
                                     Dim dupe As Boolean = currentPlan.Kind = PlannedWriteKind.Duplicate
                                     If dupe Then
+                                        ' A duplicate copies its reference's extents: never let it point into a record not yet on tape.
+                                        flushPack()
+                                        If StopFlag Then Exit For
                                         'A lazy existing-file match is kept as a
                                         'record location in the plan.  Open just
                                         'this reference now so dedupe metadata
@@ -8865,11 +8950,17 @@ Public Class LTFSWriter
                                             If fr.File.extentinfo IsNot Nothing AndAlso fr.File.extentinfo.Count > 0 Then fr.File.extentinfo.Clear()
                                             fr.File.WrittenBytes = 0
                                         End If
+                                        ' Pack whole small data-partition files. Any other write, and a file that does
+                                        ' not fit in the rest of the record, goes after the current record.
+                                        Dim packThis As Boolean = packEnabled AndAlso Not IsIndexPartition AndAlso fr.File.length <= plabel.blocksize AndAlso
+                                                                  fr.FileOffset = 0 AndAlso fr.File.length = fr.SegmentLength
+                                        If packFill > 0 AndAlso (Not packThis OrElse packFill + fr.File.length > plabel.blocksize) Then flushPack()
+                                        If StopFlag Then Exit For
                                         Dim fileextent As New ltfsindex.file.extent With
                                             {.partition = CType(DataPartition, ltfsindex.PartitionLabel),
                                             .startblock = CLng(p.BlockNumber),
                                             .bytecount = If(Not useFastReader, fr.SegmentLength, fr.File.length),
-                                            .byteoffset = 0,
+                                            .byteoffset = If(packThis, packFill, 0),
                                             .fileoffset = If(Not useFastReader, fr.FileOffset, 0)}
                                         If IsIndexPartition Then
                                             fr.File.extentinfo.Clear()
@@ -8984,6 +9075,13 @@ Public Class LTFSWriter
                                                 End Try
                                             End While
                                             'If i < WriteList.Count - 1 Then WriteList(i + 1).BeginOpen()
+                                            If packThis Then
+                                                ' Into the shared record; flushPack writes it and commits the file.
+                                                Buffer.BlockCopy(FileData, 0, packBuf, packFill, FileData.Length)
+                                                packFill += FileData.Length
+                                                packPending.Add(fr)
+                                                succ = True
+                                            End If
                                             While ((Not succ) AndAlso (Not IsIndexPartition))
                                                 Dim sense As Byte()
                                                 Try
@@ -9572,10 +9670,11 @@ Public Class LTFSWriter
                                 'Commit several completed files together.  The
                                 'lazy schema store can then update one mutation
                                 'and propagate one aggregate count per parent.
-                                MarkWriteFileCompleted(fr.File)
+                                Dim packedPending As Boolean = packPending.Contains(fr) ' committed by flushPack instead
+                                If Not packedPending Then MarkWriteFileCompleted(fr.File)
                                 Threading.Interlocked.Increment(TotalFilesProcessed)
                                 Threading.Interlocked.Increment(CurrentFilesProcessed)
-                                completedWriteRecords.Add(fr)
+                                If Not packedPending Then completedWriteRecords.Add(fr)
                                 If Not useFastReader Then
                                     ReleaseManagedWriteRecord(WriteList, i, dedupeReferenceUseCount)
                                 End If
@@ -9606,6 +9705,7 @@ Public Class LTFSWriter
                                     'hash workers and commit this batch before the
                                     'index is emitted, otherwise a crash/reload can
                                     'lose files that are already on tape.
+                                    flushPack() ' an index must never name data still in the pack record
                                     WaitForHashTasks(hashTasks)
                                     CommitWrittenFiles(completedWriteRecords)
                                     completedWriteRecords.Clear()
@@ -9683,6 +9783,7 @@ Public Class LTFSWriter
                                 Exit For
                             End If
                         Next
+                        flushPack() ' the last record (also after Cancel; a failed write discards its files)
                         WaitForHashTasks(hashTasks)
                         CommitWrittenFiles(completedWriteRecords)
                     End If

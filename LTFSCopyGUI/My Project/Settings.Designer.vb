@@ -588,6 +588,21 @@ Namespace My
         End Property
 
         <Global.System.Configuration.UserScopedSettingAttribute(),
+         Global.System.Configuration.SettingsDescriptionAttribute("Pack small files into shared tape blocks"),
+         Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
+         Global.System.Configuration.DefaultSettingValueAttribute("False"),
+         Category("LTFSWriter"),
+         LocalizedDescription("PropertyDescription_LTFSWriter_PackSmallFiles")>
+        Public Property LTFSWriter_PackSmallFiles() As Boolean
+            Get
+                Return CType(Me("LTFSWriter_PackSmallFiles"), Boolean)
+            End Get
+            Set(Value As Boolean)
+                Me("LTFSWriter_PackSmallFiles") = Value
+            End Set
+        End Property
+
+        <Global.System.Configuration.UserScopedSettingAttribute(),
          Global.System.Configuration.SettingsDescriptionAttribute("Ring buffer模式"),
          Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
          Global.System.Configuration.DefaultSettingValueAttribute("True"),

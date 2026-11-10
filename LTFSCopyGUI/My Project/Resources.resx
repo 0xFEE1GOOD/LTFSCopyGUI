@@ -998,6 +998,9 @@ P0Size和P1Size如果都不为65535，则两者总和不得超过磁带容量</v
   <data name="PropertyDescription_LTFSWriter_ExternalReaderEnabled" xml:space="preserve">
     <value>启用外部高速读取器（需要Windows 10及以上系统）</value>
   </data>
+  <data name="PropertyDescription_LTFSWriter_PackSmallFiles" xml:space="preserve">
+    <value>小文件打包写入共享磁带块（多个小文件合并为一次写入，可提升小文件写入速度）</value>
+  </data>
   <data name="PropertyDescription_LTFSWriter_EnrichTarMetadata" xml:space="preserve">
     <value>写入 tar 元数据索引</value>
   </data>
