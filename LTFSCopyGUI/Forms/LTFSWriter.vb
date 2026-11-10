@@ -303,6 +303,8 @@ Public Class LTFSWriter
     'index; track it here so it can neither become a dedupe source nor
     'publish content hashes.
     Private ReadOnly _degradedWriteFiles As New HashSet(Of ltfsindex.file)
+    ' Set when a WRITE reports the early-warning (EOM) zone; the write loop stops at the next file boundary.
+    Private EarlyWarningSeen As Boolean
     Private ReadOnly _validationColorCacheLock As New Object()
     Private ReadOnly _validationColorCache As New Dictionary(Of Long, Dictionary(Of String, Color))
     Private _validationColorCacheSchema As ltfsindex
@@ -8319,6 +8321,7 @@ Public Class LTFSWriter
                         Else
                             ' Key 0xD now stops above, so this branch is the EOM early warning only: the block WAS written.
                             PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
+                            EarlyWarningSeen = True
                             succ = True
                             Exit While
                         End If
@@ -8736,7 +8739,13 @@ Public Class LTFSWriter
                         Dim lastpos As New TapeUtils.PositionData(driveHandle)
                         Dim filesSincePosCheck As Integer = 0
                         TapeUtils.SetBlockSize(driveHandle, plabel.blocksize)
+                        EarlyWarningSeen = False
                         For i As Integer = 0 To WriteList.Count - 1
+                            If EarlyWarningSeen Then
+                                ' Early warning: stop at a file boundary while the index still fits; the rest stays queued.
+                                PrintMsg($"Tape nearly full (early warning): stopped before {WriteList.Count - i} remaining file(s) so the index can still be written", IsWarn:=True, ShowOnWarningLabel:=True)
+                                Exit For
+                            End If
                             If useFastReader AndAlso i > 0 Then ResetFastReaderBufferWait()
                             'If i < WriteList.Count - 1 Then
                             '    Dim CFNum As Integer = i
@@ -9011,6 +9020,7 @@ Public Class LTFSWriter
                                                     Else
                                                         ' Key 0xD now stops above, so this branch is the EOM early warning only: the block WAS written.
                                                         PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
+                                                        EarlyWarningSeen = True
                                                         succ = True
                                                         Exit While
                                                     End If
@@ -9300,6 +9310,7 @@ Public Class LTFSWriter
                                                                      Else
                                                                          ' Key 0xD now stops above, so this branch is the EOM early warning only: the block WAS written.
                                                                          PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
+                                                                         EarlyWarningSeen = True
                                                                          succ = True
                                                                          Exit While
                                                                      End If
@@ -9677,7 +9688,8 @@ Public Class LTFSWriter
                             If UFReadCount > 0 Then Continue While
                             UnwrittenSizeOverrideValue = 0
                             UnwrittenCountOverrideValue = 0
-                            If Not My.Settings.LTFSWriter_KeepUnwrittenFilesOnAbort Then
+                            ' After an early-warning stop keep the rest queued for the next tape.
+                            If Not My.Settings.LTFSWriter_KeepUnwrittenFilesOnAbort AndAlso Not EarlyWarningSeen Then
                                 ClearPendingWriteQueues()
                             Else
                                 UnwrittenSizeOverrideValue = UnwrittenSize
