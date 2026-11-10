@@ -8604,6 +8604,7 @@ Public Class LTFSWriter
                         Dim p As New TapeUtils.PositionData(driveHandle)
 
                         Dim lastpos As New TapeUtils.PositionData(driveHandle)
+                        Dim filesSincePosCheck As Integer = 0
                         TapeUtils.SetBlockSize(driveHandle, plabel.blocksize)
                         For i As Integer = 0 To WriteList.Count - 1
                             If useFastReader AndAlso i > 0 Then ResetFastReaderBufferWait()
@@ -9352,11 +9353,21 @@ Public Class LTFSWriter
                                            fr.File.WrittenBytes = fr.File.length Then
                                             SetFileDedupeHash(fr.File, currentPlan.ExpectedDedupeHash)
                                         End If
-                                        p = New TapeUtils.PositionData(driveHandle)
+                                        ' p is tracked on the host: every WRITE adds one block and every error
+                                        ' path re-reads it. A READ POSITION per file only costs a round trip, so
+                                        ' check the drive every 1024 files and stop loudly if the two disagree.
+                                        filesSincePosCheck += 1
+                                        If IsIndexPartition OrElse filesSincePosCheck >= 1024 Then
+                                            filesSincePosCheck = 0
+                                            Dim drivePos As New TapeUtils.PositionData(driveHandle)
+                                            If Not IsIndexPartition AndAlso (drivePos.BlockNumber <> p.BlockNumber OrElse drivePos.PartitionNumber <> p.PartitionNumber) Then
+                                                StopFlag = True ' no index may be written from extents that could be wrong
+                                                Throw New IO.IOException($"Tape position mismatch: expected {p}, drive reports {drivePos}")
+                                            End If
+                                            p = drivePos
+                                        End If
                                         If Not IsIndexPartition Then
-                                            ' Snapshot the position read on the line above instead of issuing a
-                                            ' second, identical READ POSITION - nothing moves the tape between
-                                            ' them.  Copy, never alias: p is mutated in place under SyncLock p.
+                                            ' Copy, never alias: p is mutated in place under SyncLock p.
                                             lastpos = New TapeUtils.PositionData(p)
                                             CurrentHeight = CLng(p.BlockNumber)
                                         End If
