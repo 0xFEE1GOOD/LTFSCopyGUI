@@ -9862,7 +9862,11 @@ Public Class LTFSWriter
                     ' Only now is the destructive step safe.
                     TapeUtils.Locate(driveHandle, CULng(CurrentPos.BlockNumber - 1), CurrentPos.PartitionNumber, TapeUtils.LocateDestType.Block)
                     PrintMsg($"Position = {GetPos.ToString()}", LogOnly:=True)
-                    TapeUtils.WriteFileMark(driveHandle)
+                    WriteIndexFileMark()
+                    ' Synchronising flush: a deferred error on the new EOD must fail here, not later.
+                    Dim flushOk As Boolean = True
+                    CheckIndexSense(TapeUtils.WriteFileMark(driveHandle, 0UI, flushOk))
+                    If Not flushOk Then Throw New IO.IOException("set-EOD: flush failed")
                     PrintMsg($"FileMark written", LogOnly:=True)
                     PrintMsg($"Position = {GetPos.ToString()}", LogOnly:=True)
                     schema = reloaded
