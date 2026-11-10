@@ -7570,7 +7570,8 @@ Public Class TapeUtils
 
         Dim senseBuffer(63) As Byte
         Dim succ As Boolean = TapeSCSIIOCtlUnmanaged(handle, cdbData, dataBufferPtr, CUInt(dataLen), DataIn, CUInt(TimeOut), senseBuffer)
-        If succ AndAlso Data IsNot Nothing Then Marshal.Copy(dataBufferPtr, Data, 0, Data.Length)
+        ' Same as the overloads above: data-out (DataIn = 0) leaves the buffer untouched, so skip the copy-back.
+        If succ AndAlso Data IsNot Nothing AndAlso DataIn <> 0 Then Marshal.Copy(dataBufferPtr, Data, 0, Data.Length)
         If senseReport IsNot Nothing Then
             senseReport(senseBuffer)
         End If
