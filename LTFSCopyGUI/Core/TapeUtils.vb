@@ -6972,6 +6972,7 @@ Public Class TapeUtils
         Dim DataPtr As IntPtr = Marshal.AllocHGlobal(BlockSize)
         Dim DataLen As Integer = ReadFill(Data, DataBuffer, BlockSize)
         Dim succ As Boolean
+        Dim anyFailed As Boolean = False ' an Ignored block fails the whole write, as in the file overload
         ' The sense buffer is replaced on every block of this write, so remember the
         ' worst sense seen and report that to the caller - otherwise a block the drive
         ' rejected is indistinguishable from a clean write once a later block succeeds.
@@ -7021,6 +7022,7 @@ Public Class TapeUtils
                             Exit While
                         Case DialogResult.Retry
                         Case DialogResult.Ignore
+                            anyFailed = True
                             Exit Do
                     End Select
                 End If
@@ -7029,7 +7031,7 @@ Public Class TapeUtils
         End While
         Data.Close()
         Marshal.FreeHGlobal(DataPtr)
-        If Not succ Then
+        If Not succ OrElse anyFailed Then
             Dim ErrCode As Integer = LastWin32Error
             Dim win32ex As New Win32Exception(ErrCode)
             Throw New Exception($"SCSI Failure. {vbCrLf}ErrCode: 0x{ErrCode.ToString("X8")}h{vbCrLf}{win32ex.Message}")
@@ -8389,7 +8391,7 @@ Public Class TapeUtils
                     ' Succ:= also binds this call to the UInt64 overload, the one that reaches the drive.
                     Dim blkSucc As Boolean = True
                     Dim blkSenseData As Byte() = SetBlockSize(handle:=handle, BlockSize:=CULng(0), Succ:=blkSucc)
-                    If blkSucc AndAlso senseReportFunc(blkSenseData) Then
+                    If blkSucc AndAlso (senseReportFunc(blkSenseData) OrElse (blkSenseData(2) And &HF) = 1) Then
                         ProgressReport($"MODE SELECT - Block Size {BlockLen} OK" & vbCrLf)
                     Else
                         OnError($"MODE SELECT - Block Size {BlockLen} Fail" & vbCrLf)
@@ -8492,6 +8494,12 @@ Public Class TapeUtils
                     End If
                     Dim block0 As ULong
                     If ExtraPartitionCount > 0 Then
+                        ' The labels above went to the drive buffer; flush so a deferred write error fails here.
+                        Dim flushOk As Boolean = True
+                        If Not writeOkFunc(WriteFileMark(handle, 0, flushOk)) OrElse Not flushOk Then
+                            OnError("Flush Fail" & vbCrLf)
+                            Return False
+                        End If
                         'Locate
                         ProgressReport("Locate to index partition..")
                         LocateAddCode = Locate(handle, 0, 0)
@@ -8576,7 +8584,7 @@ Public Class TapeUtils
 
                     End If
                     'Set DateTime
-                    Dim CurrentTime As String = Now.ToUniversalTime.ToString("yyyyMMddhhmm")
+                    Dim CurrentTime As String = Now.ToUniversalTime.ToString("yyyyMMddHHmm")
                     ProgressReport($"WRITE ATTRIBUTE: Written time={CurrentTime}..")
                     If checked(Function() SetMAMAttribute(handle, &H804, CurrentTime.PadRight(12), SenseReport:=senseReportFunc)) Then
                         ProgressReport("WRITE ATTRIBUTE: 0804 OK" & vbCrLf)

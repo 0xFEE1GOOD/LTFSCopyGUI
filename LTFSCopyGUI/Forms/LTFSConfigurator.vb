@@ -797,7 +797,7 @@ Public Class LTFSConfigurator
                                     End If
                                     'Erase
                                     Invoke(Sub() TextBoxDebugOutput.AppendText("Erasing " & currentCycle & "/" & NumericUpDownEraseCycle.Value & ".."))
-                                    If TapeUtils.SendSCSICommand(ConfTapeDrive, {&H19, 1, 0, 0, 0, 0}, TimeOut:=320) Then
+                                    If TapeUtils.SendSCSICommand(ConfTapeDrive, {&H19, 1, 0, 0, 0, 0}, TimeOut:=TapeUtils.SCSI_TIMEOUT_FORMAT_SECONDS) Then
                                         Invoke(Sub() TextBoxDebugOutput.AppendText("     OK" & vbCrLf))
                                     Else
                                         Invoke(Sub() TextBoxDebugOutput.AppendText("     Fail" & vbCrLf))
@@ -839,7 +839,7 @@ Public Class LTFSConfigurator
 
                             Case TapeUtils.DriverType.SLR3
                                 Invoke(Sub() TextBoxDebugOutput.AppendText("Erasing.."))
-                                If TapeUtils.SendSCSICommand(ConfTapeDrive, {&H19, 1, 0, 0, 0, 0}, TimeOut:=240) Then
+                                If TapeUtils.SendSCSICommand(ConfTapeDrive, {&H19, 1, 0, 0, 0, 0}, TimeOut:=TapeUtils.SCSI_TIMEOUT_FORMAT_SECONDS) Then
                                     Invoke(Sub() TextBoxDebugOutput.AppendText("     OK" & vbCrLf))
                                 Else
                                     Invoke(Sub() TextBoxDebugOutput.AppendText("     Fail" & vbCrLf))
@@ -854,7 +854,7 @@ Public Class LTFSConfigurator
                                 End If
                             Case TapeUtils.DriverType.SLR1
                                 Invoke(Sub() TextBoxDebugOutput.AppendText("Erasing.."))
-                                If TapeUtils.SendSCSICommand(ConfTapeDrive, {&H19, 1, 0, 0, 0, 0}, TimeOut:=240) Then
+                                If TapeUtils.SendSCSICommand(ConfTapeDrive, {&H19, 1, 0, 0, 0, 0}, TimeOut:=TapeUtils.SCSI_TIMEOUT_FORMAT_SECONDS) Then
                                     Invoke(Sub() TextBoxDebugOutput.AppendText("     OK" & vbCrLf))
                                 Else
                                     Invoke(Sub() TextBoxDebugOutput.AppendText("     Fail" & vbCrLf))
