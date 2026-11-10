@@ -582,7 +582,8 @@ Public Class LTFSWriter
                         Optional ByVal LogOnly As Boolean = False,
                         Optional ByVal IsWarn As Boolean = False,
                         Optional ByVal DeDupe As Boolean = False,
-                        Optional ByVal Category As String = "LTFSWriter")
+                        Optional ByVal Category As String = "LTFSWriter",
+                        Optional ByVal UiOnly As Boolean = False)
         If s Is Nothing Then s = String.Empty
         SyncLock _messageStateLock
             If DeDupe AndAlso s = _lastMessage Then Return
@@ -599,6 +600,7 @@ Public Class LTFSWriter
                 End If
             End If
         End SyncLock
+        If UiOnly Then Return ' status line only (used for packed small files: thousands per second)
 
         Dim logCategory = If(String.IsNullOrWhiteSpace(Category), NameOf(LTFSWriter), Category.Trim())
         Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSWriter))
@@ -8852,22 +8854,24 @@ Public Class LTFSWriter
                                 Dim currentPlan = writePlan(i)
                                 ValidatePlannedSource(fr, currentPlan)
                                 Dim IsIndexPartition As Boolean = currentPlan.Kind = PlannedWriteKind.IndexPartitionMaterial
-                                Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSWriter))
-                                    Using categoryScope As IDisposable = LogContext.PushProperty("Category", "Writer")
-                                        Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
-                                            Using eventTypeScope As IDisposable = LogContext.PushProperty("EventType", "FileSwitch")
-                                                Log.Information("Writer switching to file. FileIndex={FileIndex} FileName={FileName} SourcePath={SourcePath} Length={Length} PlanKind={PlanKind} IndexPartition={IndexPartition} FastReader={FastReader}.",
-                                                                i,
-                                                                fr.File.name,
-                                                                fr.SourcePath,
-                                                                fr.File.length,
-                                                                currentPlan.Kind.ToString(),
-                                                                IsIndexPartition,
-                                                                useFastReader)
+                                If Not packEnabled OrElse Log.IsEnabled(Serilog.Events.LogEventLevel.Debug) Then ' per-file debug events; costly at thousands of files/s
+                                    Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSWriter))
+                                        Using categoryScope As IDisposable = LogContext.PushProperty("Category", "Writer")
+                                            Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
+                                                Using eventTypeScope As IDisposable = LogContext.PushProperty("EventType", "FileSwitch")
+                                                    Log.Information("Writer switching to file. FileIndex={FileIndex} FileName={FileName} SourcePath={SourcePath} Length={Length} PlanKind={PlanKind} IndexPartition={IndexPartition} FastReader={FastReader}.",
+                                                                    i,
+                                                                    fr.File.name,
+                                                                    fr.SourcePath,
+                                                                    fr.File.length,
+                                                                    currentPlan.Kind.ToString(),
+                                                                    IsIndexPartition,
+                                                                    useFastReader)
+                                                End Using
                                             End Using
                                         End Using
                                     End Using
-                                End Using
+                                End If
                                 Dim tarScanner As TarMetadataScanner = Nothing
                                 If currentPlan.Kind <> PlannedWriteKind.Duplicate AndAlso IsTarFile(fr) Then
                                     fr.File.RemoveXattr(ltfsindex.file.xattr.ApplicationSpecific.TarMetadata)
@@ -9012,7 +9016,7 @@ Public Class LTFSWriter
                                              $"{My.Resources.ResText_Writing}: {fr.SourcePath}{vbCrLf}{My.Resources.ResText_Size}: {IOManager.FormatSize(fr.File.length)}{vbCrLf _
                                              }{My.Resources.ResText_WrittenTotal}: {IOManager.FormatSize(TotalBytesProcessed) _
                                              } {My.Resources.ResText_Remaining}: {IOManager.FormatSize(CLng(Math.Max(0, UnwrittenSize - CurrentBytesProcessed))) _
-                                             } -> {IOManager.FormatSize(CLng(Math.Max(0, UnwrittenSize - CurrentBytesProcessed - fr.File.length)))}")
+                                             } -> {IOManager.FormatSize(CLng(Math.Max(0, UnwrittenSize - CurrentBytesProcessed - fr.File.length)))}", UiOnly:=packThis)
                                         'write to tape
                                         Dim LastWriteTask As Task = Nothing
                                         If fr.File Is Nothing Then Continue For
@@ -9628,7 +9632,7 @@ Public Class LTFSWriter
                                             CurrentHeight = CLng(p.BlockNumber)
                                         End If
                                         If p.EOP Then PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
-                                        PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
+                                        If Not packPending.Contains(fr) Then PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
                                     End If
                                 Else
                                     fr.File.SetXattr(ltfsindex.file.xattr.HashType.CRC32, "00000000")
@@ -9680,24 +9684,26 @@ Public Class LTFSWriter
                                 End If
                                 RequestListDisplayRefresh()
                                 Dim extentCount As Integer = If(fr.File.extentinfo Is Nothing, 0, fr.File.extentinfo.Count)
-                                Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSWriter))
-                                    Using categoryScope As IDisposable = LogContext.PushProperty("Category", "Writer")
-                                        Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
-                                            Using eventTypeScope As IDisposable = LogContext.PushProperty("EventType", "FileCompleted")
-                                                Log.Information("Writer completed file. FileIndex={FileIndex} FileName={FileName} SourcePath={SourcePath} Length={Length} WrittenBytes={WrittenBytes} ExtentCount={ExtentCount} PlanKind={PlanKind} IndexPartition={IndexPartition} FastReader={FastReader}.",
-                                                                i,
-                                                                fr.File.name,
-                                                                fr.SourcePath,
-                                                                fr.File.length,
-                                                                fr.File.WrittenBytes,
-                                                                extentCount,
-                                                                currentPlan.Kind.ToString(),
-                                                                IsIndexPartition,
-                                                                useFastReader)
+                                If Not packEnabled OrElse Log.IsEnabled(Serilog.Events.LogEventLevel.Debug) Then ' per-file debug events; costly at thousands of files/s
+                                    Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSWriter))
+                                        Using categoryScope As IDisposable = LogContext.PushProperty("Category", "Writer")
+                                            Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
+                                                Using eventTypeScope As IDisposable = LogContext.PushProperty("EventType", "FileCompleted")
+                                                    Log.Information("Writer completed file. FileIndex={FileIndex} FileName={FileName} SourcePath={SourcePath} Length={Length} WrittenBytes={WrittenBytes} ExtentCount={ExtentCount} PlanKind={PlanKind} IndexPartition={IndexPartition} FastReader={FastReader}.",
+                                                                    i,
+                                                                    fr.File.name,
+                                                                    fr.SourcePath,
+                                                                    fr.File.length,
+                                                                    fr.File.WrittenBytes,
+                                                                    extentCount,
+                                                                    currentPlan.Kind.ToString(),
+                                                                    IsIndexPartition,
+                                                                    useFastReader)
+                                                End Using
                                             End Using
                                         End Using
                                     End Using
-                                End Using
+                                End If
                                 If TotalBytesUnindexed = 0 Then TotalBytesUnindexed = 1
                                 If (Not IsIndexPartition) AndAlso IsUnindexedDataLimitReached(False) Then
                                     'The checkpoint serializer only sees files that
