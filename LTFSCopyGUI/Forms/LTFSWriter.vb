@@ -4292,6 +4292,16 @@ Public Class LTFSWriter
         f.MarkLazyRecordDirty()
         Return True
     End Function
+    ''' <summary>
+    ''' True when a WRITE's sense is the end-of-medium flag without a real error: key 0/1 (early warning,
+    ''' the block was written) or 13 (volume overflow, which the caller handles). EOM with any other key
+    ''' is a failed write and must take the error path instead.
+    ''' </summary>
+    Private Shared Function IsEomOnly(s As Byte()) As Boolean
+        If ((s(2) >> 6) And &H1) = 0 Then Return False
+        Dim key As Integer = s(2) And &HF
+        Return key <= 1 OrElse key = 13
+    End Function
     ''' <summary>Writes the filemark that closes an index and throws if the drive did not take it.</summary>
     Private Sub WriteIndexFileMark()
         Dim ok As Boolean = True
@@ -8197,7 +8207,7 @@ Public Class LTFSWriter
                         p = New TapeUtils.PositionData(driveHandle)
                         Continue While
                     End Try
-                    If (((sense(2) >> 6) And &H1) = 1) Then
+                    If IsEomOnly(sense) Then
                         ' Sense key 0xD (VOLUME OVERFLOW) means the medium is full and the drive did NOT write
                         ' this block. Accepting it would commit index extents and per-file checksums for data
                         ' that is absent from tape, so it must stop the job whatever IgnoreVolumeOverflow says;
@@ -8889,7 +8899,7 @@ Public Class LTFSWriter
                                                     p = New TapeUtils.PositionData(driveHandle)
                                                     Continue While
                                                 End Try
-                                                If ((sense(2) >> 6) And &H1) = 1 Then
+                                                If IsEomOnly(sense) Then
                                                     ' Sense key 0xD (VOLUME OVERFLOW) means the medium is full and the drive did NOT write
                                                     ' this block. Accepting it would commit index extents and per-file checksums for data
                                                     ' that is absent from tape, so it must stop the job whatever IgnoreVolumeOverflow says;
@@ -9116,6 +9126,8 @@ Public Class LTFSWriter
                                                     writeTasks.Remove(LastWriteTask)
                                                 End If
                                                 If ExitWhileFlag Then Exit While
+                                                ' The previous block may have hit volume overflow: do not send another WRITE.
+                                                If StopFlag Then IOManager.PublicArrayPool.Return(buffer) : Exit While
 
                                                 LastWriteTask = Task.Factory.StartNew(
                                                  Sub(state)
@@ -9165,7 +9177,7 @@ Public Class LTFSWriter
                                                                      p = New TapeUtils.PositionData(driveHandle)
                                                                      Continue While
                                                                  End Try
-                                                                 If (((sense(2) >> 6) And &H1) = 1) Then
+                                                                 If IsEomOnly(sense) Then
                                                                      ' Sense key 0xD (VOLUME OVERFLOW) means the medium is full and the drive did NOT write
                                                                      ' this block. Accepting it would commit index extents and per-file checksums for data
                                                                      ' that is absent from tape, so it must stop the job whatever IgnoreVolumeOverflow says;
@@ -13537,7 +13549,7 @@ Public Class LTFSWriter
                                              pos = New TapeUtils.PositionData(driveHandle)
                                              Continue While
                                          End Try
-                                         If (((sense(2) >> 6) And &H1) = 1) Then
+                                         If IsEomOnly(sense) Then
                                              If ((sense(2) And &HF) = 13) Then
                                                  PrintMsg(My.Resources.ResText_VOF, IsWarn:=True)
                                                  Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_VOF))
@@ -14670,7 +14682,7 @@ Public Class LTFSWriter
                                                 p = New TapeUtils.PositionData(driveHandle)
                                                 Continue While
                                             End Try
-                                            If (((sense(2) >> 6) And &H1) = 1) Then
+                                            If IsEomOnly(sense) Then
                                                 If ((sense(2) And &HF) = 13) Then
                                                     PrintMsg(My.Resources.ResText_VOF, IsWarn:=True)
                                                     Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_VOF))
@@ -16964,6 +16976,8 @@ Public Class LTFSWriter
                                      writeTasks.Remove(LastWriteTask)
                                  End If
                                  If ExitWhileFlag Then Exit While
+                                 ' The previous block may have hit volume overflow: do not send another WRITE.
+                                 If StopFlag Then IOManager.PublicArrayPool.Return(buffer) : Exit While
 
                                  LastWriteTask = Task.Factory.StartNew(
                                   Sub(state)
@@ -17011,7 +17025,7 @@ Public Class LTFSWriter
                                                       p = New TapeUtils.PositionData(driveHandle)
                                                       Continue While
                                                   End Try
-                                                  If (((sense(2) >> 6) And &H1) = 1) Then
+                                                  If IsEomOnly(sense) Then
                                                       ' Sense key 0xD (VOLUME OVERFLOW) means the medium is full and the drive did NOT write
                                                       ' this block. Accepting it would commit index extents and per-file checksums for data
                                                       ' that is absent from tape, so it must stop the job whatever IgnoreVolumeOverflow says;
