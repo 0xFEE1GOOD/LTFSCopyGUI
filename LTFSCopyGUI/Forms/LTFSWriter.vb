@@ -4280,6 +4280,18 @@ Public Class LTFSWriter
         If ((s(2) >> 6) And &H1) = 1 Then PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
         If key = 1 Then PrintMsg($"index write recovered error {TapeUtils.Byte2Hex(s, True)}", IsWarn:=True, LogOnly:=True)
     End Sub
+    ''' <summary>
+    ''' Drops a file whose data did not fully reach the tape, so the index never claims more bytes
+    ''' than were written. Resets the record so a retry starts clean. Returns True if discarded.
+    ''' </summary>
+    Private Function DiscardIfIncomplete(f As ltfsindex.file, expected As Long, source As String) As Boolean
+        If f.length = 0 OrElse f.WrittenBytes >= expected Then Return False
+        PrintMsg($"Discarding incomplete file {f.name} ({source}): {f.WrittenBytes}/{expected} bytes written", IsWarn:=True)
+        If f.extentinfo IsNot Nothing Then f.extentinfo.Clear()
+        f.WrittenBytes = 0
+        f.MarkLazyRecordDirty()
+        Return True
+    End Function
     ''' <summary>Writes the filemark that closes an index and throws if the drive did not take it.</summary>
     Private Sub WriteIndexFileMark()
         Dim ok As Boolean = True
@@ -9391,15 +9403,7 @@ Public Class LTFSWriter
                                 ' reference file, so WrittenBytes legitimately stays at 0.
                                 Dim expectedWritten As Long = If(useFastReader, fr.File.length, fr.SegmentLength)
                                 If currentPlan.Kind <> PlannedWriteKind.Duplicate AndAlso
-                                    fr.File.length > 0 AndAlso
-                                    fr.File.WrittenBytes < expectedWritten Then
-                                    PrintMsg($"Discarding incomplete file {fr.File.name} ({fr.SourcePath}): {fr.File.WrittenBytes}/{expectedWritten} bytes written", IsWarn:=True)
-                                    ' Drop the over-long extent and reset the counter so that a retry
-                                    ' of this same record starts clean and cannot satisfy the test
-                                    ' above with bytes carried over from this attempt.
-                                    If fr.File.extentinfo IsNot Nothing Then fr.File.extentinfo.Clear()
-                                    fr.File.WrittenBytes = 0
-                                    fr.File.MarkLazyRecordDirty()
+                                    DiscardIfIncomplete(fr.File, expectedWritten, fr.SourcePath) Then
                                     ' Required: a short read can end the block loop without setting
                                     ' StopFlag, and the job would then be reported as finished.
                                     StopFlag = True
@@ -17183,11 +17187,15 @@ Public Class LTFSWriter
                              PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
 
 
-                             'mark as written
-                             MarkWriteFileCompleted(newfile)
-                             RequestListDisplayRefresh()
-                             d.AddFile(newfile)
-                             d.UnwrittenFiles.Remove(newfile)
+                             'mark as written, unless the image was cut short (Cancel or volume overflow)
+                             If DiscardIfIncomplete(newfile, newfile.length, cfg.DrivePath) Then
+                                 StopFlag = True
+                             Else
+                                 MarkWriteFileCompleted(newfile)
+                                 RequestListDisplayRefresh()
+                                 d.AddFile(newfile)
+                                 d.UnwrittenFiles.Remove(newfile)
+                             End If
                              If TotalBytesUnindexed = 0 Then TotalBytesUnindexed = 1
                              If CheckUnindexedDataLimit() Then
                                  p = New TapeUtils.PositionData(driveHandle)
