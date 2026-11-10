@@ -6555,7 +6555,10 @@ Public Class LTFSWriter
         Private _block As Byte() = Nothing
         Private _blockOffset As Integer
         Private _firstBlock As Boolean
+        Private _firstOffset As Long       ' byte offset of the data inside the first block read after a LOCATE
         Private _position As Long
+        ' Gaps shorter than this are read through; for longer ones LOCATE straight to the member's block.
+        Private Const SeekAheadBytes As Long = 1073741824L
 
         Public Sub New(writer As LTFSWriter, source As ltfsindex.file)
             _writer = writer
@@ -6606,6 +6609,7 @@ Public Class LTFSWriter
         End Sub
 
         Private Sub Skip(count As Long)
+            If count >= SeekAheadBytes AndAlso SeekTo(_position + count) Then Return
             Dim remaining As Long = count
             While remaining > 0
                 Dim chunk As Byte() = ReadChunk(remaining)
@@ -6632,8 +6636,7 @@ Public Class LTFSWriter
                 StartNextExtent()
             End While
             If _block IsNot Nothing AndAlso _blockOffset < _block.Length Then Return
-            Dim extent As ltfsindex.file.extent = _extents(_extentIndex)
-            Dim physicalLimit As Long = _extentRemaining + If(_firstBlock, CLng(extent.byteoffset), 0L)
+            Dim physicalLimit As Long = _extentRemaining + If(_firstBlock, _firstOffset, 0L)
             Dim blockLimit As UInteger = CUInt(Math.Min(CLng(Math.Max(1, _writer.plabel.blocksize)), physicalLimit))
             Dim sense As Byte() = Nothing
             _block = TapeUtils.ReadBlock(_writer.driveHandle, sense, blockLimit, True)
@@ -6642,8 +6645,8 @@ Public Class LTFSWriter
             End If
             If _block Is Nothing OrElse _block.Length = 0 Then Throw New IO.EndOfStreamException("empty tape block while reading tar")
             If _firstBlock Then
-                If _block.Length <= extent.byteoffset Then Throw New IO.InvalidDataException("tar extent byte offset exceeds tape block")
-                _blockOffset = CInt(extent.byteoffset)
+                If _block.Length <= _firstOffset Then Throw New IO.InvalidDataException("tar extent byte offset exceeds tape block")
+                _blockOffset = CInt(_firstOffset)
                 _firstBlock = False
             Else
                 _blockOffset = 0
@@ -6667,26 +6670,60 @@ Public Class LTFSWriter
             _block = Nothing
             _blockOffset = 0
             _firstBlock = True
+            _firstOffset = extent.byteoffset
             If _extentRemaining <= 0 Then StartNextExtent()
         End Sub
+
+        ''' <summary>Positions the reader at file offset target with one LOCATE. False if no extent holds it.</summary>
+        Private Function SeekTo(target As Long) As Boolean
+            Dim blockSize As Long = Math.Max(1, _writer.plabel.blocksize)
+            For i As Integer = 0 To _extents.Count - 1
+                Dim extent As ltfsindex.file.extent = _extents(i)
+                If target < extent.fileoffset OrElse target >= extent.fileoffset + extent.bytecount Then Continue For
+                Dim physical As Long = extent.byteoffset + (target - extent.fileoffset)
+                TapeUtils.Locate(_writer.driveHandle,
+                                 CULng(extent.startblock + physical \ blockSize),
+                                 _writer.GetPartitionNumber(CType(extent.partition, ltfslabel.PartitionLabel)),
+                                 TapeUtils.LocateDestType.Block)
+                _writer.RestorePosition = New TapeUtils.PositionData(_writer.driveHandle)
+                _extentIndex = i
+                _extentRemaining = extent.bytecount - (target - extent.fileoffset)
+                _block = Nothing
+                _blockOffset = 0
+                _firstBlock = True
+                _firstOffset = physical Mod blockSize
+                _position = target
+                Return True
+            Next
+            Return False
+        End Function
     End Class
 
-    Private Sub CollectTarVirtualFiles(directory As TarVirtualDirectory, files As List(Of TarVirtualFile))
+    Private Sub CollectTarVirtualFiles(directory As TarVirtualDirectory, files As List(Of TarVirtualFile),
+                                       Optional seen As Dictionary(Of ltfsindex.file, HashSet(Of String)) = Nothing)
         If directory Is Nothing Then Return
-        For Each file As TarVirtualFile In directory.Files
-            Dim exists As Boolean = False
+        ' Sets, not a scan of the list per member: that was O(n^2) on the UI thread (hours at 1M members).
+        If seen Is Nothing Then
+            seen = New Dictionary(Of ltfsindex.file, HashSet(Of String))
             For Each oldFile As TarVirtualFile In files
-                If oldFile.SourceFile Is file.SourceFile AndAlso String.Equals(oldFile.Entry.Path, file.Entry.Path, StringComparison.OrdinalIgnoreCase) Then
-                    exists = True
-                    Exit For
-                End If
+                TarSeenSet(seen, oldFile).Add(oldFile.Entry.Path)
             Next
-            If Not exists Then files.Add(file)
+        End If
+        For Each file As TarVirtualFile In directory.Files
+            If TarSeenSet(seen, file).Add(file.Entry.Path) Then files.Add(file)
         Next
         For Each child As TarVirtualDirectory In directory.Directories
-            CollectTarVirtualFiles(child, files)
+            CollectTarVirtualFiles(child, files, seen)
         Next
     End Sub
+    Private Shared Function TarSeenSet(seen As Dictionary(Of ltfsindex.file, HashSet(Of String)), file As TarVirtualFile) As HashSet(Of String)
+        Dim paths As HashSet(Of String) = Nothing
+        If Not seen.TryGetValue(file.SourceFile, paths) Then
+            paths = New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+            seen(file.SourceFile) = paths
+        End If
+        Return paths
+    End Function
 
     Private Sub CreateTarVirtualDirectories(directory As TarVirtualDirectory, archiveRoot As String)
         If directory Is Nothing Then Return
@@ -6750,14 +6787,16 @@ Public Class LTFSWriter
                     End If
 
                     Dim groups As New Dictionary(Of ltfsindex.file, List(Of TarVirtualFile))
+                    Dim grouped As New HashSet(Of TarVirtualFile)
                     For Each file As TarVirtualFile In files
                         Dim group As List(Of TarVirtualFile) = Nothing
                         If Not groups.TryGetValue(file.SourceFile, group) Then
                             group = New List(Of TarVirtualFile)
                             groups(file.SourceFile) = group
                         End If
-                        If Not group.Contains(file) Then group.Add(file)
+                        If grouped.Add(file) Then group.Add(file)
                     Next
+                    Dim failedMembers As Integer = 0
 
                     For Each source As ltfsindex.file In sources
                         Dim group As List(Of TarVirtualFile) = Nothing
@@ -6772,7 +6811,15 @@ Public Class LTFSWriter
                             If StopFlag Then Exit For
                             Dim relative As String = file.Entry.Path.Replace("/"c, IO.Path.DirectorySeparatorChar)
                             Dim outputPath As String = ToLongPath(IO.Path.Combine(archiveRoot, relative))
-                            reader.CopyRange(file.Entry, outputPath)
+                            Try
+                                reader.CopyRange(file.Entry, outputPath)
+                            Catch ex As IO.InvalidDataException
+                                ' A bad member (e.g. hash mismatch) must not abort the rest or stay on disk.
+                                failedMembers += 1
+                                PrintMsg($"{My.Resources.ResText_RestoreErr} {file.Entry.Path}: {ex.Message}", IsWarn:=True)
+                                Try : IO.File.Delete(outputPath) : Catch : End Try
+                                Continue For
+                            End Try
                             Threading.Interlocked.Increment(CurrentFilesProcessed)
                             Threading.Interlocked.Increment(TotalFilesProcessed)
                         Next
@@ -6781,6 +6828,9 @@ Public Class LTFSWriter
                     If StopFlag Then
                         PrintMsg(My.Resources.ResText_OpCancelled)
                         SetStatusLight(LWStatus.Idle)
+                    ElseIf failedMembers > 0 Then
+                        PrintMsg($"{My.Resources.ResText_RestoreErr} {failedMembers} file(s) not restored - see the log", IsWarn:=True, ShowOnWarningLabel:=True)
+                        SetStatusLight(LWStatus.Err)
                     Else
                         PrintMsg(My.Resources.ResText_RestFin)
                         SetStatusLight(LWStatus.Succ)
