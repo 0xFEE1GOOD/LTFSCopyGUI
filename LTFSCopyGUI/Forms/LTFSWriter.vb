@@ -5412,6 +5412,7 @@ Public Class LTFSWriter
         Public Property TempPath As String
         Public Property AlreadyComplete As Boolean
         Public Property Committed As Boolean
+        Public Property Failed As Boolean
     End Class
 
     Private Class ExtractionExtentWork
@@ -5878,6 +5879,10 @@ Public Class LTFSWriter
         Return result
     End Function
 
+    ' A retried READ must re-read the same block: the failed or short read left the tape after it.
+    Private Sub RelocateForRetry()
+        If RestorePosition IsNot Nothing Then TapeUtils.Locate(driveHandle, RestorePosition.BlockNumber, RestorePosition.PartitionNumber)
+    End Sub
     Private Function ReadExtractionBlock(blockLength As UInteger,
                                          ByRef shortReadIgnored As Boolean) As Byte()
         shortReadIgnored = False
@@ -5892,6 +5897,7 @@ Public Class LTFSWriter
                         StopFlag = True
                         Throw
                     Case DialogResult.Retry
+                        RelocateForRetry()
                         Continue While
                     Case DialogResult.Ignore
                         shortReadIgnored = True
@@ -5925,6 +5931,7 @@ Public Class LTFSWriter
                                 StopFlag = True
                                 Throw New IO.IOException(TapeUtils.ParseSenseData(sense))
                             Case DialogResult.Retry
+                                RelocateForRetry()
                                 Continue While
                             Case DialogResult.Ignore
                                 shortReadIgnored = True
@@ -5943,6 +5950,7 @@ Public Class LTFSWriter
                             StopFlag = True
                             Throw New IO.EndOfStreamException(message)
                         Case DialogResult.Retry
+                            RelocateForRetry()
                             Continue While
                         Case DialogResult.Ignore
                             shortReadIgnored = True
@@ -6071,7 +6079,7 @@ Public Class LTFSWriter
     End Sub
 
     Private Sub CommitExtractionFile(work As ExtractionFileWork)
-        If work Is Nothing OrElse work.AlreadyComplete OrElse work.Committed OrElse StopFlag Then Return
+        If work Is Nothing OrElse work.AlreadyComplete OrElse work.Committed OrElse work.Failed OrElse StopFlag Then Return
         If Not IO.File.Exists(work.TempPath) Then Throw New IO.FileNotFoundException("Temporary extraction file is missing", work.TempPath)
         Dim targetPath As String = work.Request.FileName
         If Not targetPath.StartsWith("\\", StringComparison.Ordinal) Then targetPath = NormalizeExtractionPath(targetPath)
@@ -6218,6 +6226,7 @@ Public Class LTFSWriter
             lastExtentByFile(plan(planIndex).FileWork) = planIndex
         Next
         Dim currentExtractionFile As ExtractionFileWork = Nothing
+        Dim failedFiles As Integer = 0
         For planIndex As Integer = 0 To plan.Count - 1
             If StopFlag Then Exit For
             Dim extentWork As ExtractionExtentWork = plan(planIndex)
@@ -6238,13 +6247,25 @@ Public Class LTFSWriter
                          $"{My.Resources.ResText_Restoring} [{extractionFileNumber}/{extractionFileTotal}] {filePath}")
                 currentExtractionFile = extentWork.FileWork
             End If
-            RestoreExtractionExtent(extentWork, GetValidationBlockSize())
+            If extentWork.FileWork.Failed Then Continue For
+            Try
+                RestoreExtractionExtent(extentWork, GetValidationBlockSize())
+            Catch ex As Exception When Not StopFlag AndAlso (TypeOf ex Is IO.InvalidDataException OrElse TypeOf ex Is IO.EndOfStreamException)
+                ' One bad file must not abort the rest: drop its temp copy, skip its other extents.
+                extentWork.FileWork.Failed = True
+                failedFiles += 1
+                PrintMsg($"{My.Resources.ResText_RestoreErr} {extentWork.FileWork.Request.FileName}: {ex.Message}", IsWarn:=True)
+                Try : IO.File.Delete(extentWork.FileWork.TempPath) : Catch : End Try
+                RestorePosition = Nothing ' tape position is unknown now; force a Locate for the next extent
+                Continue For
+            End Try
             Dim lastExtentIndex As Integer = -1
             If lastExtentByFile.TryGetValue(extentWork.FileWork, lastExtentIndex) AndAlso
                lastExtentIndex = planIndex Then
                 CommitExtractionFile(extentWork.FileWork)
             End If
         Next
+        If failedFiles > 0 Then PrintMsg($"{My.Resources.ResText_RestoreErr} {failedFiles} file(s) not restored - see the log", IsWarn:=True, ShowOnWarningLabel:=True)
         If StopFlag Then Return
         For Each fileWork As ExtractionFileWork In fileWorks
             If StopFlag Then Exit For
@@ -6309,6 +6330,7 @@ Public Class LTFSWriter
                 If FileIndex.TempObj Is Nothing OrElse TypeOf FileIndex.TempObj IsNot ltfsindex.file.refFile Then FileIndex.TempObj = New ltfsindex.file.refFile()
                 CType(FileIndex.TempObj, ltfsindex.file.refFile).FileName = FileName
                 Dim fs As New IO.FileStream(FileName, IO.FileMode.OpenOrCreate, IO.FileAccess.ReadWrite, IO.FileShare.Read, 8388608, IO.FileOptions.None)
+                Dim restoreFailed As Boolean = False
                 Try
                     FileIndex.extentinfo.Sort(New Comparison(Of ltfsindex.file.extent)(Function(a As ltfsindex.file.extent, b As ltfsindex.file.extent)
                                                                                            If a.startblock <> b.startblock Then Return a.startblock.CompareTo(b.startblock)
@@ -6477,6 +6499,7 @@ Public Class LTFSWriter
                         If Not succ Then
                             PrintMsg($"{FileIndex.name}{My.Resources.ResText_RestoreErr}", IsWarn:=True)
                             SetStatusLight(LWStatus.Err)
+                            restoreFailed = True
                             Exit For
                         End If
                         If StopFlag Then Exit Sub
@@ -6485,6 +6508,7 @@ Public Class LTFSWriter
                     PrintMsg($"{FileIndex.name}{My.Resources.ResText_RestoreErr}{ex.ToString}", IsWarn:=True)
                     Invoke(Sub() MessageBox.Show($"{FileIndex.name}{My.Resources.ResText_RestoreErr}{ex.ToString}"))
                     SetStatusLight(LWStatus.Err)
+                    restoreFailed = True
                 End Try
                 Try
                     fs.Flush()
@@ -6492,6 +6516,12 @@ Public Class LTFSWriter
                 Catch ex As Exception
 
                 End Try
+                If restoreFailed Then
+                    ' Do not leave a partial file that looks complete (and is reused as a copy source).
+                    Try : IO.File.Delete(FileName) : Catch : End Try
+                    FileIndex.TempObj = Nothing
+                    Exit Sub
+                End If
                 Dim finfo As New IO.FileInfo(FileName)
                 Try
                     finfo.CreationTimeUtc = TapeUtils.ParseTimeStamp(FileIndex.creationtime)
