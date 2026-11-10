@@ -1173,6 +1173,11 @@ Public Class IOManager
             If OnFinished IsNot Nothing Then OnFinished(block)
         End Sub
 
+        Private Const InlineHashBytes As Integer = 65536
+        Private Shared Function RunInline(a As Action) As Task
+            a()
+            Return Task.CompletedTask
+        End Function
         Public Sub PropagateRange(block As Byte(), Offset As Integer, Len As Integer)
             If block Is Nothing Then Throw New ArgumentNullException(NameOf(block))
             If Offset < 0 OrElse Len < 0 OrElse Offset > block.Length - Len Then
@@ -1181,29 +1186,32 @@ Public Class IOManager
             While q.Count > 0
                 DeQSig.WaitOne(10)
             End While
+            ' One task per algorithm (and a wait) costs far more than hashing a small block, and
+            ' thousands of them per second (one per small file) starve the thread pool: run inline.
+            Dim runHash As Func(Of Action, Task) = Function(a As Action) If(Len <= InlineHashBytes, RunInline(a), Task.Run(a))
             SyncLock Lock
                 Dim sha1task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then sha1task = Task.Run(
+                If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then sha1task = runHash(
                     Sub()
                         sha1.TransformBlock(block, Offset, Len, block, Offset)
                     End Sub)
                 Dim sha256task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then sha256task = Task.Run(
+                If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then sha256task = runHash(
                     Sub()
                         sha256.TransformBlock(block, Offset, Len, block, Offset)
                     End Sub)
                 Dim sha512task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then sha512task = Task.Run(
+                If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then sha512task = runHash(
                     Sub()
                         sha512.TransformBlock(block, Offset, Len, block, Offset)
                     End Sub)
                 Dim md5task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then md5task = Task.Run(
+                If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then md5task = runHash(
                     Sub()
                         md5.TransformBlock(block, Offset, Len, block, Offset)
                     End Sub)
                 Dim blaketask As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then blaketask = Task.Run(
+                If My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then blaketask = runHash(
                     Sub()
                         Try
                             Dim segment As New ArraySegment(Of Byte)(block, Offset, Len)
@@ -1213,7 +1221,7 @@ Public Class IOManager
                         End Try
                     End Sub)
                 Dim crc32task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then crc32task = Task.Run(
+                If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then crc32task = runHash(
                     Sub()
                         Dim segment As New ArraySegment(Of Byte)(block, Offset, Len)
                         Try
@@ -1223,7 +1231,7 @@ Public Class IOManager
                         End Try
                     End Sub)
                 Dim xxhash3task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then xxhash3task = Task.Run(
+                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then xxhash3task = runHash(
                     Sub()
                         Dim segment As New ArraySegment(Of Byte)(block, Offset, Len)
                         Try
@@ -1233,7 +1241,7 @@ Public Class IOManager
                         End Try
                     End Sub)
                 Dim xxhash128task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then xxhash128task = Task.Run(
+                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then xxhash128task = runHash(
                     Sub()
                         Dim segment As New ArraySegment(Of Byte)(block, Offset, Len)
                         Try
