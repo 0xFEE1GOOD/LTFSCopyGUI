@@ -80,6 +80,14 @@ Public Class FileDataProvider
         End Get
     End Property
 
+    Private _producerFault As Exception
+    ''' <summary>Why the producer stopped early (e.g. a source file could not be read), or Nothing.</summary>
+    Public ReadOnly Property ProducerFault As Exception
+        Get
+            Return Volatile.Read(_producerFault)
+        End Get
+    End Property
+
     ' 参数：
     ' - pipeBufferMiB: Pipe 背压阈值（默认 256MiB）
     ' - smallThresholdBytes: 小文件阈值（默认 16KiB）
@@ -396,6 +404,7 @@ Public Class FileDataProvider
         Catch ex As Exception When _cts.IsCancellationRequested
             Log.Information(ex, "File data provider producer loop stopped after cancellation. CurrentIndex={CurrentIndex}.", Interlocked.CompareExchange(_currentIndex, 0, 0))
         Catch ex As Exception
+            Volatile.Write(_producerFault, ex)
             Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(FileDataProvider))
                 Using categoryScope As IDisposable = LogContext.PushProperty("Category", "FileProvider")
                     Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)

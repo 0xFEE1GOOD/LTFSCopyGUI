@@ -8962,6 +8962,11 @@ Public Class LTFSWriter
                                                     If IsIndexPartition Then succ = True
                                                     Exit While
                                                 Catch ex As Exception
+                                                    ' The source reader has stopped for good (e.g. unreadable file): Retry cannot help, show why.
+                                                    If provider IsNot Nothing AndAlso provider.ProducerFault IsNot Nothing Then
+                                                        StopFlag = True
+                                                        Throw New IO.IOException($"Source read failed: {provider.ProducerFault.Message}", provider.ProducerFault)
+                                                    End If
                                                     Dim dResult As DialogResult
                                                     Invoke(Sub() dResult = MessageBox.Show(New Form With {.TopMost = True}, $"{My.Resources.ResText_WErr }{vbCrLf}{ex.ToString}", My.Resources.ResText_Warning, MessageBoxButtons.AbortRetryIgnore))
                                                     Select Case dResult
@@ -9190,6 +9195,11 @@ Public Class LTFSWriter
                                                         Exit While
                                                     End If
                                                 Catch ex As Exception
+                                                    ' The source reader has stopped for good (e.g. unreadable file): Retry cannot help, show why.
+                                                    If provider IsNot Nothing AndAlso provider.ProducerFault IsNot Nothing Then
+                                                        StopFlag = True
+                                                        Throw New IO.IOException($"Source read failed: {provider.ProducerFault.Message}", provider.ProducerFault)
+                                                    End If
                                                     Try
                                                         IOManager.PublicArrayPool.Return(buffer)
                                                     Catch
