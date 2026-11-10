@@ -1041,7 +1041,8 @@ Public Class TapeUtils
                     Space6(handle:=handle, Count:=CInt(BlockAddress), Code:=LocateDestType.FileMark)
                 Else
 
-                    SCSIReadParam(handle:=handle, cdbData:=New Byte() {&H92, CByte(DestType << 3), 0, 0,
+                    ' Retry keeps the target partition (CP=1) instead of locating within the current one.
+                    SCSIReadParam(handle:=handle, cdbData:=New Byte() {&H92, CByte((DestType << 3) Or If(AllowPartition, 2, 0)), 0, If(AllowPartition, Partition, CByte(0)),
                                             CByte(BlockAddress >> 56 And &HFFUL), CByte(BlockAddress >> 48 And &HFFUL), CByte(BlockAddress >> 40 And &HFFUL), CByte(BlockAddress >> 32 And &HFFUL),
                                             CByte(BlockAddress >> 24 And &HFFUL), CByte(BlockAddress >> 16 And &HFFUL), CByte(BlockAddress >> 8 And &HFFUL), CByte(BlockAddress And &HFFUL),
                                             0, 0, 0, 0}, paramLen:=64, senseReport:=Function(senseData As Byte()) As Boolean
@@ -1476,7 +1477,15 @@ Public Class TapeUtils
     Public Shared Function WriteVCI(handle As IntPtr, Generation As UInt64, block0 As UInt64, block1 As UInt64,
                                     UUID As String, ByVal ExtraPartitionCount As Byte, Optional ByVal SenseReport As Func(Of Byte(), Boolean) = Nothing) As Boolean
         SyncLock SCSILockManager.GetLock(handle)
-            Flush(handle)
+            ' The commands below return only the transport result, so also fail on a reported error
+            ' (valid sense, key > 1). The flush surfaces deferred write errors before the VCI is updated.
+            Dim isError As Func(Of Byte(), Boolean) = Function(s As Byte()) s IsNot Nothing AndAlso s.Length > 2 AndAlso (s(0) And &H70) = &H70 AndAlso (s(2) And &HF) > 1
+            Dim rejected As Boolean = isError(Flush(handle))
+            If rejected Then Return False
+            Dim report As Func(Of Byte(), Boolean) = Function(s As Byte()) As Boolean
+                                                         If isError(s) Then rejected = True
+                                                         Return SenseReport Is Nothing OrElse SenseReport(s)
+                                                     End Function
             Dim VCIData As Byte()
             Dim VCI As Byte() = GetMAMAttributeBytes(handle, 0, 9)
             If VCI Is Nothing OrElse VCI.Length = 0 Then Return False
@@ -1489,8 +1498,8 @@ Public Class TapeUtils
                 0, &H2B, &H4C, &H54, &H46, &H53, 0}
                 VCIData = VCIData.Concat(Encoding.ASCII.GetBytes(UUID.PadRight(36).Substring(0, 36))).ToArray
                 VCIData = VCIData.Concat({0, 1}).ToArray
-                Dim Succ As Boolean = SetMAMAttribute(handle, &H80C, VCIData, AttributeFormat.Binary, 0, SenseReport)
-                If Not Succ Then Return False
+                Dim Succ As Boolean = SetMAMAttribute(handle, &H80C, VCIData, AttributeFormat.Binary, 0, report)
+                If Not Succ OrElse rejected Then Return False
             End If
             VCIData = {8, 0, 0, 0, 0, VCI(VCI.Length - 4), VCI(VCI.Length - 3), VCI(VCI.Length - 2), VCI(VCI.Length - 1),
                 CByte(CLng(Generation >> 56) And &HFF), CByte(CLng(Generation >> 48) And &HFF), CByte(CLng(Generation >> 40) And &HFF), CByte(CLng(Generation >> 32) And &HFF),
@@ -1500,7 +1509,7 @@ Public Class TapeUtils
                 0, &H2B, &H4C, &H54, &H46, &H53, 0}
             VCIData = VCIData.Concat(Encoding.ASCII.GetBytes(UUID.PadRight(36).Substring(0, 36))).ToArray()
             VCIData = VCIData.Concat({0, 1}).ToArray()
-            Return SetMAMAttribute(handle, &H80C, VCIData, AttributeFormat.Binary, ExtraPartitionCount, SenseReport)
+            Return SetMAMAttribute(handle, &H80C, VCIData, AttributeFormat.Binary, ExtraPartitionCount, report) AndAlso Not rejected
         End SyncLock
     End Function
     Public Shared Function ParseAdditionalSenseCode(Add_Code As UInt16) As String
@@ -8166,11 +8175,25 @@ Public Class TapeUtils
         Dim mkltfs_op As Func(Of Boolean) =
             Function()
                 Try
+                    Dim stepFailed As Boolean = False
                     Dim senseReportFunc As Func(Of Byte(), Boolean) = Function(sense As Byte()) As Boolean
                                                                           If (sense(2) And &HF) = 0 Then Return True
                                                                           ProgressReport($"{ParseSenseData(sense)}")
+                                                                          ' Key 1 (RECOVERED ERROR) means the command still succeeded.
+                                                                          If (sense(2) And &HF) <> 1 Then stepFailed = True
                                                                           Return False
                                                                       End Function
+                    ' SendSCSICommand returns only the transport result, so a CHECK CONDITION still reads
+                    ' as success. Run a step and also fail it if senseReportFunc saw a real error.
+                    Dim checked As Func(Of Func(Of Boolean), Boolean) = Function(stepFn As Func(Of Boolean)) As Boolean
+                                                                            stepFailed = False
+                                                                            Return stepFn() AndAlso Not stepFailed
+                                                                        End Function
+                    ' Locate can report success after landing in the wrong partition; confirm the position.
+                    Dim atBlock0 As Func(Of Byte, Boolean) = Function(partition As Byte) As Boolean
+                                                                 Dim pos As PositionData = ReadPosition(handle)
+                                                                 Return pos.AddSenseKey = 0 AndAlso pos.PartitionNumber = partition AndAlso pos.BlockNumber = 0UL
+                                                             End Function
                     ' Write and WriteFileMark always return a non-empty sense buffer, so the `.Length > 0`
                     ' tests below could never fail and every Fail branch in this formatter was dead code.
                     ' Gate on the sense key instead. That needs a looser predicate than senseReportFunc,
@@ -8209,6 +8232,7 @@ Public Class TapeUtils
 
                     If LoadEject(handle, LoadOption.LoadThreaded, senseReport:=senseReportFunc) Then
                         ProgressReport("Load OK" & vbCrLf)
+                        ClearUnitAttention(handle)
                     Else
                         OnError("Load Fail" & vbCrLf)
                         Return False
@@ -8229,7 +8253,7 @@ Public Class TapeUtils
                     If Not WORM Then
                         'Set Capacity
                         ProgressReport("Set Capacity..")
-                        If SetCapacity(handle:=handle, Capacity:=Capacity, senseReport:=senseReportFunc) Then
+                        If checked(Function() SetCapacity(handle:=handle, Capacity:=Capacity, senseReport:=senseReportFunc)) Then
                             ProgressReport("Set Capacity OK" & vbCrLf)
                         Else
                             OnError("Set Capacity Fail" & vbCrLf)
@@ -8252,7 +8276,7 @@ Public Class TapeUtils
                     ElseIf DriverTypeSetting = DriverType.TapeStream Then
                         ProgressReport("Incompatible drive detected, skip initialization" & vbCrLf)
                     Else
-                        If SendSCSICommand(handle, {4, 0, 0, 0, 0, 0}, senseReport:=senseReportFunc, TimeOut:=SCSI_TIMEOUT_FORMAT_SECONDS) Then
+                        If checked(Function() SendSCSICommand(handle, {4, 0, 0, 0, 0, 0}, senseReport:=senseReportFunc, TimeOut:=SCSI_TIMEOUT_FORMAT_SECONDS)) Then
                             ProgressReport("Initialization OK" & vbCrLf)
                             ' FORMAT MEDIUM completing raises UNIT ATTENTION on the next command, which the
                             ' drive then aborts without executing. Drain it so the label writes below are
@@ -8268,7 +8292,7 @@ Public Class TapeUtils
                         ProgressReport("MODE SELECT - Partition mode page..")
                         If DriverTypeSetting <> DriverType.TapeStream Then
                             'Mode Select:1st Partition to Minimum 
-                            If SendSCSICommand(handle:=handle, cdbData:=New Byte() {&H15, &H10, 0, 0, &H10, 0}, Data:=New Byte() {0, 0, &H10, 0, &H11, &HA, CByte(MaxExtraPartitionAllowed), 1, ModeData(4), ModeData(5), 9, ModeData(7), CByte((P0Size >> 8) And &HFF), CByte(P0Size And &HFF), CByte((P1Size >> 8) And &HFF), CByte(P1Size And &HFF)}, DataIn:=0, senseReport:=senseReportFunc) Then
+                            If checked(Function() SendSCSICommand(handle:=handle, cdbData:=New Byte() {&H15, &H10, 0, 0, &H10, 0}, Data:=New Byte() {0, 0, &H10, 0, &H11, &HA, CByte(MaxExtraPartitionAllowed), 1, ModeData(4), ModeData(5), 9, ModeData(7), CByte((P0Size >> 8) And &HFF), CByte(P0Size And &HFF), CByte((P1Size >> 8) And &HFF), CByte(P1Size And &HFF)}, DataIn:=0, senseReport:=senseReportFunc)) Then
                                 ProgressReport("MODE SELECT 11h OK" & vbCrLf)
                             Else
                                 OnError("MODE SELECT 11h Fail" & vbCrLf)
@@ -8280,7 +8304,7 @@ Public Class TapeUtils
                         ProgressReport("Partitioning..")
                         Select Case DriverTypeSetting
                             Case DriverType.T10K
-                                If SendSCSICommand(handle, {4, 0, 2, 0, 0, 0}, Nothing, 0, senseReport:=senseReportFunc, TimeOut:=SCSI_TIMEOUT_FORMAT_SECONDS) Then
+                                If checked(Function() SendSCSICommand(handle, {4, 0, 2, 0, 0, 0}, Nothing, 0, senseReport:=senseReportFunc, TimeOut:=SCSI_TIMEOUT_FORMAT_SECONDS)) Then
                                     ProgressReport("     OK" & vbCrLf)
                                 Else
                                     OnError("     Fail" & vbCrLf)
@@ -8289,7 +8313,7 @@ Public Class TapeUtils
                             Case DriverType.TapeStream
 
                             Case Else
-                                If SendSCSICommand(handle, {4, 0, 1, 0, 0, 0}, Nothing, 0, senseReport:=senseReportFunc, TimeOut:=SCSI_TIMEOUT_FORMAT_SECONDS) Then
+                                If checked(Function() SendSCSICommand(handle, {4, 0, 1, 0, 0, 0}, Nothing, 0, senseReport:=senseReportFunc, TimeOut:=SCSI_TIMEOUT_FORMAT_SECONDS)) Then
                                     ProgressReport("     OK" & vbCrLf)
                                 Else
                                     OnError("     Fail" & vbCrLf)
@@ -8300,7 +8324,7 @@ Public Class TapeUtils
                     End If
                     'Set Vendor
                     ProgressReport($"WRITE ATTRIBUTE: Vendor=OPEN..")
-                    If SetMAMAttribute(handle, &H800, "OPEN".PadRight(8), SenseReport:=senseReportFunc) Then
+                    If checked(Function() SetMAMAttribute(handle, &H800, "OPEN".PadRight(8), SenseReport:=senseReportFunc)) Then
                         ProgressReport("WRITE ATTRIBUTE: 0800 OK" & vbCrLf)
                     Else
                         OnError("WRITE ATTRIBUTE: 0800 Fail" & vbCrLf)
@@ -8308,7 +8332,7 @@ Public Class TapeUtils
                     End If
                     'Set AppName
                     ProgressReport($"WRITE ATTRIBUTE: Application Name = LTFSCopyGUI..")
-                    If SetMAMAttribute(handle, &H801, "LTFSCopyGUI".PadRight(32), SenseReport:=senseReportFunc) Then
+                    If checked(Function() SetMAMAttribute(handle, &H801, "LTFSCopyGUI".PadRight(32), SenseReport:=senseReportFunc)) Then
                         ProgressReport("WRITE ATTRIBUTE: 0801 OK" & vbCrLf)
                     Else
                         OnError("WRITE ATTRIBUTE: 0801 Fail" & vbCrLf)
@@ -8316,7 +8340,7 @@ Public Class TapeUtils
                     End If
                     'Set Version
                     ProgressReport($"WRITE ATTRIBUTE: Application Version={My.Application.Info.Version.ToString(3)}..")
-                    If SetMAMAttribute(handle, &H802, My.Application.Info.Version.ToString(3).PadRight(8), SenseReport:=senseReportFunc) Then
+                    If checked(Function() SetMAMAttribute(handle, &H802, My.Application.Info.Version.ToString(3).PadRight(8), SenseReport:=senseReportFunc)) Then
                         ProgressReport("WRITE ATTRIBUTE: 0802 OK" & vbCrLf)
                     Else
                         OnError("WRITE ATTRIBUTE: 0802 Fail" & vbCrLf)
@@ -8324,7 +8348,7 @@ Public Class TapeUtils
                     End If
                     'Set TextLabel
                     ProgressReport($"WRITE ATTRIBUTE: TextLabel= ..")
-                    If SetMAMAttribute(handle, &H803, "".PadRight(160), AttributeFormat.Text, SenseReport:=senseReportFunc) Then
+                    If checked(Function() SetMAMAttribute(handle, &H803, "".PadRight(160), AttributeFormat.Text, SenseReport:=senseReportFunc)) Then
                         ProgressReport("WRITE ATTRIBUTE: 0803 OK" & vbCrLf)
                     Else
                         OnError("WRITE ATTRIBUTE: 0803 Fail" & vbCrLf)
@@ -8332,7 +8356,7 @@ Public Class TapeUtils
                     End If
                     'Set TLI
                     ProgressReport($"WRITE ATTRIBUTE: Localization Identifier = 0..")
-                    If SetMAMAttribute(handle, &H805, {0}, AttributeFormat.Binary, SenseReport:=senseReportFunc) Then
+                    If checked(Function() SetMAMAttribute(handle, &H805, {0}, AttributeFormat.Binary, SenseReport:=senseReportFunc)) Then
                         ProgressReport("WRITE ATTRIBUTE:0805 OK" & vbCrLf)
                     Else
                         OnError("WRITE ATTRIBUTE:0805 Fail" & vbCrLf)
@@ -8341,7 +8365,7 @@ Public Class TapeUtils
                     'Set Barcode
                     Barcode = Barcode.PadRight(32).Substring(0, 32)
                     ProgressReport($"WRITE ATTRIBUTE: Barcode={Barcode}..")
-                    If SetBarcode(handle, Barcode, senseReport:=senseReportFunc) Then
+                    If checked(Function() SetBarcode(handle, Barcode, senseReport:=senseReportFunc)) Then
                         ProgressReport("WRITE ATTRIBUTE: 0806 OK" & vbCrLf)
                     Else
                         OnError("WRITE ATTRIBUTE: 0806 Fail" & vbCrLf)
@@ -8351,7 +8375,7 @@ Public Class TapeUtils
                     Dim LTFSVersion As String = "2.4.0"
                     If ExtraPartitionCount = 0 Then LTFSVersion = "2.4.1"
                     ProgressReport($"WRITE ATTRIBUTE: Format Version={LTFSVersion}..")
-                    If SetMAMAttribute(handle, &H80B, LTFSVersion.PadRight(16), SenseReport:=senseReportFunc) Then
+                    If checked(Function() SetMAMAttribute(handle, &H80B, LTFSVersion.PadRight(16), SenseReport:=senseReportFunc)) Then
                         ProgressReport("WRITE ATTRIBUTE: 080B OK" & vbCrLf)
                     Else
                         OnError("WRITE ATTRIBUTE: 080B Fail" & vbCrLf)
@@ -8373,7 +8397,7 @@ Public Class TapeUtils
                     'Locate
                     ProgressReport("Locate to data partition..")
                     Dim LocateAddCode As UShort = Locate(handle, 0, ExtraPartitionCount)
-                    If LocateAddCode = 0 Then
+                    If LocateAddCode = 0 AndAlso atBlock0(ExtraPartitionCount) Then
                         ProgressReport($"Locate P{ExtraPartitionCount}B0 OK" & vbCrLf)
                     Else
                         OnError($"Locate P{ExtraPartitionCount}B0 Fail{vbCrLf}{ParseAdditionalSenseCode(LocateAddCode)}" & vbCrLf)
@@ -8470,7 +8494,7 @@ Public Class TapeUtils
                         'Locate
                         ProgressReport("Locate to index partition..")
                         LocateAddCode = Locate(handle, 0, 0)
-                        If LocateAddCode = 0 Then
+                        If LocateAddCode = 0 AndAlso atBlock0(0) Then
                             ProgressReport("Locate P0B0 OK" & vbCrLf)
                         Else
                             OnError($"Locate P0B0 Fail{vbCrLf}{ParseAdditionalSenseCode(LocateAddCode)}" & vbCrLf)
@@ -8553,7 +8577,7 @@ Public Class TapeUtils
                     'Set DateTime
                     Dim CurrentTime As String = Now.ToUniversalTime.ToString("yyyyMMddhhmm")
                     ProgressReport($"WRITE ATTRIBUTE: Written time={CurrentTime}..")
-                    If SetMAMAttribute(handle, &H804, CurrentTime.PadRight(12), SenseReport:=senseReportFunc) Then
+                    If checked(Function() SetMAMAttribute(handle, &H804, CurrentTime.PadRight(12), SenseReport:=senseReportFunc)) Then
                         ProgressReport("WRITE ATTRIBUTE: 0804 OK" & vbCrLf)
                     Else
                         OnError("WRITE ATTRIBUTE: 0804 Fail" & vbCrLf)
@@ -8561,10 +8585,11 @@ Public Class TapeUtils
                     End If
                     'Set VCI
                     ProgressReport($"WRITE ATTRIBUTE: VCI..")
-                    If WriteVCI(handle:=handle, Generation:=pindex.generationnumber, block0:=block0, block1:=block1, UUID:=pindex.volumeuuid.ToString(), ExtraPartitionCount:=ExtraPartitionCount, SenseReport:=senseReportFunc) Then
+                    If checked(Function() WriteVCI(handle:=handle, Generation:=pindex.generationnumber, block0:=block0, block1:=block1, UUID:=pindex.volumeuuid.ToString(), ExtraPartitionCount:=ExtraPartitionCount, SenseReport:=senseReportFunc)) Then
                         ProgressReport("WRITE VCI OK" & vbCrLf)
                     Else
-                        ProgressReport("WRITE VCI Fail" & vbCrLf)
+                        OnError("WRITE VCI Fail" & vbCrLf)
+                        Return False
                     End If
                     OnFinish("Format finished.")
                     Return True
