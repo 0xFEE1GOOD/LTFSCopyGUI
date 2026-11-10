@@ -1785,8 +1785,11 @@ Public Class LTFSWriter
     Private Sub MarkWriteDegraded(file As ltfsindex.file)
         If file Is Nothing Then Return
         SyncLock _writeCompletionLock
-            _degradedWriteFiles.Add(file)
+            If Not _degradedWriteFiles.Add(file) Then Return
+            ' Persist it: the in-memory set is lost after the session, and the file is still indexed full-length.
+            file.SetXattr(ltfsindex.file.xattr.ApplicationSpecific.WriteDegraded, "1")
         End SyncLock
+        PrintMsg($"{file.name}: a block was ignored after a write error - the copy on tape is damaged", IsWarn:=True)
     End Sub
 
     Private Function IsWriteDegraded(file As ltfsindex.file) As Boolean
@@ -8974,6 +8977,10 @@ Public Class LTFSWriter
                                                               sh.StopFlag = True
                                                           End Try
                                                       End Sub, Tuple.Create(fr, FileData))
+                                                ' A finished task still holds its file's bytes (AsyncState) until the list is
+                                                ' cleared at the next index write - tens of GB on long small-file jobs. Drop
+                                                ' the successful ones now; faulted ones stay to be observed by WaitForHashTasks.
+                                                hashTasks.RemoveAll(Function(t) t.Status = TaskStatus.RanToCompletion)
                                                 hashTasks.Add(hashTask)
                                             End If
                                             If fr.fs IsNot Nothing Then fr.Close()
@@ -17019,6 +17026,7 @@ Public Class LTFSWriter
                                                           Case DialogResult.Retry
                                                               succ = False
                                                           Case DialogResult.Ignore
+                                                              MarkWriteDegraded(newfile)
                                                               succ = True
                                                               Exit While
                                                       End Select
@@ -17063,6 +17071,7 @@ Public Class LTFSWriter
                                                               Case DialogResult.Retry
                                                                   succ = False
                                                               Case DialogResult.Ignore
+                                                                  MarkWriteDegraded(newfile)
                                                                   succ = True
                                                                   Exit While
                                                           End Select

@@ -427,6 +427,8 @@ Public Class ltfsindex
                 Public Shared ReadOnly Property CapacityRemain As String = "ltfscopygui.capacityremain"
                 Public Shared ReadOnly Property Archive As String = "ltfscopygui.archive"
                 Public Shared ReadOnly Property Fragment As String = "ltfscopygui.fragment"
+                ''' <summary>Set when the operator chose Ignore on a write error: part of the file is not on tape.</summary>
+                Public Shared ReadOnly Property WriteDegraded As String = "ltfscopygui.writedegraded"
 
             End Class
             Public Class HashLengthBytes
