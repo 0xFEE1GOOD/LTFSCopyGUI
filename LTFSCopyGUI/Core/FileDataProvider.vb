@@ -328,20 +328,22 @@ Public Class FileDataProvider
                 End If
 
                 Dim isSmallFile = fr.File.length < _smallThreshold AndAlso fr.FileOffset = 0 AndAlso fr.File.length = fr.SegmentLength
-                Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(FileDataProvider))
-                    Using categoryScope As IDisposable = LogContext.PushProperty("Category", "FileProvider")
-                        Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
-                            Using eventTypeScope As IDisposable = LogContext.PushProperty("EventType", "FileRead")
-                                Log.Information("File data provider began reading a file. FileIndex={FileIndex} SourcePath={SourcePath} Length={Length} SmallFile={SmallFile} CacheHit={CacheHit}.",
-                                                nextIdx,
-                                                If(fr Is Nothing, String.Empty, fr.SourcePath),
-                                                If(fr Is Nothing OrElse fr.File Is Nothing, 0L, fr.File.length),
-                                                isSmallFile,
-                                                isSmallFile AndAlso _smallCacheMap.ContainsKey(fr))
+                If Log.IsEnabled(Serilog.Events.LogEventLevel.Debug) Then ' per-file trace: thousands per second
+                    Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(FileDataProvider))
+                        Using categoryScope As IDisposable = LogContext.PushProperty("Category", "FileProvider")
+                            Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
+                                Using eventTypeScope As IDisposable = LogContext.PushProperty("EventType", "FileRead")
+                                    Log.Debug("File data provider began reading a file. FileIndex={FileIndex} SourcePath={SourcePath} Length={Length} SmallFile={SmallFile} CacheHit={CacheHit}.",
+                                                    nextIdx,
+                                                    If(fr Is Nothing, String.Empty, fr.SourcePath),
+                                                    If(fr Is Nothing OrElse fr.File Is Nothing, 0L, fr.File.length),
+                                                    isSmallFile,
+                                                    isSmallFile AndAlso _smallCacheMap.ContainsKey(fr))
+                                End Using
                             End Using
                         End Using
                     End Using
-                End Using
+                End If
 
                 If isSmallFile Then
                     Dim data As Byte() = Nothing
@@ -371,18 +373,20 @@ Public Class FileDataProvider
                     ' 大文件：流式拷贝到 Pipe（积极缓存，受 Pipe 背压调节）
                     Await StreamFileToPipeAsync(fr, _cts.Token)
                 End If
-                Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(FileDataProvider))
-                    Using categoryScope As IDisposable = LogContext.PushProperty("Category", "FileProvider")
-                        Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
-                            Using eventTypeScope As IDisposable = LogContext.PushProperty("EventType", "FileCompleted")
-                                Log.Information("File data provider completed a file. FileIndex={FileIndex} SourcePath={SourcePath} CachedSmallFiles={CachedSmallFiles}.",
-                                                nextIdx,
-                                                If(fr Is Nothing, String.Empty, fr.SourcePath),
-                                                _smallCacheMap.Count)
+                If Log.IsEnabled(Serilog.Events.LogEventLevel.Debug) Then ' per-file trace: thousands per second
+                    Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(FileDataProvider))
+                        Using categoryScope As IDisposable = LogContext.PushProperty("Category", "FileProvider")
+                            Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
+                                Using eventTypeScope As IDisposable = LogContext.PushProperty("EventType", "FileCompleted")
+                                    Log.Debug("File data provider completed a file. FileIndex={FileIndex} SourcePath={SourcePath} CachedSmallFiles={CachedSmallFiles}.",
+                                                    nextIdx,
+                                                    If(fr Is Nothing, String.Empty, fr.SourcePath),
+                                                    _smallCacheMap.Count)
+                                End Using
                             End Using
                         End Using
                     End Using
-                End Using
+                End If
                 ' 在积极模式下，自动继续下一个文件；在信号模式下，等待下一次 RequestNextFile
                 If _requireSignal = False Then
                     ' 继续循环即可
@@ -493,7 +497,9 @@ Public Class FileDataProvider
             End Using
         End Using
         Try
-            fs = New FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, My.Settings.LTFSWriter_FileStreamBufferSize, FileOptions.Asynchronous Or FileOptions.SequentialScan)
+            ' Cached setting (My.Settings takes a lock), and never a buffer larger than the file itself.
+            Dim bufferSize As Integer = CInt(Math.Max(4096L, Math.Min(CLng(CachedSetting(Of Integer)(NameOf(My.Settings.LTFSWriter_FileStreamBufferSize))), fr.File.length)))
+            fs = New FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize, FileOptions.Asynchronous Or FileOptions.SequentialScan)
             If fr.File.length = 0 Then
                 fr.File.length = fs.Length
                 fr.FileOffset = 0
