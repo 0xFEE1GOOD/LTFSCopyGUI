@@ -9227,7 +9227,7 @@ Public Class LTFSWriter
                                                 If LastWriteTask IsNot Nothing Then
                                                     Dim lwcounter As Integer = 0
                                                     While Not (LastWriteTask.IsCompleted OrElse LastWriteTask.IsCanceled OrElse LastWriteTask.IsFaulted)
-                                                        LWTE.WaitOne(10)
+                                                        DirectCast(LastWriteTask, IAsyncResult).AsyncWaitHandle.WaitOne(10) ' wakes on task completion; LWTE was set before the task finished
                                                         lwcounter += 1
                                                         If lwcounter >= 100 Then
                                                             lwcounter = 0
@@ -9447,7 +9447,7 @@ Public Class LTFSWriter
                                             If LastWriteTask IsNot Nothing Then
                                                 Dim lwcounter As Integer = 0
                                                 While Not (LastWriteTask.IsCompleted OrElse LastWriteTask.IsCanceled OrElse LastWriteTask.IsFaulted)
-                                                    LWTE.WaitOne(10)
+                                                    DirectCast(LastWriteTask, IAsyncResult).AsyncWaitHandle.WaitOne(10) ' wakes on task completion; LWTE was set before the task finished
                                                     lwcounter += 1
                                                     If lwcounter >= 100 Then
                                                         lwcounter = 0
@@ -17087,7 +17087,7 @@ Public Class LTFSWriter
                                  If LastWriteTask IsNot Nothing Then
                                      Dim lwcounter As Integer = 0
                                      While Not (LastWriteTask.IsCompleted OrElse LastWriteTask.IsCanceled OrElse LastWriteTask.IsFaulted)
-                                         LWTE.WaitOne(10)
+                                         DirectCast(LastWriteTask, IAsyncResult).AsyncWaitHandle.WaitOne(10) ' wakes on task completion; LWTE was set before the task finished
                                          lwcounter += 1
                                          If lwcounter >= 100 Then
                                              lwcounter = 0
@@ -17304,7 +17304,7 @@ Public Class LTFSWriter
                              If LastWriteTask IsNot Nothing Then
                                  Dim lwcounter As Integer = 0
                                  While Not (LastWriteTask.IsCompleted OrElse LastWriteTask.IsCanceled OrElse LastWriteTask.IsFaulted)
-                                     LWTE.WaitOne(10)
+                                     DirectCast(LastWriteTask, IAsyncResult).AsyncWaitHandle.WaitOne(10) ' wakes on task completion; LWTE was set before the task finished
                                      lwcounter += 1
                                      If lwcounter >= 100 Then
                                          lwcounter = 0
