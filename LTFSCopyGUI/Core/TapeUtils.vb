@@ -580,7 +580,8 @@ Public Class TapeUtils
             Return My.Settings.TapeUtils_TransferLength
         End Get
         Set(value As Integer)
-            My.Settings.TapeUtils_TransferLength = value
+            ' The value is persisted now; never save an unusable limit (it would clamp every block to 0).
+            If value > 0 Then My.Settings.TapeUtils_TransferLength = value
         End Set
     End Property
 #Region "SCSIOP_READ"
@@ -689,11 +690,9 @@ Public Class TapeUtils
                 ' to a limit it would reject.
                 Dim data As Byte() = SCSIReadParam(handle, {5, 0, 0, 0, 0, 0}, 6)
                 Dim MaxBlockLen As UInt64 = CULng(data(1)) << 16 Or CULng(data(2)) << 8 Or data(3)
-                ' 1048576 is GlobalBlockLimit's own declared default. GlobalBlockLimit can itself
-                ' be 0 here - the BlockLenLimit setter is unguarded and the persisted drive
-                ' settings are reloaded over the probe result - and falling back to that value
-                ' would pin every later tape record at zero length for good.
-                If MaxBlockLen = 0UL Then MaxBlockLen = CULng(If(GlobalBlockLimit > 0, GlobalBlockLimit, 1048576))
+                ' Fall back to the configured transfer length, or 524288 (its default and the LTFS
+                ' block size) if that is not usable: a 0 would pin every later record at zero length.
+                If MaxBlockLen = 0UL Then MaxBlockLen = CULng(If(GlobalBlockLimit > 0, GlobalBlockLimit, 524288))
                 Return New BlockLimits With {.MaximumBlockLength = MaxBlockLen,
             .MinimumBlockLength = CUShort(data(4)) << 8 Or data(5)}
         End Select
