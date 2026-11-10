@@ -4321,9 +4321,8 @@ Public Class LTFSWriter
         Dim originalPreviousStartBlock As ULong = schema.previousgenerationlocation.startblock
         Dim tmpf As String = Nothing
         Try
-            TryExecute(Function() As Byte()
-                           Return TapeUtils.WriteFileMark(driveHandle)
-                       End Function)
+            ' Checked like the closing filemark (TryExecute reported VOLUME OVERFLOW and Ignore as success).
+            WriteIndexFileMark()
             schema.generationnumber = CULng(schema.generationnumber + 1)
             schema.updatetime = Now.ToUniversalTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
             schema.location.partition = ltfsindex.PartitionLabel.b
@@ -4404,7 +4403,9 @@ Public Class LTFSWriter
                 TapeUtils.Locate(driveHandle, 3UL, IndexPartition, TapeUtils.LocateDestType.FileMark)
                 Dim p As TapeUtils.PositionData = GetPos
                 PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
-                TapeUtils.WriteFileMark(driveHandle)
+                ' Never write on the index partition after a Locate that did not get there.
+                If p.PartitionNumber <> IndexPartition Then Throw New IO.IOException($"Locate to the index partition failed: {p}")
+                WriteIndexFileMark()
                 PrintMsg($"Filemark Written", LogOnly:=True)
                 If schema.location.partition = ltfsindex.PartitionLabel.b Then
                     schema.previousgenerationlocation = New ltfsindex.LocationDef With {.partition = schema.location.partition, .startblock = schema.location.startblock}
@@ -4491,18 +4492,19 @@ Public Class LTFSWriter
             'Write data
             TapeUtils.Locate(driveHandle, pFMIndex.BlockNumber, pFMIndex.PartitionNumber)
             CurrentBytesProcessed = 0
-            TapeUtils.Write(handle:=driveHandle, Data:=Data, BlockSize:=plabel.blocksize, senseEnabled:=False,
+            ' Checked: a refused block (overflow, medium error) must not be recorded as written.
+            CheckIndexSense(TapeUtils.Write(handle:=driveHandle, Data:=Data, BlockSize:=plabel.blocksize, senseEnabled:=True,
                             ProgressReport:=Sub(progress As Long)
                                                 Threading.Interlocked.Add(TotalBytesProcessed, progress)
                                                 Threading.Interlocked.Add(CurrentBytesProcessed, progress)
                                             End Sub,
-                            DataRead:=DataRead)
+                            DataRead:=DataRead))
             If IsLastFile Then
                 'Recover old index
-                TapeUtils.WriteFileMark(driveHandle)
-                TapeUtils.Write(driveHandle, tmpf, plabel.blocksize, False)
+                WriteIndexFileMark()
+                CheckIndexSense(TapeUtils.Write(driveHandle, tmpf, plabel.blocksize, True))
                 IO.File.Delete(tmpf)
-                TapeUtils.WriteFileMark(driveHandle)
+                WriteIndexFileMark()
                 'Recover position
                 If RetainPosisiton Then TapeUtils.Locate(driveHandle, pPrevious.BlockNumber, pPrevious.PartitionNumber)
             End If
@@ -4525,6 +4527,11 @@ Public Class LTFSWriter
             Else
                 tmpf = LazySchemaStore.CreateTempFilePath("file-transfer")
                 RestoreFile(tmpf, f)
+            End If
+            ' A failed or short restore must not replace the good extent with a truncated copy.
+            If Not IO.File.Exists(tmpf) OrElse New IO.FileInfo(tmpf).Length <> f.length Then
+                PrintMsg($"{f.name}: restored copy is incomplete; not moved to the index partition", IsWarn:=True)
+                Exit Sub
             End If
             ' Using: the early-return failure paths in DumpDataToIndexPartition (tape
             ' ejected, no extra partition, ReadFileMark failure) never reach
@@ -8775,7 +8782,8 @@ Public Class LTFSWriter
                                                                          nextRecord.File.extentinfo(0).partition = DataPartition)
                                             fileextent.startblock = DumpDataToIndexPartition(fr.fs, False, IsFirstFile, IsLastFile, tarDataRead)
                                             fr.Close()
-                                            If IsLastFile Then TapeUtils.Locate(driveHandle, lastpos.BlockNumber, lastpos.PartitionNumber)
+                                            ' Also go back to the data partition when the dump failed mid-batch.
+                                            If IsLastFile OrElse fileextent.startblock < 0 Then TapeUtils.Locate(driveHandle, lastpos.BlockNumber, lastpos.PartitionNumber)
                                             ' -1 is DumpDataToIndexPartition's failure sentinel. Adding it as an extent
                                             ' would record a negative startblock in the index while the file is still
                                             ' counted as fully written and hashed as a success, so the loss only shows up
@@ -10284,6 +10292,7 @@ Public Class LTFSWriter
         If TapeEjectedReadOnly Then Exit Sub
         Dim th As New Threading.Thread(
         Sub()
+            Dim failed As Boolean = False
             Try
                 SetStatusLight(LWStatus.Busy)
                 If (My.Settings.LTFSWriter_ForceIndex OrElse TotalBytesUnindexed <> 0) AndAlso schema IsNot Nothing AndAlso schema.location.partition = ltfsindex.PartitionLabel.b Then
@@ -10296,11 +10305,12 @@ Public Class LTFSWriter
                 PrintMsg(My.Resources.ResText_DPIWFailed, False, $"{My.Resources.ResText_DPIWFailed}: {ex.ToString}", IsWarn:=True)
                 Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"{ex.ToString()}{vbCrLf}{ex.StackTrace}"))
                 SetStatusLight(LWStatus.Err)
+                failed = True
             End Try
             Invoke(Sub()
                        LockGUI(False)
                        RefreshDisplay()
-                       If Not SilentMode Then MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_DPIUed)
+                       If Not SilentMode AndAlso Not failed Then MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_DPIUed)
                    End Sub)
         End Sub)
         LockGUI()
