@@ -128,13 +128,25 @@ Namespace My
             End If
             If drvSettingUpdated Then File.WriteAllText(Settings.driveSettingFile, (New TapeUtils()).GetSerializedText())
             '读取独立配置文件
+            ' Language: the saved choice, else English unless Windows itself is Chinese (the built-in
+            ' resources are Chinese, so any other OS language used to fall back to Chinese). Applied as
+            ' the default for every thread too: worker threads print most of the status messages.
+            Dim lang As String = Nothing
             If File.Exists(Settings.langcfgFile) Then
                 Try
-                    Dim lang As String = File.ReadAllText(Settings.langcfgFile)
-                    Threading.Thread.CurrentThread.CurrentCulture = New Globalization.CultureInfo(lang)
-                    Threading.Thread.CurrentThread.CurrentUICulture = New Globalization.CultureInfo(lang)
+                    lang = File.ReadAllText(Settings.langcfgFile).Trim()
+                    Dim ci As New Globalization.CultureInfo(lang)
+                    Threading.Thread.CurrentThread.CurrentCulture = ci
+                    Globalization.CultureInfo.DefaultThreadCurrentCulture = ci
                 Catch
+                    lang = Nothing
                 End Try
+            End If
+            If String.IsNullOrEmpty(lang) AndAlso Not Globalization.CultureInfo.CurrentUICulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase) Then lang = "en"
+            If Not String.IsNullOrEmpty(lang) Then
+                Dim uiCulture As New Globalization.CultureInfo(lang)
+                Threading.Thread.CurrentThread.CurrentUICulture = uiCulture
+                Globalization.CultureInfo.DefaultThreadCurrentUICulture = uiCulture
             End If
             If File.Exists(Settings.driveSettingFile) Then
                 Try
