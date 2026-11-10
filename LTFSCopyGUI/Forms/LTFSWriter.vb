@@ -4268,6 +4268,24 @@ Public Class LTFSWriter
         End While
         Return succ
     End Function
+    ''' <summary>
+    ''' Throws unless the drive accepted an index write. The sense key decides, not the EOM bit:
+    ''' 0/1 = written (EOM alone is only an early warning), 13 = volume overflow, anything else = failed.
+    ''' </summary>
+    Private Sub CheckIndexSense(s As Byte())
+        If s Is Nothing OrElse s.Length < 3 Then Return
+        Dim key As Integer = s(2) And &HF
+        If key = 13 Then Throw New IO.IOException($"{My.Resources.ResText_VOF}{vbCrLf}{TapeUtils.ParseSenseData(s)}")
+        If key > 1 Then Throw New IO.IOException(TapeUtils.ParseSenseData(s))
+        If ((s(2) >> 6) And &H1) = 1 Then PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
+        If key = 1 Then PrintMsg($"index write recovered error {TapeUtils.Byte2Hex(s, True)}", IsWarn:=True, LogOnly:=True)
+    End Sub
+    ''' <summary>Writes the filemark that closes an index and throws if the drive did not take it.</summary>
+    Private Sub WriteIndexFileMark()
+        Dim ok As Boolean = True
+        CheckIndexSense(TapeUtils.WriteFileMark(driveHandle, 1UI, ok))
+        If Not ok Then Throw New IO.IOException("Index filemark: SCSI command failed")
+    End Sub
     Public Sub WriteCurrentIndex(Optional ByVal GotoEOD As Boolean = True, Optional ByVal ClearCurrentStat As Boolean = True)
         If TapeEjectedReadOnly Then Exit Sub
         SetStatusLight(LWStatus.Busy)
@@ -4314,30 +4332,7 @@ Public Class LTFSWriter
             ' OVERFLOW as success (see the sense key 13 branch above), and its Retry would
             ' re-issue the payload from a tape position that no longer matches the
             ' schema.location.startblock latched before the write.
-            Dim idxSense As Byte() = TapeUtils.Write(driveHandle, tmpf, plabel.blocksize, True)
-            If idxSense IsNot Nothing AndAlso idxSense.Length > 2 Then
-                If ((idxSense(2) >> 6) And &H1) = 1 Then
-                    If (idxSense(2) And &HF) = 13 Then
-                        ' Unlike a data block (which LTFSWriter_IgnoreVolumeOverflow may
-                        ' skip), a refused index block cannot be ignored: it orphans
-                        ' everything written since the previous generation.
-                        Throw New IO.IOException($"{My.Resources.ResText_VOF}{vbCrLf}{TapeUtils.ParseSenseData(idxSense)}")
-                    Else
-                        ' Early Warning / EOM only - the index itself did reach the tape.
-                        PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
-                    End If
-                ElseIf (idxSense(2) And &HF) = 1 Then
-                    ' Sense key 1 is RECOVERED ERROR: the drive completed the command after
-                    ' its own retries, so the index IS on tape. Throwing here would abort a
-                    ' write that succeeded, and because UpdataAllIndex has no Try/Catch the
-                    ' exception escapes past ReleaseUnit/AllowMediumRemoval/LockGUI(False),
-                    ' leaving the drive reserved and the GUI locked. Warn only.
-                    PrintMsg($"index write recovered error {TapeUtils.Byte2Hex(idxSense, True)}", IsWarn:=True, LogOnly:=True)
-                ElseIf (idxSense(2) And &HF) <> 0 Then
-                    PrintMsg($"sense err {TapeUtils.Byte2Hex(idxSense, True)}", IsWarn:=True, LogOnly:=True)
-                    Throw New IO.IOException(TapeUtils.ParseSenseData(idxSense))
-                End If
-            End If
+            CheckIndexSense(TapeUtils.Write(driveHandle, tmpf, plabel.blocksize, True))
             'While sdata.Length > 0
             '    Dim wdata As Byte() = sdata.Take(Math.Min(plabel.blocksize, sdata.Length)).ToArray
             '    sdata = sdata.Skip(Math.Min(plabel.blocksize, sdata.Length)).ToArray()
@@ -4348,11 +4343,8 @@ Public Class LTFSWriter
                 CurrentBytesProcessed = 0
                 CurrentFilesProcessed = 0
             End If
-            ' Check the closing filemark the way the opening one above already is; an
-            ' index that is not terminated by a filemark cannot be read back.
-            TryExecute(Function() As Byte()
-                           Return TapeUtils.WriteFileMark(driveHandle)
-                       End Function)
+            ' An index that is not terminated by a filemark cannot be read back.
+            WriteIndexFileMark()
             ' Only now is the index complete on tape. The Catch below does not restore
             ' TotalBytesUnindexed, so zeroing it any earlier would mark the data as
             ' indexed even when one of the writes above threw.
@@ -4421,27 +4413,8 @@ Public Class LTFSWriter
                 ' the WriteVCI below, or the Volume Coherency Info would advertise an
                 ' index generation that is not on the tape. The Catch restores
                 ' schema.location on the way out.
-                Dim idxSense As Byte() = TapeUtils.Write(driveHandle, tmpf, plabel.blocksize, True)
-                If idxSense IsNot Nothing AndAlso idxSense.Length > 2 Then
-                    If ((idxSense(2) >> 6) And &H1) = 1 Then
-                        If (idxSense(2) And &HF) = 13 Then
-                            Throw New IO.IOException($"{My.Resources.ResText_VOF}{vbCrLf}{TapeUtils.ParseSenseData(idxSense)}")
-                        Else
-                            ' Early Warning / EOM only - the index itself did reach the tape.
-                            PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
-                        End If
-                    ElseIf (idxSense(2) And &HF) = 1 Then
-                        ' RECOVERED ERROR - the drive completed the write internally, so the
-                        ' index is on tape and the WriteVCI below may proceed. Warn only.
-                        PrintMsg($"index write recovered error {TapeUtils.Byte2Hex(idxSense, True)}", IsWarn:=True, LogOnly:=True)
-                    ElseIf (idxSense(2) And &HF) <> 0 Then
-                        PrintMsg($"sense err {TapeUtils.Byte2Hex(idxSense, True)}", IsWarn:=True, LogOnly:=True)
-                        Throw New IO.IOException(TapeUtils.ParseSenseData(idxSense))
-                    End If
-                End If
-                TryExecute(Function() As Byte()
-                               Return TapeUtils.WriteFileMark(driveHandle)
-                           End Function)
+                CheckIndexSense(TapeUtils.Write(driveHandle, tmpf, plabel.blocksize, True))
+                WriteIndexFileMark()
                 PrintMsg(My.Resources.ResText_WIF)
                 PrintMsg($"Position = {GetPos.ToString()}", LogOnly:=True)
             End If
