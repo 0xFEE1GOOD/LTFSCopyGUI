@@ -24,6 +24,23 @@ Public Class SerializationHelper
         Return b.Deserialize(s)
     End Function
 End Class
+''' <summary>
+''' Lock-free cache of My.Settings values for hot paths. Each My.Settings read takes a lock and hashes the
+''' name culture-aware; at thousands of small files per second that serialised the writer and every hash
+''' task. Cleared whenever a setting changes or settings are reloaded.
+''' </summary>
+Public Module SettingsCache
+    Private ReadOnly _values As New System.Collections.Concurrent.ConcurrentDictionary(Of String, Object)(StringComparer.Ordinal)
+    Private _hooked As Integer
+    Public Function CachedSetting(Of T)(name As String) As T
+        If Threading.Interlocked.Exchange(_hooked, 1) = 0 Then
+            AddHandler My.Settings.PropertyChanged, Sub(s, e) _values.Clear()
+            AddHandler My.Settings.SettingsLoaded, Sub(s, e) _values.Clear()
+        End If
+        Return DirectCast(_values.GetOrAdd(name, Function(n) My.Settings(n)), T)
+    End Function
+End Module
+
 Public Class LocalizedDescriptionAttribute
     Inherits DescriptionAttribute
     Public Shared Function Localize(key As String) As String

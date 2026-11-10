@@ -1065,27 +1065,27 @@ Public Class IOManager
                             With blk
                                 If .Len = -1 Then .Len = .block.Length
                                 Dim md5task As Task = Task.CompletedTask
-                                If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then md5task = Task.Run(
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) Then md5task = Task.Run(
                                 Sub()
                                     md5.TransformBlock(.block, 0, .Len, .block, 0)
                                 End Sub)
                                 Dim sha1task As Task = Task.CompletedTask
-                                If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then sha1task = Task.Run(
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) Then sha1task = Task.Run(
                                 Sub()
                                     sha1.TransformBlock(.block, 0, .Len, .block, 0)
                                 End Sub)
                                 Dim sha256task As Task = Task.CompletedTask
-                                If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then sha256task = Task.Run(
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) Then sha256task = Task.Run(
                                 Sub()
                                     sha256.TransformBlock(.block, 0, .Len, .block, 0)
                                 End Sub)
                                 Dim sha512task As Task = Task.CompletedTask
-                                If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then sha512task = Task.Run(
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) Then sha512task = Task.Run(
                                 Sub()
                                     sha512.TransformBlock(.block, 0, .Len, .block, 0)
                                 End Sub)
                                 Dim blaketask As Task = Task.CompletedTask
-                                If My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then blaketask = Task.Run(
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) Then blaketask = Task.Run(
                                 Sub()
                                     'BlakeStream.Write(.block, WrittenBlakeBlock1, .Len)
                                     'WrittenBlakeBlock1 += .Len
@@ -1097,7 +1097,7 @@ Public Class IOManager
                                     End Try
                                 End Sub)
                                 Dim crc32task As Task = Task.CompletedTask
-                                If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then crc32task = Task.Run(
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) Then crc32task = Task.Run(
                                 Sub()
                                     Dim segment As New ArraySegment(Of Byte)(.block, 0, .Len)
                                     Try
@@ -1107,7 +1107,7 @@ Public Class IOManager
                                     End Try
                                 End Sub)
                                 Dim xxhash3task As Task = Task.CompletedTask
-                                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then xxhash3task = Task.Run(
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) Then xxhash3task = Task.Run(
                                 Sub()
                                     Dim segment As New ArraySegment(Of Byte)(.block, 0, .Len)
                                     Try
@@ -1117,7 +1117,7 @@ Public Class IOManager
                                     End Try
                                 End Sub)
                                 Dim xxhash128task As Task = Task.CompletedTask
-                                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then xxhash128task = Task.Run(
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) Then xxhash128task = Task.Run(
                                 Sub()
                                     Dim segment As New ArraySegment(Of Byte)(.block, 0, .Len)
                                     Try
@@ -1126,14 +1126,14 @@ Public Class IOManager
 
                                     End Try
                                 End Sub)
-                                If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then sha1task.Wait()
-                                If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then sha256task.Wait()
-                                If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then sha512task.Wait()
-                                If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then crc32task.Wait()
-                                If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then md5task.Wait()
-                                If My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then blaketask.Wait()
-                                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then xxhash3task.Wait()
-                                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then xxhash128task.Wait()
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) Then sha1task.Wait()
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) Then sha256task.Wait()
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) Then sha512task.Wait()
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) Then crc32task.Wait()
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) Then md5task.Wait()
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) Then blaketask.Wait()
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) Then xxhash3task.Wait()
+                                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) Then xxhash128task.Wait()
                             End With
                             If blk.OnFinished IsNot Nothing Then blk.OnFinished(blk.block)
                             blk.block = Nothing
@@ -1145,23 +1145,23 @@ Public Class IOManager
 
         Public Sub New()
             Try
-                If My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then Blake = Hasher.NewInstance()
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) Then Blake = Hasher.NewInstance()
             Catch
             End Try
-            If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then sha1 = SHA1.Create()
-            If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then sha256 = SHA256.Create()
-            If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then sha512 = SHA512.Create()
-            If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then md5 = MD5.Create()
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) Then sha1 = SHA1.Create()
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) Then sha256 = SHA256.Create()
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) Then sha512 = SHA512.Create()
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) Then md5 = MD5.Create()
             Try
-                If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then CRC32 = New Crc32()
-            Catch
-            End Try
-            Try
-                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then XxHash3 = New XxHash3()
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) Then CRC32 = New Crc32()
             Catch
             End Try
             Try
-                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then XxHash128 = New XxHash128()
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) Then XxHash3 = New XxHash3()
+            Catch
+            End Try
+            Try
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) Then XxHash128 = New XxHash128()
             Catch
             End Try
         End Sub
@@ -1191,27 +1191,27 @@ Public Class IOManager
             Dim runHash As Func(Of Action, Task) = Function(a As Action) If(Len <= InlineHashBytes, RunInline(a), Task.Run(a))
             SyncLock Lock
                 Dim sha1task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then sha1task = runHash(
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) Then sha1task = runHash(
                     Sub()
                         sha1.TransformBlock(block, Offset, Len, block, Offset)
                     End Sub)
                 Dim sha256task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then sha256task = runHash(
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) Then sha256task = runHash(
                     Sub()
                         sha256.TransformBlock(block, Offset, Len, block, Offset)
                     End Sub)
                 Dim sha512task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then sha512task = runHash(
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) Then sha512task = runHash(
                     Sub()
                         sha512.TransformBlock(block, Offset, Len, block, Offset)
                     End Sub)
                 Dim md5task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then md5task = runHash(
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) Then md5task = runHash(
                     Sub()
                         md5.TransformBlock(block, Offset, Len, block, Offset)
                     End Sub)
                 Dim blaketask As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then blaketask = runHash(
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) Then blaketask = runHash(
                     Sub()
                         Try
                             Dim segment As New ArraySegment(Of Byte)(block, Offset, Len)
@@ -1221,7 +1221,7 @@ Public Class IOManager
                         End Try
                     End Sub)
                 Dim crc32task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then crc32task = runHash(
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) Then crc32task = runHash(
                     Sub()
                         Dim segment As New ArraySegment(Of Byte)(block, Offset, Len)
                         Try
@@ -1231,7 +1231,7 @@ Public Class IOManager
                         End Try
                     End Sub)
                 Dim xxhash3task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then xxhash3task = runHash(
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) Then xxhash3task = runHash(
                     Sub()
                         Dim segment As New ArraySegment(Of Byte)(block, Offset, Len)
                         Try
@@ -1241,7 +1241,7 @@ Public Class IOManager
                         End Try
                     End Sub)
                 Dim xxhash128task As Task = Task.CompletedTask
-                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then xxhash128task = runHash(
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) Then xxhash128task = runHash(
                     Sub()
                         Dim segment As New ArraySegment(Of Byte)(block, Offset, Len)
                         Try
@@ -1250,14 +1250,14 @@ Public Class IOManager
 
                         End Try
                     End Sub)
-                If My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then blaketask.Wait()
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then sha1task.Wait()
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then sha256task.Wait()
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then sha512task.Wait()
-                If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then crc32task.Wait()
-                If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then md5task.Wait()
-                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then xxhash3task.Wait()
-                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then xxhash128task.Wait()
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) Then blaketask.Wait()
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) Then sha1task.Wait()
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) Then sha256task.Wait()
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) Then sha512task.Wait()
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) Then crc32task.Wait()
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) Then md5task.Wait()
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) Then xxhash3task.Wait()
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) Then xxhash128task.Wait()
             End SyncLock
         End Sub
 
@@ -1285,43 +1285,43 @@ Public Class IOManager
                 DeQSig.WaitOne(10)
             End While
             SyncLock Lock
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) Then
                     sha1.TransformFinalBlock({}, 0, 0)
                     resultBytesSHA1 = sha1.Hash
                 End If
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) Then
                     sha256.TransformFinalBlock({}, 0, 0)
                     resultBytesSHA256 = sha256.Hash
                 End If
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) Then
                     sha512.TransformFinalBlock({}, 0, 0)
                     resultBytesSHA512 = sha512.Hash
                 End If
                 Try
-                    If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then
+                    If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) Then
                         resultBytesCRC32 = CRC32.GetHashAndReset()
                     End If
                 Catch ex As Exception
                     resultBytesCRC32 = Nothing
                 End Try
-                If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) Then
                     md5.TransformFinalBlock({}, 0, 0)
                     resultBytesMD5 = md5.Hash
                 End If
                 Try
-                    If My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then resultBytesBlake = Blake.Finalize()
+                    If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) Then resultBytesBlake = Blake.Finalize()
                 Catch ex As Exception
                     resultBytesBlake = Nothing
                 End Try
                 Try
-                    If My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then
+                    If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) Then
                         resultXxHash3 = XxHash3.GetHashAndReset()
                     End If
                 Catch ex As Exception
                     resultXxHash3 = Nothing
                 End Try
                 Try
-                    If My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then
+                    If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) Then
                         resultXxHash128 = XxHash128.GetHashAndReset()
                     End If
                 Catch ex As Exception

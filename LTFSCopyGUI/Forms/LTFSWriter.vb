@@ -82,7 +82,7 @@ Public Class LTFSWriter
     <Category("LTFSWriter")>
     Public Property IndexWriteInterval As Long
         Get
-            Return My.Settings.LTFSWriter_IndexWriteInterval
+            Return CachedSetting(Of Long)(NameOf(My.Settings.LTFSWriter_IndexWriteInterval))
         End Get
         Set(value As Long)
             value = Math.Max(0, value)
@@ -140,7 +140,7 @@ Public Class LTFSWriter
     <Category("LTFSWriter")>
     Public Property CapacityRefreshInterval As Integer
         Get
-            Return My.Settings.LTFSWriter_CapacityRefreshInterval
+            Return CachedSetting(Of Integer)(NameOf(My.Settings.LTFSWriter_CapacityRefreshInterval))
         End Get
         Set(value As Integer)
             value = Math.Max(0, value)
@@ -3401,14 +3401,14 @@ Public Class LTFSWriter
                 If ShowXAttr_Barcode Then values.Add(file.GetXAttr("Barcode", True))
                 values.Add(CStr(file.length))
                 values.Add(If(file.creationtime, String.Empty))
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.SHA1, True))
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.SHA256, True))
-                If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.SHA512, True))
-                If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.CRC32, True))
-                If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.MD5, True))
-                If My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.BLAKE3, True))
-                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.XxHash3, True))
-                If My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.XxHash128, True))
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.SHA1, True))
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.SHA256, True))
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.SHA512, True))
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.CRC32, True))
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.MD5, True))
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.BLAKE3, True))
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.XxHash3, True))
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) Then values.Add(file.GetXAttr(ltfsindex.file.xattr.HashType.XxHash128, True))
                 values.Add(CStr(file.fileuid))
                 values.Add(CStr(file.openforwrite))
                 values.Add(CStr(file.readonly))
@@ -3456,35 +3456,35 @@ Public Class LTFSWriter
 
         If Not unwritten Then
             Dim columnIndex As Integer = 3 + If(ShowXAttr_Barcode, 1, 0)
-            If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) Then
                 ApplyChecksumColor(item, columnIndex, GetChecksumColor(file, "SHA1"))
                 columnIndex += 1
             End If
-            If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) Then
                 ApplyChecksumColor(item, columnIndex, GetChecksumColor(file, "SHA256"))
                 columnIndex += 1
             End If
-            If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) Then
                 ApplyChecksumColor(item, columnIndex, GetChecksumColor(file, "SHA512"))
                 columnIndex += 1
             End If
-            If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) Then
                 ApplyChecksumColor(item, columnIndex, GetChecksumColor(file, "CRC32"))
                 columnIndex += 1
             End If
-            If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) Then
                 ApplyChecksumColor(item, columnIndex, GetChecksumColor(file, "MD5"))
                 columnIndex += 1
             End If
-            If My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) Then
                 ApplyChecksumColor(item, columnIndex, GetChecksumColor(file, "BLAKE3"))
                 columnIndex += 1
             End If
-            If My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) Then
                 ApplyChecksumColor(item, columnIndex, GetChecksumColor(file, "XxHash3"))
                 columnIndex += 1
             End If
-            If My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) Then
                 ApplyChecksumColor(item, columnIndex, GetChecksumColor(file, "XxHash128"))
             End If
         End If
@@ -3691,14 +3691,14 @@ Public Class LTFSWriter
 
     Private Function GetListViewColumnSignature() As String
         Return If(ShowXAttr_Barcode, "1", "0") &
-               If(My.Settings.LTFSWriter_ChecksumEnabled_SHA1, "1", "0") &
-               If(My.Settings.LTFSWriter_ChecksumEnabled_SHA256, "1", "0") &
-               If(My.Settings.LTFSWriter_ChecksumEnabled_SHA512, "1", "0") &
-               If(My.Settings.LTFSWriter_ChecksumEnabled_CRC32, "1", "0") &
-               If(My.Settings.LTFSWriter_ChecksumEnabled_MD5, "1", "0") &
-               If(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3, "1", "0") &
-               If(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3, "1", "0") &
-               If(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128, "1", "0")
+               If(CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)), "1", "0") &
+               If(CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)), "1", "0") &
+               If(CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)), "1", "0") &
+               If(CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)), "1", "0") &
+               If(CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)), "1", "0") &
+               If(CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)), "1", "0") &
+               If(CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)), "1", "0") &
+               If(CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)), "1", "0")
     End Function
 
     Private Shared Function IsDynamicListViewColumn(name As String) As Boolean
@@ -3784,35 +3784,35 @@ Public Class LTFSWriter
         Next
 
         Dim colIndex As Integer = 3
-        If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) Then
             ListView1.Columns.Insert(colIndex, New ColumnHeader With {.Name = "Column_sha1", .Width = ListView1.LogicalToDeviceUnits(12 * (ltfsindex.file.xattr.HashLengthBytes.SHA1 + 1)), .Text = "SHA1", .DisplayIndex = colIndex})
             colIndex += 1
         End If
-        If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) Then
             ListView1.Columns.Insert(colIndex, New ColumnHeader With {.Name = "Column_sha256", .Width = ListView1.LogicalToDeviceUnits(12 * (ltfsindex.file.xattr.HashLengthBytes.SHA256 + 1)), .Text = "SHA256", .DisplayIndex = colIndex})
             colIndex += 1
         End If
-        If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) Then
             ListView1.Columns.Insert(colIndex, New ColumnHeader With {.Name = "Column_sha512", .Width = ListView1.LogicalToDeviceUnits(12 * (ltfsindex.file.xattr.HashLengthBytes.SHA512 + 1)), .Text = "SHA512", .DisplayIndex = colIndex})
             colIndex += 1
         End If
-        If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) Then
             ListView1.Columns.Insert(colIndex, New ColumnHeader With {.Name = "Column_crc32", .Width = ListView1.LogicalToDeviceUnits(12 * (ltfsindex.file.xattr.HashLengthBytes.CRC32 + 1)), .Text = "CRC32", .DisplayIndex = colIndex})
             colIndex += 1
         End If
-        If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) Then
             ListView1.Columns.Insert(colIndex, New ColumnHeader With {.Name = "Column_md5", .Width = ListView1.LogicalToDeviceUnits(12 * (ltfsindex.file.xattr.HashLengthBytes.MD5 + 1)), .Text = "MD5", .DisplayIndex = colIndex})
             colIndex += 1
         End If
-        If My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) Then
             ListView1.Columns.Insert(colIndex, New ColumnHeader With {.Name = "Column_blake3", .Width = ListView1.LogicalToDeviceUnits(12 * (ltfsindex.file.xattr.HashLengthBytes.BLAKE3 + 1)), .Text = "BLAKE3", .DisplayIndex = colIndex})
             colIndex += 1
         End If
-        If My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) Then
             ListView1.Columns.Insert(colIndex, New ColumnHeader With {.Name = "Column_XxHash3", .Width = ListView1.LogicalToDeviceUnits(12 * (ltfsindex.file.xattr.HashLengthBytes.XxHash3 + 1)), .Text = "XxHash3", .DisplayIndex = colIndex})
             colIndex += 1
         End If
-        If My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) Then
             ListView1.Columns.Insert(colIndex, New ColumnHeader With {.Name = "Column_XxHash128", .Width = ListView1.LogicalToDeviceUnits(12 * (ltfsindex.file.xattr.HashLengthBytes.XxHash128 + 1)), .Text = "XxHash128", .DisplayIndex = colIndex})
             colIndex += 1
         End If
@@ -4206,8 +4206,8 @@ Public Class LTFSWriter
     End Function
     Private Function IsUnindexedDataLimitReached(forceFlush As Boolean) As Boolean
         Return (((IndexWriteInterval > 0) AndAlso (TotalBytesUnindexed >= IndexWriteInterval)) OrElse
-                (My.Settings.LTFSWriter_IndexWriteIntervalSeconds > 0 AndAlso
-                 (Now - IndexLastUpdateTime).TotalSeconds >= My.Settings.LTFSWriter_IndexWriteIntervalSeconds) OrElse
+                (CachedSetting(Of Long)(NameOf(My.Settings.LTFSWriter_IndexWriteIntervalSeconds)) > 0 AndAlso
+                 (Now - IndexLastUpdateTime).TotalSeconds >= CachedSetting(Of Long)(NameOf(My.Settings.LTFSWriter_IndexWriteIntervalSeconds))) OrElse
                 forceFlush)
     End Function
 
@@ -7437,14 +7437,14 @@ Public Class LTFSWriter
     Private Sub ApplyFastReaderHashes(fr As FileRecord, hashes As Dictionary(Of String, String))
         If fr Is Nothing OrElse fr.File Is Nothing OrElse hashes Is Nothing Then Return
         Dim v As String = Nothing
-        If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 AndAlso hashes.TryGetValue("SHA1", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.SHA1, v)
-        If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 AndAlso hashes.TryGetValue("SHA256", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.SHA256, v)
-        If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 AndAlso hashes.TryGetValue("SHA512", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.SHA512, v)
-        If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 AndAlso hashes.TryGetValue("CRC32", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.CRC32, v)
-        If My.Settings.LTFSWriter_ChecksumEnabled_MD5 AndAlso hashes.TryGetValue("MD5", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.MD5, v)
-        If My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 AndAlso hashes.TryGetValue("BLAKE3", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.BLAKE3, v)
-        If My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 AndAlso hashes.TryGetValue("XxHash3", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.XxHash3, v)
-        If My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 AndAlso hashes.TryGetValue("XxHash128", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.XxHash128, v)
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) AndAlso hashes.TryGetValue("SHA1", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.SHA1, v)
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) AndAlso hashes.TryGetValue("SHA256", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.SHA256, v)
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) AndAlso hashes.TryGetValue("SHA512", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.SHA512, v)
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) AndAlso hashes.TryGetValue("CRC32", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.CRC32, v)
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) AndAlso hashes.TryGetValue("MD5", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.MD5, v)
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) AndAlso hashes.TryGetValue("BLAKE3", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.BLAKE3, v)
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) AndAlso hashes.TryGetValue("XxHash3", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.XxHash3, v)
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) AndAlso hashes.TryGetValue("XxHash128", v) Then fr.File.SetXattr(ltfsindex.file.xattr.HashType.XxHash128, v)
     End Sub
 
     Private Function GetFastReaderDedupeHash(hashes As Dictionary(Of String, String)) As String
@@ -9170,18 +9170,18 @@ Public Class LTFSWriter
                                                           Try
                                                               sh.Propagate(hashData)
                                                               sh.ProcessFinalBlock()
-                                                              If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.SHA1, sh.SHA1Value)
-                                                              If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.SHA256, sh.SHA256Value)
-                                                              If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.SHA512, sh.SHA512Value)
-                                                              If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.CRC32, sh.CRC32Value)
-                                                              If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.MD5, sh.MD5Value)
-                                                              If sh.BlakeValue IsNot Nothing AndAlso My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then
+                                                              If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.SHA1, sh.SHA1Value)
+                                                              If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.SHA256, sh.SHA256Value)
+                                                              If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.SHA512, sh.SHA512Value)
+                                                              If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.CRC32, sh.CRC32Value)
+                                                              If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.MD5, sh.MD5Value)
+                                                              If sh.BlakeValue IsNot Nothing AndAlso CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) Then
                                                                   hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.BLAKE3, sh.BlakeValue)
                                                               End If
-                                                              If sh.XXHash3Value IsNot Nothing AndAlso My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then
+                                                              If sh.XXHash3Value IsNot Nothing AndAlso CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) Then
                                                                   hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.XxHash3, sh.XXHash3Value)
                                                               End If
-                                                              If sh.XXHash128Value IsNot Nothing AndAlso My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then
+                                                              If sh.XXHash128Value IsNot Nothing AndAlso CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) Then
                                                                   hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.XxHash128, sh.XXHash128Value)
                                                               End If
                                                           Finally
@@ -9574,18 +9574,18 @@ Public Class LTFSWriter
                                                           Dim hashCalculator As IOManager.CheckSumBlockwiseCalculator = hashState.Item2
                                                           Try
                                                               hashCalculator.ProcessFinalBlock()
-                                                              If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.SHA1, hashCalculator.SHA1Value)
-                                                              If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.SHA256, hashCalculator.SHA256Value)
-                                                              If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.SHA512, hashCalculator.SHA512Value)
-                                                              If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.CRC32, hashCalculator.CRC32Value)
-                                                              If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.MD5, hashCalculator.MD5Value)
-                                                              If hashCalculator.BlakeValue IsNot Nothing AndAlso My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then
+                                                              If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.SHA1, hashCalculator.SHA1Value)
+                                                              If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.SHA256, hashCalculator.SHA256Value)
+                                                              If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.SHA512, hashCalculator.SHA512Value)
+                                                              If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.CRC32, hashCalculator.CRC32Value)
+                                                              If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) Then hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.MD5, hashCalculator.MD5Value)
+                                                              If hashCalculator.BlakeValue IsNot Nothing AndAlso CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) Then
                                                                   hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.BLAKE3, hashCalculator.BlakeValue)
                                                               End If
-                                                              If hashCalculator.XXHash3Value IsNot Nothing AndAlso My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then
+                                                              If hashCalculator.XXHash3Value IsNot Nothing AndAlso CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) Then
                                                                   hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.XxHash3, hashCalculator.XXHash3Value)
                                                               End If
-                                                              If hashCalculator.XXHash128Value IsNot Nothing AndAlso My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then
+                                                              If hashCalculator.XXHash128Value IsNot Nothing AndAlso CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) Then
                                                                   hashRecord.File.SetXattr(ltfsindex.file.xattr.HashType.XxHash128, hashCalculator.XXHash128Value)
                                                               End If
                                                           Finally
@@ -11420,14 +11420,14 @@ Public Class LTFSWriter
 
     Private Function GetEnabledChecksumNames() As List(Of String)
         Dim result As New List(Of String)
-        If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then result.Add("SHA1")
-        If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then result.Add("SHA256")
-        If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then result.Add("SHA512")
-        If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then result.Add("CRC32")
-        If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then result.Add("MD5")
-        If My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then result.Add("BLAKE3")
-        If My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then result.Add("XxHash3")
-        If My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then result.Add("XxHash128")
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) Then result.Add("SHA1")
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) Then result.Add("SHA256")
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) Then result.Add("SHA512")
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) Then result.Add("CRC32")
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) Then result.Add("MD5")
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) Then result.Add("BLAKE3")
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) Then result.Add("XxHash3")
+        If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) Then result.Add("XxHash128")
         Return result
     End Function
 
@@ -17429,18 +17429,18 @@ Public Class LTFSWriter
                                  Dim hashTask As Task = Task.Run(Sub()
                                                                      Try
                                                                          sh.ProcessFinalBlock()
-                                                                         If My.Settings.LTFSWriter_ChecksumEnabled_SHA1 Then newfile.SetXattr(ltfsindex.file.xattr.HashType.SHA1, sh.SHA1Value)
-                                                                         If My.Settings.LTFSWriter_ChecksumEnabled_SHA256 Then newfile.SetXattr(ltfsindex.file.xattr.HashType.SHA256, sh.SHA256Value)
-                                                                         If My.Settings.LTFSWriter_ChecksumEnabled_SHA512 Then newfile.SetXattr(ltfsindex.file.xattr.HashType.SHA512, sh.SHA512Value)
-                                                                         If My.Settings.LTFSWriter_ChecksumEnabled_CRC32 Then newfile.SetXattr(ltfsindex.file.xattr.HashType.CRC32, sh.CRC32Value)
-                                                                         If My.Settings.LTFSWriter_ChecksumEnabled_MD5 Then newfile.SetXattr(ltfsindex.file.xattr.HashType.MD5, sh.MD5Value)
-                                                                         If sh.BlakeValue IsNot Nothing AndAlso My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3 Then
+                                                                         If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA1)) Then newfile.SetXattr(ltfsindex.file.xattr.HashType.SHA1, sh.SHA1Value)
+                                                                         If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA256)) Then newfile.SetXattr(ltfsindex.file.xattr.HashType.SHA256, sh.SHA256Value)
+                                                                         If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_SHA512)) Then newfile.SetXattr(ltfsindex.file.xattr.HashType.SHA512, sh.SHA512Value)
+                                                                         If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_CRC32)) Then newfile.SetXattr(ltfsindex.file.xattr.HashType.CRC32, sh.CRC32Value)
+                                                                         If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_MD5)) Then newfile.SetXattr(ltfsindex.file.xattr.HashType.MD5, sh.MD5Value)
+                                                                         If sh.BlakeValue IsNot Nothing AndAlso CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_BLAKE3)) Then
                                                                              newfile.SetXattr(ltfsindex.file.xattr.HashType.BLAKE3, sh.BlakeValue)
                                                                          End If
-                                                                         If sh.XXHash3Value IsNot Nothing AndAlso My.Settings.LTFSWriter_ChecksumEnabled_XxHash3 Then
+                                                                         If sh.XXHash3Value IsNot Nothing AndAlso CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash3)) Then
                                                                              newfile.SetXattr(ltfsindex.file.xattr.HashType.XxHash3, sh.XXHash3Value)
                                                                          End If
-                                                                         If sh.XXHash128Value IsNot Nothing AndAlso My.Settings.LTFSWriter_ChecksumEnabled_XxHash128 Then
+                                                                         If sh.XXHash128Value IsNot Nothing AndAlso CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_ChecksumEnabled_XxHash128)) Then
                                                                              newfile.SetXattr(ltfsindex.file.xattr.HashType.XxHash128, sh.XXHash128Value)
                                                                          End If
                                                                      Finally
