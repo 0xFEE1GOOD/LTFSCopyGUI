@@ -187,19 +187,19 @@
     <value>136, 22</value>
   </data>
   <data name="全选ToolStripMenuItem.Text" xml:space="preserve">
-    <value>全选</value>
+    <value>Select all</value>
   </data>
   <data name="按大小ToolStripMenuItem.Size" type="System.Drawing.Size, System.Drawing">
     <value>136, 22</value>
   </data>
   <data name="按大小ToolStripMenuItem.Text" xml:space="preserve">
-    <value>按大小</value>
+    <value>By size</value>
   </data>
   <data name="匹配文件名ToolStripMenuItem.Size" type="System.Drawing.Size, System.Drawing">
     <value>136, 22</value>
   </data>
   <data name="匹配文件名ToolStripMenuItem.Text" xml:space="preserve">
-    <value>匹配文件名</value>
+    <value>Match file name</value>
   </data>
   <data name="ContextMenuStrip1.Size" type="System.Drawing.Size, System.Drawing">
     <value>137, 70</value>

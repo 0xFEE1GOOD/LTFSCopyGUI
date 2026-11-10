@@ -7015,7 +7015,7 @@ Public Class TapeUtils
                 Else
                     Dim ActiveFrm = ApplicationWheels.GetActiveWindow()
                     Dim dResult As DialogResult
-                    ActiveFrm.Invoke(Sub() dResult = MessageBox.Show(ActiveFrm, $"写入出错：SCSI指令执行失败", "警告", MessageBoxButtons.AbortRetryIgnore))
+                    ActiveFrm.Invoke(Sub() dResult = MessageBox.Show(ActiveFrm, $"Write error: SCSI command failed", "Warning", MessageBoxButtons.AbortRetryIgnore))
                     Select Case dResult
                         Case DialogResult.Abort
                             Exit While
@@ -7129,7 +7129,7 @@ Public Class TapeUtils
                             If Not anyFailed Then FailErrCode = LastWin32Error
                             Dim ActiveFrm = ApplicationWheels.GetActiveWindow()
                             Dim dResult As DialogResult
-                            ActiveFrm.Invoke(Sub() dResult = MessageBox.Show(ActiveFrm, $"写入出错：SCSI指令执行失败", "警告", MessageBoxButtons.AbortRetryIgnore))
+                            ActiveFrm.Invoke(Sub() dResult = MessageBox.Show(ActiveFrm, $"Write error: SCSI command failed", "Warning", MessageBoxButtons.AbortRetryIgnore))
                             Select Case dResult
                                 Case DialogResult.Abort
                                     ' Abort used to be reported only through succ staying False, so

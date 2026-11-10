@@ -38,7 +38,7 @@ Partial Public Class SCSIGUI
             _template = XmlTemplateStore.LoadTemplate(_templatePath)
             RefreshCommands()
         Catch ex As Exception
-            MessageBox.Show("加载模板失败：" & ex.Message, "模板错误", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            MessageBox.Show("Failed to load templates: " & ex.Message, "Template error", MessageBoxButtons.OK, MessageBoxIcon.Error)
         End Try
     End Sub
 
@@ -80,7 +80,7 @@ Partial Public Class SCSIGUI
         _editors.Clear()
 
         If _selectedCommand Is Nothing OrElse _runtimeNodes Is Nothing Then
-            lblCommandInfo.Text = "请选择指令"
+            lblCommandInfo.Text = "Select a command"
             pnlValues.ResumeLayout(True)
             Return
         End If
@@ -315,11 +315,11 @@ Partial Public Class SCSIGUI
             selector.Items.Add(New PageTemplateOption(p))
         Next
         If selector.Items.Count > 0 Then selector.SelectedIndex = 0
-        Dim add As New Button With {.Text = "添加 Page", .AutoSize = True, .Enabled = selector.Items.Count > 0}
+        Dim add As New Button With {.Text = "Add page", .AutoSize = True, .Enabled = selector.Items.Count > 0}
         AddHandler add.Click, Sub(sender, e)
                                   If selector.SelectedItem Is Nothing Then Return
                                   If d.MaxItems > 0 AndAlso node.Items.Count >= d.MaxItems Then
-                                      MessageBox.Show("Page 数量已达到 MaxItems 限制。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                                      MessageBox.Show("The page count has reached MaxItems.", "Note", MessageBoxButtons.OK, MessageBoxIcon.Information)
                                       Return
                                   End If
                                   Dim pageDef = DirectCast(selector.SelectedItem, PageTemplateOption).Page
@@ -331,7 +331,7 @@ Partial Public Class SCSIGUI
         header.Controls.Add(selector)
         header.Controls.Add(add)
         header.Controls.Add(New Label With {
-            .Text = If(d.MaxItems > 0, String.Format("实例数：{0}/{1}", node.Items.Count, d.MaxItems), String.Format("实例数：{0}", node.Items.Count)),
+            .Text = If(d.MaxItems > 0, String.Format("Instances: {0}/{1}", node.Items.Count, d.MaxItems), String.Format("Instances: {0}", node.Items.Count)),
             .AutoSize = True, .Margin = New Padding(8, 6, 0, 0), .ForeColor = SystemColors.GrayText
         })
         outer.Controls.Add(header)
@@ -345,7 +345,7 @@ Partial Public Class SCSIGUI
             }
             Dim itemHeader As New FlowLayoutPanel With {.AutoSize = True, .WrapContents = False}
             itemHeader.Controls.Add(New Label With {.Text = item.InstanceName, .AutoSize = True, .Font = New Font(Font, FontStyle.Bold), .Margin = New Padding(0, 6, 12, 0)})
-            Dim moveUp As New Button With {.Text = "↑ 上移", .AutoSize = True, .Tag = item, .Enabled = (i > 0)}
+            Dim moveUp As New Button With {.Text = "↑ Move up", .AutoSize = True, .Tag = item, .Enabled = (i > 0)}
             AddHandler moveUp.Click, Sub(sender, e)
                                          Dim target = DirectCast(DirectCast(sender, Button).Tag, ScsiValueNode)
                                          Dim oldIndex = node.Items.IndexOf(target)
@@ -355,7 +355,7 @@ Partial Public Class SCSIGUI
                                          RenumberPageInstances(node)
                                          RebuildValueEditors()
                                      End Sub
-            Dim moveDown As New Button With {.Text = "↓ 下移", .AutoSize = True, .Tag = item, .Enabled = (i < node.Items.Count - 1)}
+            Dim moveDown As New Button With {.Text = "↓ Move down", .AutoSize = True, .Tag = item, .Enabled = (i < node.Items.Count - 1)}
             AddHandler moveDown.Click, Sub(sender, e)
                                            Dim target = DirectCast(DirectCast(sender, Button).Tag, ScsiValueNode)
                                            Dim oldIndex = node.Items.IndexOf(target)
@@ -365,10 +365,10 @@ Partial Public Class SCSIGUI
                                            RenumberPageInstances(node)
                                            RebuildValueEditors()
                                        End Sub
-            Dim remove As New Button With {.Text = "删除", .AutoSize = True, .Tag = item}
+            Dim remove As New Button With {.Text = "Delete", .AutoSize = True, .Tag = item}
             AddHandler remove.Click, Sub(sender, e)
                                          If d.MinItems > 0 AndAlso node.Items.Count <= d.MinItems Then
-                                             MessageBox.Show("实例数不能低于 MinItems。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                                             MessageBox.Show("Instances cannot go below MinItems.", "Note", MessageBoxButtons.OK, MessageBoxIcon.Information)
                                              Return
                                          End If
                                          Dim target = DirectCast(DirectCast(sender, Button).Tag, ScsiValueNode)
@@ -433,7 +433,7 @@ Partial Public Class SCSIGUI
             If cdbBox IsNot Nothing Then cdbBox.Text = BitConverter.ToString(result.CDB).Replace("-", " ")
             If paramBox IsNot Nothing Then paramBox.Text = BitConverter.ToString(result.Param).Replace("-", " ")
         Catch ex As Exception
-            MessageBox.Show("生成 CDB/Param 失败：" & ex.Message, "编解码错误", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            MessageBox.Show("Failed to build CDB/Param: " & ex.Message, "Codec error", MessageBoxButtons.OK, MessageBoxIcon.Error)
         End Try
     End Sub
 
@@ -444,13 +444,13 @@ Partial Public Class SCSIGUI
             Dim paramBox = FindHexBox("paramInput")
             Dim cdb = ParseHex(cdbBox.Text)
             Dim param = ParseHex(paramBox.Text)
-            If cdb.Length = 0 Then Throw New FormatException("CDB 输入不能为空。")
+            If cdb.Length = 0 Then Throw New FormatException("The CDB input cannot be empty.")
 
             ' 根据 CDB 开头的一个或多个 Opcode 字节自动匹配指令。
             Dim matchedCommand = FindCommandByOpcodePrefix(cdb)
             If matchedCommand Is Nothing Then
                 Throw New InvalidOperationException(
-                    "没有找到 Opcode 与 CDB 开头匹配的指令：" &
+                    "No command has an opcode matching the start of the CDB: " &
                     BitConverter.ToString(cdb.Take(Math.Min(4, cdb.Length)).ToArray()).Replace("-", " "))
             End If
 
@@ -460,14 +460,14 @@ Partial Public Class SCSIGUI
             End If
 
             If _selectedCommand Is Nothing OrElse _runtimeNodes Is Nothing Then
-                Throw New InvalidOperationException("无法初始化匹配指令的参数节点。")
+                Throw New InvalidOperationException("Cannot initialize the parameter nodes of the matching command.")
             End If
 
             ScsiCodec.Decode(_selectedCommand, _template, _runtimeNodes, cdb, param)
             RenderValueEditors()
 
         Catch ex As Exception
-            MessageBox.Show("解析 CDB/Param 失败：" & ex.Message, "编解码错误", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            MessageBox.Show("Failed to parse CDB/Param: " & ex.Message, "Codec error", MessageBoxButtons.OK, MessageBoxIcon.Error)
         End Try
     End Sub
 
@@ -518,7 +518,7 @@ Partial Public Class SCSIGUI
         If s = "" Then Return New Byte() {}
         s = System.Text.RegularExpressions.Regex.Replace(s, "(?i)0x", "")
         s = System.Text.RegularExpressions.Regex.Replace(s, "[,\-:\s]", "")
-        If s.Length Mod 2 <> 0 Then Throw New FormatException("十六进制字符串必须为偶数个字符。")
+        If s.Length Mod 2 <> 0 Then Throw New FormatException("A hex string must have an even number of characters.")
         Dim bytes(s.Length \ 2 - 1) As Byte
         For i As Integer = 0 To bytes.Length - 1
             bytes(i) = Byte.Parse(s.Substring(i * 2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture)
@@ -533,7 +533,7 @@ Partial Public Class SCSIGUI
         tvElements.BeginUpdate()
         tvElements.Nodes.Clear()
         If _template IsNot Nothing Then
-            Dim commandRoot As New TreeNode(If(_selectedCommand Is Nothing, "当前指令元素", "当前指令元素 - " & _selectedCommand.Name & " (0x" & _selectedCommand.Opcode.ToString("X2") & ")")) With {.Tag = "command-root"}
+            Dim commandRoot As New TreeNode(If(_selectedCommand Is Nothing, "Command elements", "Command elements - " & _selectedCommand.Name & " (0x" & _selectedCommand.Opcode.ToString("X2") & ")")) With {.Tag = "command-root"}
             If _selectedCommand IsNot Nothing Then
                 For Each e In _selectedCommand.Elements
                     commandRoot.Nodes.Add(BuildElementNode(e))
@@ -541,7 +541,7 @@ Partial Public Class SCSIGUI
             End If
             tvElements.Nodes.Add(commandRoot)
 
-            Dim pageRoot As New TreeNode("Page 模板") With {.Tag = "page-root"}
+            Dim pageRoot As New TreeNode("Page templates") With {.Tag = "page-root"}
             For Each p In _template.PageTemplates
                 pageRoot.Nodes.Add(BuildElementNode(p))
             Next
@@ -583,15 +583,15 @@ Partial Public Class SCSIGUI
     Private Sub SetupElementMenu()
         If _elementMenu IsNot Nothing Then _elementMenu.Dispose()
         _elementMenu = New ContextMenuStrip()
-        AddMenuItem("新增子元素", AddressOf AddChildElement)
-        AddMenuItem("新增同级元素", AddressOf AddSiblingElement)
-        AddMenuItem("新增多个同级元素", AddressOf AddMultipleSiblingElements)
-        AddMenuItem("删除元素", AddressOf DeleteElement)
+        AddMenuItem("Add child element", AddressOf AddChildElement)
+        AddMenuItem("Add sibling element", AddressOf AddSiblingElement)
+        AddMenuItem("Add several sibling elements", AddressOf AddMultipleSiblingElements)
+        AddMenuItem("Delete element", AddressOf DeleteElement)
         _elementMenu.Items.Add(New ToolStripSeparator())
-        AddMenuItem("上移", Sub(s, e) MoveElement(-1))
-        AddMenuItem("下移", Sub(s, e) MoveElement(1))
+        AddMenuItem("Move up", Sub(s, e) MoveElement(-1))
+        AddMenuItem("Move down", Sub(s, e) MoveElement(1))
         _elementMenu.Items.Add(New ToolStripSeparator())
-        AddMenuItem("新增 Page 模板", AddressOf AddPageTemplate)
+        AddMenuItem("Add page template", AddressOf AddPageTemplate)
         tvElements.ContextMenuStrip = _elementMenu
     End Sub
 
@@ -638,7 +638,7 @@ Partial Public Class SCSIGUI
             ' CommandChanged 会重建元素树并清空原 SelectedNode，因此不能在其后继续解引用 SelectedNode。
             Dim rootNode As TreeNode = tvElements.SelectedNode
             If rootNode IsNot Nothing Then
-                rootNode.Text = "当前指令元素 - " & _selectedCommand.Name & " (0x" & _selectedCommand.Opcode.ToString("X2") & ")"
+                rootNode.Text = "Command elements - " & _selectedCommand.Name & " (0x" & _selectedCommand.Opcode.ToString("X2") & ")"
             End If
 
             ' 同步左侧指令列表中显示的名称和操作码。
@@ -711,7 +711,7 @@ Partial Public Class SCSIGUI
             End If
         Else
             If parentDef.Kind <> "Group" AndAlso parentDef.Kind <> "Page" AndAlso parentDef.Kind <> "Category" Then
-                MessageBox.Show("只有 Group/Page/Category 可以直接包含固定子元素；PageList 通过模板列表添加 Page。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                MessageBox.Show("Only Group/Page/Category can hold fixed child elements; a PageList adds pages from its template list.", "Note", MessageBoxButtons.OK, MessageBoxIcon.Information)
                 Return
             End If
             Dim child As New ScsiElementDef With {.Name = "NewField", .Kind = "Field", .Area = parentDef.Area, .FieldType = ScsiFieldType.IntegerValue, .BitOffset = 0, .BitLength = 8, .DefaultValue = "0"}
@@ -739,12 +739,12 @@ Partial Public Class SCSIGUI
 
         ' 使用输入对话框获取新增数量；取消或输入无效内容时不修改模板。
         Dim countText As String = ""
-        If DisplayHelper.ShowInputDialog("请输入要新增的同级元素数量：", "新增多个同级元素", countText) <> DialogResult.OK Then Return
+        If DisplayHelper.ShowInputDialog("Number of sibling elements to add:", "Add several sibling elements", countText) <> DialogResult.OK Then Return
 
         Dim count As Integer
         If Not Integer.TryParse(countText, count) OrElse count <= 0 Then Return
         If count > 1000 Then
-            MessageBox.Show("一次最多新增 1000 个元素。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            MessageBox.Show("At most 1000 elements can be added at once.", "Note", MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
 
@@ -769,7 +769,7 @@ Partial Public Class SCSIGUI
         Dim col As List(Of ScsiElementDef) = Nothing
         Dim idx As Integer
         If Not SelectedCollection(tvElements.SelectedNode, col, idx) Then Return
-        If MessageBox.Show("确定删除元素““" & col(idx).Name & "””？", "确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return
+        If MessageBox.Show("Delete element ““" & col(idx).Name & "””?", "Confirm", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return
         col.RemoveAt(idx)
         RefreshDefinitionTree()
     End Sub
@@ -824,7 +824,7 @@ Partial Public Class SCSIGUI
 
     Private Sub DeleteCommandButtonClick(sender As Object, e As EventArgs) Handles btnDelete.Click
         If _template Is Nothing OrElse _selectedCommand Is Nothing Then Return
-        If MessageBox.Show("确定删除指令“" & _selectedCommand.Name & "”？", "确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return
+        If MessageBox.Show("Delete command “" & _selectedCommand.Name & "”?", "Confirm", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return
         Dim index = _template.Commands.IndexOf(_selectedCommand)
         _template.Commands.Remove(_selectedCommand)
         _selectedCommand = Nothing
@@ -853,10 +853,10 @@ Partial Public Class SCSIGUI
         If _template Is Nothing OrElse String.IsNullOrEmpty(_templatePath) Then Return
         Try
             XmlTemplateStore.SaveTemplate(_templatePath, _template)
-            MessageBox.Show("模板已保存：" & _templatePath, "保存成功", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            MessageBox.Show("Templates saved: " & _templatePath, "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information)
             RefreshCommands(If(_selectedCommand Is Nothing, 0, _template.Commands.IndexOf(_selectedCommand)))
         Catch ex As Exception
-            MessageBox.Show("保存失败：" & ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            MessageBox.Show("Save failed: " & ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
         End Try
     End Sub
 
@@ -882,7 +882,7 @@ Partial Public Class SCSIGUI
         Try
             Dim content As String = Clipboard.GetText()
             If String.IsNullOrWhiteSpace(content) Then
-                Throw New FormatException("剪贴板为空。")
+                Throw New FormatException("The clipboard is empty.")
             End If
             Dim lines As String() = content.Split(New String() {vbCrLf, vbLf, vbCr}, StringSplitOptions.RemoveEmptyEntries)
             Dim values As New Dictionary(Of String, System.Text.StringBuilder)(StringComparer.OrdinalIgnoreCase) From {{"CDB", New System.Text.StringBuilder()}, {"PARAM", New System.Text.StringBuilder()}}
@@ -920,13 +920,13 @@ Partial Public Class SCSIGUI
                 End If
             Next
             If Not hasStart OrElse Not hasEnd Then
-                Throw New FormatException("剪贴板内容不是有效的 SCSIGUI 数据。")
+                Throw New FormatException("The clipboard does not contain valid SCSIGUI data.")
             End If
             If Not values.ContainsKey("CDB") OrElse values("CDB").Length = 0 Then
-                Throw New FormatException("剪贴板中 CDB 不能为空。")
+                Throw New FormatException("The CDB in the clipboard cannot be empty.")
             End If
             If Not values.ContainsKey("PARAM") Then
-                Throw New FormatException("剪贴板中缺少 PARAM 字段。")
+                Throw New FormatException("The clipboard data has no PARAM field.")
             End If
             txtCdbInput.Text = values("CDB").ToString()
             txtParamInput.Text = values("PARAM").ToString()

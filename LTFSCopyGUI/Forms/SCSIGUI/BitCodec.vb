@@ -95,7 +95,7 @@ Public NotInheritable Class BitCodec
         Public Function Parse() As Double
             Dim v = Expr()
             SkipWs()
-            If _p <> _s.Length Then Throw New FormatException("长度公式包含不支持的字符：" & _s.Substring(_p))
+            If _p <> _s.Length Then Throw New FormatException("The length formula contains an unsupported character: " & _s.Substring(_p))
             Return v
         End Function
         Private Function Expr() As Double
@@ -137,7 +137,7 @@ Public NotInheritable Class BitCodec
             If Take("("c) Then
                 Dim v = Expr()
                 SkipWs()
-                If Not Take(")"c) Then Throw New FormatException("缺少右括号。")
+                If Not Take(")"c) Then Throw New FormatException("Missing closing parenthesis.")
                 Return v
             End If
             Dim start = _p
@@ -145,7 +145,7 @@ Public NotInheritable Class BitCodec
             While _p < _s.Length AndAlso (Char.IsDigit(_s(_p)) OrElse _s(_p) = "."c)
                 _p += 1
             End While
-            If start = _p Then Throw New FormatException("公式需要数字。")
+            If start = _p Then Throw New FormatException("The formula expects a number.")
             Return Double.Parse(_s.Substring(start, _p - start), CultureInfo.InvariantCulture)
         End Function
         Public Function ParseComparison() As Double
@@ -155,12 +155,12 @@ Public NotInheritable Class BitCodec
                 Dim rightValue As Double = Expr()
                 SkipWs()
                 If _p <> _s.Length Then
-                    Throw New FormatException("存在条件公式包含不支持的字符：" & _s.Substring(_p))
+                    Throw New FormatException("The presence condition contains an unsupported character: " & _s.Substring(_p))
                 End If
                 Return If(leftValue = rightValue, 1.0R, 0.0R)
             End If
             If _p <> _s.Length Then
-                Throw New FormatException("存在条件公式包含不支持的字符：" & _s.Substring(_p))
+                Throw New FormatException("The presence condition contains an unsupported character: " & _s.Substring(_p))
             End If
             Return leftValue
         End Function

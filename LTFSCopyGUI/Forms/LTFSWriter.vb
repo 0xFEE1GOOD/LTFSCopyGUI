@@ -4347,7 +4347,7 @@ Public Class LTFSWriter
             schema.location.startblock = CurrentPos.BlockNumber
             PrintMsg(My.Resources.ResText_GI)
             tmpf = LazySchemaStore.CreateTempFilePath("index-write")
-            If Not schema.SaveFile(tmpf) Then Throw New IO.IOException("无法保存当前索引到临时文件。")
+            If Not schema.SaveFile(tmpf) Then Throw New IO.IOException("Cannot save the current index to a temporary file.")
             'Dim sdata As Byte() = Encoding.UTF8.GetBytes(schema.GetSerializedText())
             PrintMsg(My.Resources.ResText_WI)
             'TapeUtils.Write(TapeDrive, sdata, plabel.blocksize)
@@ -4435,7 +4435,7 @@ Public Class LTFSWriter
             If ExtraPartitionCount > 0 Then
                 PrintMsg(My.Resources.ResText_GI)
                 tmpf = LazySchemaStore.CreateTempFilePath("index-write")
-                If Not schema.SaveFile(tmpf) Then Throw New IO.IOException("无法保存索引到临时文件。")
+                If Not schema.SaveFile(tmpf) Then Throw New IO.IOException("Cannot save the index to a temporary file.")
                 PrintMsg(My.Resources.ResText_WI)
                 ' Same check as WriteCurrentIndex. A refused index write must not reach
                 ' the WriteVCI below, or the Volume Coherency Info would advertise an
@@ -5580,7 +5580,7 @@ Public Class LTFSWriter
         Dim conflicts As New List(Of String)
         Dim normalizedRoot As String = NormalizeExtractionPath(outputRoot)
         If String.IsNullOrEmpty(normalizedRoot) Then
-            AddExtractionConflict(conflicts, "输出目录路径为空")
+            AddExtractionConflict(conflicts, "Output directory path is empty")
         Else
             AddExtractionPathEntry(entries, normalizedRoot, True, False, String.Empty, True)
         End If
@@ -5588,12 +5588,12 @@ Public Class LTFSWriter
         If directoryRequests IsNot Nothing Then
             For Each directoryRequest As ExtractionDirectoryRequest In directoryRequests
                 If directoryRequest Is Nothing OrElse String.IsNullOrEmpty(directoryRequest.DirectoryPath) Then
-                    AddExtractionConflict(conflicts, "提取目录路径为空")
+                    AddExtractionConflict(conflicts, "Extraction directory path is empty")
                     Continue For
                 End If
                 Dim directoryPath As String = NormalizeExtractionPath(directoryRequest.DirectoryPath)
                 If String.IsNullOrEmpty(normalizedRoot) OrElse Not IsExtractionPathUnderRoot(directoryPath, normalizedRoot) Then
-                    AddExtractionConflict(conflicts, $"提取目录超出输出根目录：{directoryPath}")
+                    AddExtractionConflict(conflicts, $"Extraction directory is outside the output root: {directoryPath}")
                     Continue For
                 End If
                 AddExtractionPathEntry(entries, directoryPath, True)
@@ -5603,12 +5603,12 @@ Public Class LTFSWriter
         If requests IsNot Nothing Then
             For Each request As ExtractionFileRequest In requests
                 If request Is Nothing OrElse request.FileIndex Is Nothing OrElse String.IsNullOrEmpty(request.FileName) Then
-                    AddExtractionConflict(conflicts, "提取文件路径或索引为空")
+                    AddExtractionConflict(conflicts, "Extraction file path or index is empty")
                     Continue For
                 End If
                 Dim targetPath As String = NormalizeExtractionPath(request.FileName)
                 If String.IsNullOrEmpty(normalizedRoot) OrElse Not IsExtractionPathUnderRoot(targetPath, normalizedRoot) Then
-                    AddExtractionConflict(conflicts, $"提取文件超出输出根目录：{targetPath}")
+                    AddExtractionConflict(conflicts, $"Extraction file is outside the output root: {targetPath}")
                     Continue For
                 End If
                 Dim ownerKey As String = GetExtractionOwnerKey(request.FileIndex)
@@ -5624,18 +5624,18 @@ Public Class LTFSWriter
                     Dim first As ExtractionPathEntry = group(i)
                     Dim second As ExtractionPathEntry = group(j)
                     If first.IsDirectory <> second.IsDirectory Then
-                        AddExtractionConflict(conflicts, $"文件/目录类型冲突：{first.FullPath} 与 {second.FullPath}")
+                        AddExtractionConflict(conflicts, $"File/directory type conflict: {first.FullPath} and {second.FullPath}")
                     ElseIf Not String.Equals(first.FullPath, second.FullPath, StringComparison.Ordinal) Then
                         Dim parentPath As String = GetExtractionCaseCollisionParent(first, second, normalizedRoot)
                         AddExtractionCaseConflict(conflicts,
                                                   parentPath,
-                                                  $"磁带路径大小写冲突：{first.FullPath} 与 {second.FullPath}（父目录未启用大小写敏感）")
+                                                  $"Tape paths differ only in case: {first.FullPath} and {second.FullPath} (parent directory is not case-sensitive)")
                     ElseIf Not String.IsNullOrEmpty(first.OwnerKey) AndAlso
                            Not String.IsNullOrEmpty(second.OwnerKey) AndAlso
                            Not String.Equals(first.OwnerKey, second.OwnerKey, StringComparison.Ordinal) Then
-                        AddExtractionConflict(conflicts, $"多个磁带对象映射到同一输出路径：{first.FullPath}")
+                        AddExtractionConflict(conflicts, $"Several tape objects map to the same output path: {first.FullPath}")
                     ElseIf first.IsTemporary <> second.IsTemporary Then
-                        AddExtractionConflict(conflicts, $"临时文件与输出文件冲突：{first.FullPath}")
+                        AddExtractionConflict(conflicts, $"Temporary file conflicts with an output file: {first.FullPath}")
                     End If
                 Next
             Next
@@ -5647,9 +5647,9 @@ Public Class LTFSWriter
                 Dim targetExistsAsFile As Boolean = IO.File.Exists(entry.FullPath)
                 Dim targetExistsAsDirectory As Boolean = IO.Directory.Exists(entry.FullPath)
                 If entry.IsDirectory AndAlso targetExistsAsFile Then
-                    AddExtractionConflict(conflicts, $"目标路径类型冲突，磁带目录无法覆盖文件：{entry.FullPath}")
+                    AddExtractionConflict(conflicts, $"Target type conflict, a tape directory cannot replace a file: {entry.FullPath}")
                 ElseIf Not entry.IsDirectory AndAlso targetExistsAsDirectory Then
-                    AddExtractionConflict(conflicts, $"目标路径类型冲突，磁带文件无法覆盖目录：{entry.FullPath}")
+                    AddExtractionConflict(conflicts, $"Target type conflict, a tape file cannot replace a directory: {entry.FullPath}")
                 End If
 
                 Dim parentPath As String = Nothing
@@ -5690,12 +5690,12 @@ Public Class LTFSWriter
                         If Not String.Equals(existingName, expectedName, StringComparison.Ordinal) Then
                             AddExtractionCaseConflict(conflicts,
                                                       parentPath,
-                                                      $"目标路径大小写冲突：{entry.FullPath} 与 {existingPath}（父目录未启用大小写敏感）")
+                                                      $"Target paths differ only in case: {entry.FullPath} and {existingPath} (parent directory is not case-sensitive)")
                         End If
                     End If
                 Next
             Catch ex As Exception
-                AddExtractionConflict(conflicts, $"无法检查目标目录中的路径冲突：{parentPath} ({ex.Message})")
+                AddExtractionConflict(conflicts, $"Cannot check the target directory for path conflicts: {parentPath} ({ex.Message})")
             End Try
         Next
 
@@ -5704,7 +5704,7 @@ Public Class LTFSWriter
             For i As Integer = 0 To Math.Min(conflicts.Count, 20) - 1
                 shown.Add(conflicts(i))
             Next
-            Throw New IO.InvalidDataException("输出目录存在大小写或类型冲突，已停止提取：" &
+            Throw New IO.InvalidDataException("The output directory has case or type conflicts; extraction stopped:" &
                                               Environment.NewLine &
                                               String.Join(Environment.NewLine, shown))
         End If
@@ -10540,7 +10540,7 @@ Public Class LTFSWriter
         PrintMsg(My.Resources.ResText_Exporting)
         If Not schema.SaveFile(schemaTxtPath) Then
             SetStatusLight(LWStatus.Err)
-            PrintMsg("索引自动备份失败：无法保存索引文件。", IsWarn:=True)
+            PrintMsg("Automatic index backup failed: cannot save the index file.", IsWarn:=True)
             Return Nothing
         End If
 
@@ -10553,7 +10553,7 @@ Public Class LTFSWriter
         Catch ex As Exception
             dumpFailed = True
             SetStatusLight(LWStatus.Err)
-            PrintMsg($"保存容量报告失败：{ex.Message}", IsWarn:=True)
+            PrintMsg($"Failed to save the capacity report: {ex.Message}", IsWarn:=True)
         End Try
 
         Try
@@ -10595,7 +10595,7 @@ Public Class LTFSWriter
         End Try
 
         If dumpFailed Then
-            PrintMsg($"索引备份已生成，但部分附加数据失败：{schemaTxtPath}", IsWarn:=True)
+            PrintMsg($"Index backup created, but some extra data failed: {schemaTxtPath}", IsWarn:=True)
             SetStatusLight(LWStatus.Err)
         Else
             PrintMsg(My.Resources.ResText_IndexBaked, False, $"{My.Resources.ResText_IndexBak2}{vbCrLf}{schemaTxtPath}")
@@ -12806,9 +12806,9 @@ Public Class LTFSWriter
     End Sub
 
     Private Sub 文件缓存32MiBToolStripMenuItem_Click(sender As Object, e As EventArgs) Handles 文件缓存32MiBToolStripMenuItem.Click
-        If DisplayHelper.ShowInputDialog("设置文件缓存", My.Resources.ResText_Setting, My.Settings.LTFSWriter_PreLoadBytes) <> DialogResult.OK Then Exit Sub
+        If DisplayHelper.ShowInputDialog("Set file cache", My.Resources.ResText_Setting, My.Settings.LTFSWriter_PreLoadBytes) <> DialogResult.OK Then Exit Sub
         If My.Settings.LTFSWriter_PreLoadBytes <= (16 << 20) Then My.Settings.LTFSWriter_PreLoadBytes = (16 << 20)
-        文件缓存32MiBToolStripMenuItem.Text = $"文件缓存：{IOManager.FormatSize(My.Settings.LTFSWriter_PreLoadBytes)}"
+        文件缓存32MiBToolStripMenuItem.Text = $"File cache: {IOManager.FormatSize(My.Settings.LTFSWriter_PreLoadBytes)}"
     End Sub
 
     Private Shared Sub ApplyFileDetailsEdit(target As ltfsindex.file, edited As ltfsindex.file)
@@ -13596,7 +13596,7 @@ Public Class LTFSWriter
             Dim p As ltfsindex.directory = DirectCast(TreeView1.SelectedNode.Parent.Tag, ltfsindex.directory)
             If HasUnwrittenFilesInDirectoryTree(d) Then
                 MessageBox.Show(New Form With {.TopMost = True},
-                                "当前目录或子目录存在尚未写入的文件，请先完成写入后再压缩索引。",
+                                "This directory or a subdirectory has files not yet written; finish writing before compressing the index.",
                                 My.Resources.ResText_Warning)
                 Exit Sub
             End If
@@ -13610,7 +13610,7 @@ Public Class LTFSWriter
                          Dim mediumRemovalPrevented As Boolean = False
                          Try
                              tmpf = LazySchemaStore.CreateTempFilePath("index-compress")
-                             If Not d.SaveFile(tmpf) Then Throw New InvalidOperationException("无法生成压缩索引临时文件。")
+                             If Not d.SaveFile(tmpf) Then Throw New InvalidOperationException("Cannot create the temporary file for the compressed index.")
                              ms = New IO.FileStream(tmpf, IO.FileMode.Open, IO.FileAccess.Read, IO.FileShare.Read)
                              TapeUtils.ReserveUnit(driveHandle)
                              unitReserved = True
@@ -13756,9 +13756,9 @@ Public Class LTFSWriter
                              Modified = True
                          Catch ex As Exception
                              SetStatusLight(LWStatus.Err)
-                             PrintMsg($"压缩索引出错：{ex.Message}{vbCrLf}{ex.StackTrace}", IsWarn:=True)
+                             PrintMsg($"Index compression failed: {ex.Message}{vbCrLf}{ex.StackTrace}", IsWarn:=True)
                              Try
-                                 Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"压缩索引出错：{ex}", My.Resources.ResText_Warning))
+                                 Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"Index compression failed: {ex}", My.Resources.ResText_Warning))
                              Catch
                              End Try
                          Finally
@@ -13818,7 +13818,7 @@ Public Class LTFSWriter
                                  SetStatusLight(LWStatus.Idle)
                              Catch ex As Exception
                                  SetStatusLight(LWStatus.Err)
-                                 PrintMsg($"解压索引出错：{ex.ToString}", IsWarn:=True)
+                                 PrintMsg($"Index decompression failed: {ex.ToString}", IsWarn:=True)
                              End Try
 
                              RefreshDisplay()
@@ -14696,7 +14696,7 @@ Public Class LTFSWriter
                                     Next
                                 End If
                             End SyncLock
-                            If fr Is Nothing Then Throw New InvalidOperationException("找不到有效的待写文件记录。")
+                            If fr Is Nothing Then Throw New InvalidOperationException("No valid pending file record found.")
                             activeFile = fr
                             fr.File.fileuid = schema.highestfileuid + 1
                             schema.highestfileuid += 1
@@ -16321,14 +16321,14 @@ Public Class LTFSWriter
             .MaximizeBox = False,
             .MinimizeBox = False,
             .StartPosition = FormStartPosition.CenterParent,
-            .Text = "文件监控写入"}
+            .Text = "Watch and write"}
         frm.ClientSize = New Size(780, 560)
 
         Dim lblTarget As New Label With {.Parent = frm, .Left = 7, .Top = 8,
             .Width = frm.ClientSize.Width - 14, .Height = 22,
-            .Text = "目标 LTFS 目录：" & If(ListView1.Tag Is Nothing, "未选择", TryCast(ListView1.Tag, ltfsindex.directory)?.name)}
+            .Text = "Target LTFS directory: " & If(ListView1.Tag Is Nothing, "(none)", TryCast(ListView1.Tag, ltfsindex.directory)?.name)}
         Dim lblSources As New Label With {.Parent = frm, .Left = 7, .Top = 34,
-            .Width = 300, .Height = 22, .Text = "监控源（文件或目录）"}
+            .Width = 300, .Height = 22, .Text = "Watched sources (files or directories)"}
 
         Dim sourceList As New ListView With {
             .Parent = frm,
@@ -16342,19 +16342,19 @@ Public Class LTFSWriter
             .HideSelection = False,
             .MultiSelect = True,
             .HeaderStyle = ColumnHeaderStyle.Nonclickable}
-        sourceList.Columns.Add("路径", sourceList.Width - 5)
+        sourceList.Columns.Add("Path", sourceList.Width - 5)
 
-        Dim buttonAddFolder As New Button With {.Parent = frm, .Text = "添加目录"}
-        Dim buttonAddFile As New Button With {.Parent = frm, .Text = "添加文件"}
-        Dim buttonEdit As New Button With {.Parent = frm, .Text = "编辑"}
-        Dim buttonRemove As New Button With {.Parent = frm, .Text = "删除"}
+        Dim buttonAddFolder As New Button With {.Parent = frm, .Text = "Add directory"}
+        Dim buttonAddFile As New Button With {.Parent = frm, .Text = "Add file"}
+        Dim buttonEdit As New Button With {.Parent = frm, .Text = "Edit"}
+        Dim buttonRemove As New Button With {.Parent = frm, .Text = "Remove"}
         buttonAddFolder.SetBounds(647, 58, 118, 30)
         buttonAddFile.SetBounds(647, 94, 118, 30)
         buttonEdit.SetBounds(647, 130, 118, 30)
         buttonRemove.SetBounds(647, 166, 118, 30)
 
         Dim lblFilter As New Label With {.Parent = frm, .Left = 7, .Top = 316,
-            .Width = 300, .Height = 22, .Text = "Glob 过滤规则（每行一条，! 表示排除）"}
+            .Width = 300, .Height = 22, .Text = "Glob filters (one per line, ! excludes)"}
         Dim txtFilter As New TextBox With {
             .Parent = frm,
             .Left = 7,
@@ -16368,8 +16368,8 @@ Public Class LTFSWriter
             .Text = DefaultMonitorFilter}
 
         Dim chkAutoDelete As New CheckBox With {.Parent = frm, .Left = 7, .Top = 493,
-            .Width = 220, .Height = 24, .Text = "写入成功后静默删除源文件", .Checked = True}
-        Dim buttonStart As New Button With {.Parent = frm, .Text = "开始"}
+            .Width = 220, .Height = 24, .Text = "Delete source files after a successful write", .Checked = True}
+        Dim buttonStart As New Button With {.Parent = frm, .Text = "Start"}
         buttonStart.SetBounds(CInt(frm.ClientSize.Width / 2 - 45), 523, 90, 28)
 
         Dim addSource As Action(Of String) =
@@ -16394,7 +16394,7 @@ Public Class LTFSWriter
                 Using dialog As New OpenFileDialog With {
                     .Multiselect = True,
                     .CheckFileExists = True,
-                    .Filter = "所有文件|*.*"}
+                    .Filter = "All files|*.*"}
                     If dialog.ShowDialog(frm) = DialogResult.OK Then
                         For Each path As String In dialog.FileNames
                             addSource(path)
@@ -16405,12 +16405,12 @@ Public Class LTFSWriter
         AddHandler buttonEdit.Click,
             Sub()
                 If sourceList.SelectedItems.Count <> 1 Then
-                    MessageBox.Show(frm, "请选择一个源项目。", "监控源")
+                    MessageBox.Show(frm, "Select a source first.", "Watched source")
                     Exit Sub
                 End If
                 Dim item As ListViewItem = sourceList.SelectedItems(0)
                 Dim value As String = item.Text
-                If DisplayHelper.ShowInputDialog("文件或目录路径", "编辑监控源", value) = DialogResult.OK AndAlso
+                If DisplayHelper.ShowInputDialog("File or directory path", "Edit watched source", value) = DialogResult.OK AndAlso
                     Not String.IsNullOrWhiteSpace(value) Then
                     item.Text = value.Trim()
                 End If
@@ -16460,7 +16460,7 @@ Public Class LTFSWriter
                             For Each control As Control In editorControls
                                 control.Enabled = Not running
                             Next
-                            buttonStart.Text = If(running, "停止", "开始")
+                            buttonStart.Text = If(running, "Stop", "Start")
                             buttonStart.Enabled = True
                         End Sub
                     If frm.InvokeRequired Then frm.BeginInvoke(update) Else update()
@@ -16479,13 +16479,13 @@ Public Class LTFSWriter
                 If monitorCts IsNot Nothing Then
                     monitorCts.Cancel()
                     buttonStart.Enabled = False
-                    frm.Text = "正在停止监控..."
+                    frm.Text = "Stopping the watch..."
                     Exit Sub
                 End If
 
                 Dim targetDirectory As ltfsindex.directory = TryCast(ListView1.Tag, ltfsindex.directory)
                 If targetDirectory Is Nothing Then
-                    MessageBox.Show(frm, "请先在 LTFS 窗口中选择目标目录。", "文件监控写入")
+                    MessageBox.Show(frm, "Select the target directory in the LTFS window first.", "Watch and write")
                     Exit Sub
                 End If
 
@@ -16494,7 +16494,7 @@ Public Class LTFSWriter
                     Where(Function(path) Not String.IsNullOrWhiteSpace(path)).
                     ToArray()
                 If sourcePaths.Length = 0 Then
-                    MessageBox.Show(frm, "请至少添加一个文件或目录作为监控源。", "文件监控写入")
+                    MessageBox.Show(frm, "Add at least one file or directory to watch.", "Watch and write")
                     Exit Sub
                 End If
 
@@ -16514,7 +16514,7 @@ Public Class LTFSWriter
                             Dim matcher As Matcher = GlobCollector.BuildMatcherFromString(filterText)
                             While Not token.IsCancellationRequested
                                 If Not AllowOperation Then
-                                    updateStatus("等待当前 LTFS 操作完成...")
+                                    updateStatus("Waiting for the current LTFS operation to finish...")
                                     token.WaitHandle.WaitOne(500)
                                     Continue While
                                 End If
@@ -16526,13 +16526,13 @@ Public Class LTFSWriter
                                 Catch ex As OperationCanceledException
                                     Exit While
                                 Catch ex As Exception
-                                    updateStatus($"监控扫描失败：{ex.Message}")
+                                    updateStatus($"Watch scan failed: {ex.Message}")
                                     token.WaitHandle.WaitOne(1000)
                                     Continue While
                                 End Try
 
                                 If ready.Count = 0 Then
-                                    updateStatus($"监控中：匹配 {matchedCount} 个，等待大小和修改时间稳定 10 秒")
+                                    updateStatus($"Watching: {matchedCount} matched, waiting for size and modified time to stay unchanged for 10 s")
                                     token.WaitHandle.WaitOne(1000)
                                     Continue While
                                 End If
@@ -16542,7 +16542,7 @@ Public Class LTFSWriter
                                     RefreshCapacity()
                                     remainingCapacity = LastRemainCapValue
                                 Catch ex As Exception
-                                    updateStatus($"读取磁带容量失败：{ex.Message}")
+                                    updateStatus($"Failed to read tape capacity: {ex.Message}")
                                     token.WaitHandle.WaitOne(1000)
                                     Continue While
                                 End Try
@@ -16562,12 +16562,12 @@ Public Class LTFSWriter
                                 End If
 
                                 If batch.Count = 0 Then
-                                    updateStatus($"等待容量：可用 {IOManager.FormatSize(Math.Max(0, remainingCapacity))}，稳定文件 {ready.Count} 个")
+                                    updateStatus($"Waiting for capacity: {IOManager.FormatSize(Math.Max(0, remainingCapacity))} available, {ready.Count} stable file(s)")
                                     token.WaitHandle.WaitOne(1000)
                                     Continue While
                                 End If
 
-                                updateStatus($"正在加入队列：{batch.Count} 个稳定文件")
+                                updateStatus($"Queuing {batch.Count} stable file(s)")
                                 Me.Invoke(Sub() AddStableFilePlan(targetDirectory, batch, overwrite))
                                 If Not WaitForMonitorOperation(token) Then Exit While
 
@@ -16589,7 +16589,7 @@ Public Class LTFSWriter
                                 End SyncLock
 
                                 If UnwrittenCount > 0 Then
-                                    updateStatus($"正在写入：{batch.Count} 个稳定文件")
+                                    updateStatus($"Writing {batch.Count} stable file(s)")
                                     Me.Invoke(Sub() 写入数据ToolStripMenuItem_Click(sender, e))
                                     If Not WaitForMonitorOperation(token) Then Exit While
                                 End If
@@ -16599,22 +16599,22 @@ Public Class LTFSWriter
                                         Try
                                             If IO.File.Exists(sourcePath) Then IO.File.Delete(sourcePath)
                                         Catch ex As Exception
-                                            updateStatus($"删除失败：{ex.Message}")
+                                            updateStatus($"Delete failed: {ex.Message}")
                                         End Try
                                     Next
                                 End If
                             End While
                         Catch ex As OperationCanceledException
                         Catch ex As Exception
-                            updateStatus($"监控已停止（错误）：{ex.Message}")
+                            updateStatus($"Watch stopped (error): {ex.Message}")
                         Finally
                             If ReferenceEquals(monitorCts, currentCts) Then
                                 monitorCts = Nothing
                                 setRunningUi(False)
                                 If token.IsCancellationRequested Then
-                                    updateStatus("监控已停止")
+                                    updateStatus("Watch stopped")
                                 Else
-                                    updateStatus("监控已结束")
+                                    updateStatus("Watch finished")
                                 End If
                             End If
                             currentCts.Dispose()

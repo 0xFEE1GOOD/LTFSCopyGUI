@@ -2440,4 +2440,52 @@
         jq1j6/j/0/H/AnU44wBriU+yAAAAAElFTkSuQmCC
 </value>
   </data>
+  <data name="选中二级目录ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Select second-level directories</value>
+  </data>
+  <data name="ForceEjectButton.Text" xml:space="preserve">
+    <value>Force eject</value>
+  </data>
+  <data name="停止等待缓存ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Stop waiting for buffer</value>
+  </data>
+  <data name="WriteTapeButton.Text" xml:space="preserve">
+    <value>Write to tape</value>
+  </data>
+  <data name="从文件添加ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Add from list file</value>
+  </data>
+  <data name="VerifySourceButton.Text" xml:space="preserve">
+    <value>Verify source files</value>
+  </data>
+  <data name="监控写入ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Watch and write</value>
+  </data>
+  <data name="清除指定大小范围的待写文件ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Remove pending files in a size range</value>
+  </data>
+  <data name="MergeHashButton.Text" xml:space="preserve">
+    <value>Merge xattrs</value>
+  </data>
+  <data name="创建磁盘镜像ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Create disk image</value>
+  </data>
+  <data name="删除该路径下的空目录ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Delete empty directories under this path</value>
+  </data>
+  <data name="导出待写列表ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Export pending list</value>
+  </data>
+  <data name="按索引删除硬盘文件ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Delete disk files listed in the index</value>
+  </data>
+  <data name="自适应限速ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Adaptive speed limit</value>
+  </data>
+  <data name="BackupIndexButton.Text" xml:space="preserve">
+    <value>Back up index</value>
+  </data>
+  <data name="提取为空文件ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Extract as empty files</value>
+  </data>
 </root>

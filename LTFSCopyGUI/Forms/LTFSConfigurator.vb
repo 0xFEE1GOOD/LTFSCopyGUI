@@ -3695,7 +3695,7 @@ DatasetResidue = {ts.CurrentSetResidueBytes}{vbCrLf}"
         Try
             Dim content As String = Clipboard.GetText()
             If String.IsNullOrWhiteSpace(content) Then
-                Throw New FormatException("剪贴板为空。")
+                Throw New FormatException("The clipboard is empty.")
             End If
             Dim lines As String() = content.Split(New String() {vbCrLf, vbLf, vbCr}, StringSplitOptions.RemoveEmptyEntries)
             Dim values As New Dictionary(Of String, System.Text.StringBuilder)(StringComparer.OrdinalIgnoreCase) From {{"CDB", New System.Text.StringBuilder()}, {"PARAM", New System.Text.StringBuilder()}, {"DATAIN", New System.Text.StringBuilder()}}
@@ -3733,16 +3733,16 @@ DatasetResidue = {ts.CurrentSetResidueBytes}{vbCrLf}"
                 End If
             Next
             If Not hasStart OrElse Not hasEnd Then
-                Throw New FormatException("剪贴板内容不是有效的 SCSIGUI 数据。")
+                Throw New FormatException("The clipboard does not contain valid SCSIGUI data.")
             End If
             If Not values.ContainsKey("CDB") OrElse values("CDB").Length = 0 Then
-                Throw New FormatException("剪贴板中 CDB 不能为空。")
+                Throw New FormatException("The CDB in the clipboard cannot be empty.")
             End If
             If Not values.ContainsKey("PARAM") Then
-                Throw New FormatException("剪贴板中缺少 PARAM 字段。")
+                Throw New FormatException("The clipboard data has no PARAM field.")
             End If
             If Not values.ContainsKey("DATAIN") Then
-                Throw New FormatException("剪贴板中缺少 DATAIN 字段。")
+                Throw New FormatException("The clipboard data has no DATAIN field.")
             End If
             TextBoxCDBData.Text = values("CDB").ToString()
             TextBoxParamData.Text = values("PARAM").ToString()

@@ -177,7 +177,7 @@ Partial Public Class SCSIGUI
         Me.lblTemplate.Name = "lblTemplate"
         Me.lblTemplate.Size = New System.Drawing.Size(41, 12)
         Me.lblTemplate.TabIndex = 0
-        Me.lblTemplate.Text = "模板："
+        Me.lblTemplate.Text = "Template:"
         '
         'cboTemplates
         '
@@ -233,7 +233,7 @@ Partial Public Class SCSIGUI
         Me.chkEdit.Name = "chkEdit"
         Me.chkEdit.Size = New System.Drawing.Size(96, 16)
         Me.chkEdit.TabIndex = 0
-        Me.chkEdit.Text = "编辑模板模式"
+        Me.chkEdit.Text = "Edit templates"
         Me.chkEdit.UseVisualStyleBackColor = True
         '
         'lstCommands
@@ -269,7 +269,7 @@ Partial Public Class SCSIGUI
         Me.btnAdd.Name = "btnAdd"
         Me.btnAdd.Size = New System.Drawing.Size(53, 20)
         Me.btnAdd.TabIndex = 0
-        Me.btnAdd.Text = "新增"
+        Me.btnAdd.Text = "Add"
         Me.btnAdd.UseVisualStyleBackColor = True
         '
         'btnDelete
@@ -279,7 +279,7 @@ Partial Public Class SCSIGUI
         Me.btnDelete.Name = "btnDelete"
         Me.btnDelete.Size = New System.Drawing.Size(53, 20)
         Me.btnDelete.TabIndex = 1
-        Me.btnDelete.Text = "删除"
+        Me.btnDelete.Text = "Delete"
         Me.btnDelete.UseVisualStyleBackColor = True
         '
         'btnUp
@@ -289,7 +289,7 @@ Partial Public Class SCSIGUI
         Me.btnUp.Name = "btnUp"
         Me.btnUp.Size = New System.Drawing.Size(53, 20)
         Me.btnUp.TabIndex = 2
-        Me.btnUp.Text = "上移"
+        Me.btnUp.Text = "Move up"
         Me.btnUp.UseVisualStyleBackColor = True
         '
         'btnDown
@@ -299,7 +299,7 @@ Partial Public Class SCSIGUI
         Me.btnDown.Name = "btnDown"
         Me.btnDown.Size = New System.Drawing.Size(53, 20)
         Me.btnDown.TabIndex = 3
-        Me.btnDown.Text = "下移"
+        Me.btnDown.Text = "Move down"
         Me.btnDown.UseVisualStyleBackColor = True
         '
         'rightLayout
@@ -339,7 +339,7 @@ Partial Public Class SCSIGUI
         Me.btnSave.Name = "btnSave"
         Me.btnSave.Size = New System.Drawing.Size(77, 21)
         Me.btnSave.TabIndex = 0
-        Me.btnSave.Text = "保存模板"
+        Me.btnSave.Text = "Save templates"
         Me.btnSave.UseVisualStyleBackColor = True
         '
         'lblHelp
@@ -350,7 +350,7 @@ Partial Public Class SCSIGUI
         Me.lblHelp.Name = "lblHelp"
         Me.lblHelp.Size = New System.Drawing.Size(323, 12)
         Me.lblHelp.TabIndex = 1
-        Me.lblHelp.Text = "选中元素后可查看/修改属性；运行模式下修改右侧参数值。"
+        Me.lblHelp.Text = "Select an element to view or edit its properties; in run mode, edit the values on the right."
         '
         'tabs
         '
@@ -374,7 +374,7 @@ Partial Public Class SCSIGUI
         Me.tabValues.Padding = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.tabValues.Size = New System.Drawing.Size(702, 598)
         Me.tabValues.TabIndex = 0
-        Me.tabValues.Text = "参数值"
+        Me.tabValues.Text = "Values"
         Me.tabValues.UseVisualStyleBackColor = True
         '
         'pnlValues
@@ -415,7 +415,7 @@ Partial Public Class SCSIGUI
         Me.lblCommandInfo.Name = "lblCommandInfo"
         Me.lblCommandInfo.Size = New System.Drawing.Size(686, 24)
         Me.lblCommandInfo.TabIndex = 0
-        Me.lblCommandInfo.Text = "请选择指令"
+        Me.lblCommandInfo.Text = "Select a command"
         Me.lblCommandInfo.TextAlign = System.Drawing.ContentAlignment.MiddleLeft
         '
         'pnlActions
@@ -437,7 +437,7 @@ Partial Public Class SCSIGUI
         Me.btnEncode.Name = "btnEncode"
         Me.btnEncode.Size = New System.Drawing.Size(113, 23)
         Me.btnEncode.TabIndex = 0
-        Me.btnEncode.Text = "生成 CDB / Param"
+        Me.btnEncode.Text = "Build CDB / Param"
         Me.btnEncode.UseVisualStyleBackColor = True
         '
         'btnDecode
@@ -446,7 +446,7 @@ Partial Public Class SCSIGUI
         Me.btnDecode.Name = "btnDecode"
         Me.btnDecode.Size = New System.Drawing.Size(94, 23)
         Me.btnDecode.TabIndex = 1
-        Me.btnDecode.Text = "解析输入字节"
+        Me.btnDecode.Text = "Parse input bytes"
         Me.btnDecode.UseVisualStyleBackColor = True
         '
         'btnCopy
@@ -455,7 +455,7 @@ Partial Public Class SCSIGUI
         Me.btnCopy.Name = "btnCopy"
         Me.btnCopy.Size = New System.Drawing.Size(107, 23)
         Me.btnCopy.TabIndex = 2
-        Me.btnCopy.Text = "复制输出的指令"
+        Me.btnCopy.Text = "Copy output command"
         Me.btnCopy.UseVisualStyleBackColor = True
         '
         'btnPaste
@@ -464,7 +464,7 @@ Partial Public Class SCSIGUI
         Me.btnPaste.Name = "btnPaste"
         Me.btnPaste.Size = New System.Drawing.Size(89, 23)
         Me.btnPaste.TabIndex = 3
-        Me.btnPaste.Text = "粘贴到输入"
+        Me.btnPaste.Text = "Paste to input"
         Me.btnPaste.UseVisualStyleBackColor = True
         '
         'pnlHexAreas
@@ -498,7 +498,7 @@ Partial Public Class SCSIGUI
         Me.lblCdbInput.Name = "lblCdbInput"
         Me.lblCdbInput.Size = New System.Drawing.Size(113, 12)
         Me.lblCdbInput.TabIndex = 0
-        Me.lblCdbInput.Text = "CDB 输入（解析用）"
+        Me.lblCdbInput.Text = "CDB input (for parsing)"
         '
         'txtCdbInput
         '
@@ -517,7 +517,7 @@ Partial Public Class SCSIGUI
         Me.lblParamInput.Name = "lblParamInput"
         Me.lblParamInput.Size = New System.Drawing.Size(125, 12)
         Me.lblParamInput.TabIndex = 2
-        Me.lblParamInput.Text = "Param 输入（解析用）"
+        Me.lblParamInput.Text = "Param input (for parsing)"
         '
         'txtParamInput
         '
@@ -536,7 +536,7 @@ Partial Public Class SCSIGUI
         Me.lblCdbOutput.Name = "lblCdbOutput"
         Me.lblCdbOutput.Size = New System.Drawing.Size(53, 12)
         Me.lblCdbOutput.TabIndex = 4
-        Me.lblCdbOutput.Text = "CDB 输出"
+        Me.lblCdbOutput.Text = "CDB output"
         '
         'txtCdbOutput
         '
@@ -556,7 +556,7 @@ Partial Public Class SCSIGUI
         Me.lblParamOutput.Name = "lblParamOutput"
         Me.lblParamOutput.Size = New System.Drawing.Size(65, 12)
         Me.lblParamOutput.TabIndex = 6
-        Me.lblParamOutput.Text = "Param 输出"
+        Me.lblParamOutput.Text = "Param output"
         '
         'txtParamOutput
         '
@@ -578,7 +578,7 @@ Partial Public Class SCSIGUI
         Me.tabDefinition.Padding = New System.Windows.Forms.Padding(3, 2, 3, 2)
         Me.tabDefinition.Size = New System.Drawing.Size(702, 598)
         Me.tabDefinition.TabIndex = 1
-        Me.tabDefinition.Text = "元素定义"
+        Me.tabDefinition.Text = "Element definition"
         Me.tabDefinition.UseVisualStyleBackColor = True
         '
         'definitionLayout
@@ -623,7 +623,7 @@ Partial Public Class SCSIGUI
         Me.btnGUIDInc.Name = "btnGUIDInc"
         Me.btnGUIDInc.Size = New System.Drawing.Size(113, 21)
         Me.btnGUIDInc.TabIndex = 2
-        Me.btnGUIDInc.Text = "剪贴板GUID+1"
+        Me.btnGUIDInc.Text = "Clipboard GUID+1"
         Me.btnGUIDInc.UseVisualStyleBackColor = True
         Me.btnGUIDInc.Visible = False
         '
@@ -638,7 +638,7 @@ Partial Public Class SCSIGUI
         Me.MinimumSize = New System.Drawing.Size(817, 435)
         Me.Name = "SCSIGUI"
         Me.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
-        Me.Text = "SCSI 指令模板编辑器"
+        Me.Text = "SCSI Command Template Editor"
         Me.rootLayout.ResumeLayout(False)
         Me.topPanel.ResumeLayout(False)
         Me.topPanel.PerformLayout()

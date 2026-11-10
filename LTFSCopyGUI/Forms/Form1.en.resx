@@ -1505,4 +1505,13 @@
         jq1j6/j/0/H/AnU44wBriU+yAAAAAElFTkSuQmCC
 </value>
   </data>
+  <data name="OpenFileDialog1.Filter" xml:space="preserve">
+    <value>schema|*.schema|All files|*.*</value>
+  </data>
+  <data name="SaveFileDialog1.Filter" xml:space="preserve">
+    <value>Batch file|*.bat</value>
+  </data>
+  <data name="Button15.Text" xml:space="preserve">
+    <value>Command tool</value>
+  </data>
 </root>

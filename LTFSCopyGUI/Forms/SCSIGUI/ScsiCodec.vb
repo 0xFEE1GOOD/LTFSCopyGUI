@@ -153,7 +153,7 @@ Public NotInheritable Class ScsiCodec
     End Sub
 
     Public Shared Function Encode(command As ScsiCommandDef, template As ScsiTemplate, nodes As List(Of ScsiValueNode)) As ScsiEncodedCommand
-        If command.CdbLength < 1 OrElse command.CdbLength > 260 Then Throw New InvalidOperationException("CDB 长度必须在 1–260 字节范围内。")
+        If command.CdbLength < 1 OrElse command.CdbLength > 260 Then Throw New InvalidOperationException("CDB length must be 1–260 bytes.")
         _currentNodes = nodes
         ValidatePageLists(nodes, template)
         RecalculateFormulas(nodes)
@@ -177,7 +177,7 @@ Public NotInheritable Class ScsiCodec
     End Function
 
     Public Shared Sub Decode(command As ScsiCommandDef, template As ScsiTemplate, nodes As List(Of ScsiValueNode), cdb As Byte(), param As Byte())
-        If cdb Is Nothing OrElse cdb.Length < command.CdbLength Then Throw New ArgumentException("CDB 数据长度不足。", NameOf(cdb))
+        If cdb Is Nothing OrElse cdb.Length < command.CdbLength Then Throw New ArgumentException("CDB data is too short.", NameOf(cdb))
         _currentTemplate = template
         _currentNodes = nodes
         Try
@@ -200,15 +200,15 @@ Public NotInheritable Class ScsiCodec
             If node.Definition Is Nothing OrElse Not node.Definition.Kind.Equals("PageList", StringComparison.OrdinalIgnoreCase) Then Continue For
             Dim d = node.Definition
             If d.MinItems > 0 AndAlso node.Items.Count < d.MinItems Then
-                Throw New InvalidOperationException(String.Format("{0} 至少需要 {1} 个 Sub Page，当前为 {2} 个。", d.Name, d.MinItems, node.Items.Count))
+                Throw New InvalidOperationException(String.Format("{0} needs at least {1} sub page(s); it has {2}.", d.Name, d.MinItems, node.Items.Count))
             End If
             If d.MaxItems > 0 AndAlso node.Items.Count > d.MaxItems Then
-                Throw New InvalidOperationException(String.Format("{0} 最多允许 {1} 个 Sub Page，当前为 {2} 个。", d.Name, d.MaxItems, node.Items.Count))
+                Throw New InvalidOperationException(String.Format("{0} allows at most {1} sub page(s); it has {2}.", d.Name, d.MaxItems, node.Items.Count))
             End If
             Dim allowed = GetAllowedPageTemplates(d, template)
             For Each item In node.Items
                 If item.Definition Is Nothing OrElse Not allowed.Any(Function(p) String.Equals(p.Id, item.Definition.Id, StringComparison.OrdinalIgnoreCase)) Then
-                    Throw New InvalidOperationException("PageList " & d.Name & " 中存在不允许的 Sub Page 模板。")
+                    Throw New InvalidOperationException("PageList " & d.Name & " contains a sub page template that is not allowed.")
                 End If
             Next
         Next
@@ -223,14 +223,14 @@ Public NotInheritable Class ScsiCodec
                 Function(id)
                     Dim target = all.FirstOrDefault(Function(x) x.Definition IsNot Nothing AndAlso String.Equals(x.Definition.Id, id, StringComparison.OrdinalIgnoreCase))
                     If target Is Nothing Then
-                        Throw New InvalidOperationException("公式引用的元素不存在：" & id)
+                        Throw New InvalidOperationException("The formula references a missing element: " & id)
                     End If
                     Return CLng((ElementExtentBits(target) + 7) \ 8)
                 End Function,
                 Function(id)
                     Dim target = all.FirstOrDefault(Function(x) x.Definition IsNot Nothing AndAlso String.Equals(x.Definition.Id, id, StringComparison.OrdinalIgnoreCase))
                     If target Is Nothing Then
-                        Throw New InvalidOperationException("公式引用的元素不存在：" & id)
+                        Throw New InvalidOperationException("The formula references a missing element: " & id)
                     End If
                     Return ParseInteger(target.Value)
                 End Function)
@@ -244,7 +244,7 @@ Public NotInheritable Class ScsiCodec
             If n.Definition.Area <> area Then Continue For
             endBit = Math.Max(endBit, EffectiveOffsetBits(n) + ElementExtentBits(n))
         Next
-        If endBit > Integer.MaxValue * 8L Then Throw New OverflowException("Param 长度过大。")
+        If endBit > Integer.MaxValue * 8L Then Throw New OverflowException("Param is too long.")
         Return CInt((endBit + 7) \ 8)
     End Function
 
@@ -295,7 +295,7 @@ Public NotInheritable Class ScsiCodec
                 Function(id)
                     Dim target = FindFormulaReference(node, id)
                     If target Is Nothing Then
-                        Throw New InvalidOperationException("动态偏移公式引用的元素不存在：" & id)
+                        Throw New InvalidOperationException("The dynamic offset formula references a missing element: " & id)
                     End If
 
                     Return ParseInteger(target.Value)
@@ -304,13 +304,13 @@ Public NotInheritable Class ScsiCodec
                     Dim target = FindFormulaReference(node, id)
 
                     If target Is Nothing Then
-                        Throw New InvalidOperationException("动态偏移公式引用的元素不存在：" & id)
+                        Throw New InvalidOperationException("The dynamic offset formula references a missing element: " & id)
                     End If
 
                     Return ElementExtentBits(target)
                 End Function)
         End If
-        If result < 0 OrElse result > Integer.MaxValue Then Throw New InvalidOperationException("元素动态偏移无效：" & d.Name)
+        If result < 0 OrElse result > Integer.MaxValue Then Throw New InvalidOperationException("Invalid dynamic element offset: " & d.Name)
         Return result
     End Function
 
@@ -321,14 +321,14 @@ Public NotInheritable Class ScsiCodec
             Function(id)
                 Dim target = FindFormulaReference(node, id)
                 If target Is Nothing Then
-                    Throw New InvalidOperationException("存在条件公式引用的元素不存在：" & id)
+                    Throw New InvalidOperationException("The presence condition references a missing element: " & id)
                 End If
                 Return ParseInteger(target.Value)
             End Function,
             Function(id)
                 Dim target = FindFormulaReference(node, id)
                 If target Is Nothing Then
-                    Throw New InvalidOperationException("存在条件公式引用的元素不存在：" & id)
+                    Throw New InvalidOperationException("The presence condition references a missing element: " & id)
                 End If
                 Return ElementExtentBits(target)
             End Function) <> 0
@@ -372,7 +372,7 @@ Public NotInheritable Class ScsiCodec
         Dim d = node.Definition
         If d Is Nothing OrElse Not IsNodePresent(node) Then Return
         Dim startBit As Long = If(root, 0L, CLng(baseBit)) + EffectiveOffsetBits(node)
-        If startBit < 0 OrElse startBit > Integer.MaxValue Then Throw New InvalidOperationException("元素偏移无效：" & d.Name)
+        If startBit < 0 OrElse startBit > Integer.MaxValue Then Throw New InvalidOperationException("Invalid element offset: " & d.Name)
         Select Case d.Kind.ToUpperInvariant()
             Case "FIELD"
                 WriteField(node, target, CInt(startBit))
@@ -383,7 +383,7 @@ Public NotInheritable Class ScsiCodec
             Case "PAGELIST"
                 Dim cursor As Long = startBit
                 For Each item In node.Items
-                    If (cursor Mod 8) <> 0 Then Throw New InvalidOperationException("PageList 必须按字节对齐：" & d.Name)
+                    If (cursor Mod 8) <> 0 Then Throw New InvalidOperationException("PageList must be byte-aligned: " & d.Name)
                     WriteNode(item, target, CInt(cursor), False)
                     cursor += PageExtentBits(item)
                 Next
@@ -407,7 +407,7 @@ Public NotInheritable Class ScsiCodec
             Dim count = GetFieldByteLength(node)
             EnsureRange(target, bitOffset, count * 8, d.Name)
             Dim src = ParseHexBytes(Convert.ToString(If(node.Value, ""), CultureInfo.InvariantCulture))
-            If src.Length > count Then Throw New InvalidOperationException(d.Name & " 的 Binary 数据超过指定长度 " & count & " 字节。")
+            If src.Length > count Then Throw New InvalidOperationException(d.Name & ": Binary data exceeds the specified length of " & count & " bytes.")
             Array.Copy(src, 0, target, bitOffset \ 8, src.Length)
             Return
         End If
@@ -419,14 +419,14 @@ Public NotInheritable Class ScsiCodec
             If width < 64 Then
                 Dim minValue As Long = -(1L << (width - 1))
                 Dim maxValue As Long = (1L << (width - 1)) - 1L
-                If signedValue < minValue OrElse signedValue > maxValue Then Throw New InvalidOperationException(d.Name & " 超出有符号 " & width & " 位范围。")
+                If signedValue < minValue OrElse signedValue > maxValue Then Throw New InvalidOperationException(d.Name & " is outside the signed " & width & "-bit range.")
                 u = BitConverter.ToUInt64(BitConverter.GetBytes(signedValue), 0) And ((1UL << width) - 1UL)
             Else
                 u = BitConverter.ToUInt64(BitConverter.GetBytes(signedValue), 0)
             End If
         Else
             u = ParseUnsigned(node.Value)
-            If width < 64 AndAlso u >= (1UL << width) Then Throw New InvalidOperationException(d.Name & " 超出 " & width & " 位范围。")
+            If width < 64 AndAlso u >= (1UL << width) Then Throw New InvalidOperationException(d.Name & " is outside the " & width & "-bit range.")
         End If
         BitCodec.WriteUnsigned(target, bitOffset, width, u)
     End Sub
@@ -477,7 +477,7 @@ Public NotInheritable Class ScsiCodec
                 ' Page 内字段：只允许在当前 Page 实例中查找。
                 lengthNode = Flatten(New List(Of ScsiValueNode) From {pageNode}).FirstOrDefault(Function(n) n.Definition IsNot Nothing AndAlso String.Equals(n.Definition.Id, d.LengthFieldId, StringComparison.OrdinalIgnoreCase))
                 If lengthNode Is Nothing Then
-                    Throw New InvalidOperationException("字段 " & d.Name & " 引用的长度字段不存在：" & d.LengthFieldId)
+                    Throw New InvalidOperationException("Field " & d.Name & " references a missing length field: " & d.LengthFieldId)
                 End If
             Else
                 ' 顶层字段：允许引用当前指令中其他区域的字段，
@@ -485,12 +485,12 @@ Public NotInheritable Class ScsiCodec
                 Dim allNodes = If(_currentNodes, New List(Of ScsiValueNode)())
                 lengthNode = Flatten(allNodes).FirstOrDefault(Function(n) n.Definition IsNot Nothing AndAlso String.Equals(n.Definition.Id, d.LengthFieldId, StringComparison.OrdinalIgnoreCase))
                 If lengthNode Is Nothing Then
-                    Throw New InvalidOperationException("字段 " & d.Name & " 引用的长度字段不存在：" & d.LengthFieldId)
+                    Throw New InvalidOperationException("Field " & d.Name & " references a missing length field: " & d.LengthFieldId)
                 End If
             End If
             Dim lengthValue As Long = ParseInteger(lengthNode.Value)
             If lengthValue < 0 OrElse lengthValue > Integer.MaxValue Then
-                Throw New InvalidOperationException("字段 " & d.Name & " 的动态长度无效。")
+                Throw New InvalidOperationException("Field " & d.Name & " has an invalid dynamic length.")
             End If
             Return CInt(lengthValue)
         End If
@@ -534,15 +534,15 @@ Public NotInheritable Class ScsiCodec
         Dim result = BitCodec.EvaluateOffsetFormula(d.ByteLengthExpression,
             Function(id)
                 Dim target = scope.FirstOrDefault(Function(x) x.Definition IsNot Nothing AndAlso String.Equals(x.Definition.Id, id, StringComparison.OrdinalIgnoreCase))
-                If target Is Nothing Then Throw New InvalidOperationException("ByteLength 表达式引用的元素不存在：" & id)
+                If target Is Nothing Then Throw New InvalidOperationException("The ByteLength expression references a missing element: " & id)
                 Return ParseInteger(target.Value)
             End Function,
             Function(id)
                 Dim target = scope.FirstOrDefault(Function(x) x.Definition IsNot Nothing AndAlso String.Equals(x.Definition.Id, id, StringComparison.OrdinalIgnoreCase))
-                If target Is Nothing Then Throw New InvalidOperationException("ByteLength 表达式引用的元素不存在：" & id)
+                If target Is Nothing Then Throw New InvalidOperationException("The ByteLength expression references a missing element: " & id)
                 Return ElementExtentBits(target)
             End Function)
-        If result < 0 OrElse result > Integer.MaxValue Then Throw New InvalidOperationException("元素 " & d.Name & " 的 ByteLength 表达式结果无效：" & result.ToString(CultureInfo.InvariantCulture))
+        If result < 0 OrElse result > Integer.MaxValue Then Throw New InvalidOperationException("Element " & d.Name & " has an invalid ByteLength result: " & result.ToString(CultureInfo.InvariantCulture))
         Return CInt(result)
     End Function
 
@@ -583,7 +583,7 @@ Public NotInheritable Class ScsiCodec
     End Sub
 
     Private Shared Sub DecodePageList(listNode As ScsiValueNode, source As Byte(), startBit As Integer, limitBytes As Integer)
-        If startBit Mod 8 <> 0 Then Throw New InvalidOperationException("PageList 必须按字节对齐：" & listNode.Definition.Name)
+        If startBit Mod 8 <> 0 Then Throw New InvalidOperationException("PageList must be byte-aligned: " & listNode.Definition.Name)
         Dim cursor = startBit \ 8
         Dim maxBytes = Math.Min(source.Length, limitBytes)
         Dim listByteLength = GetConfiguredByteLength(listNode)
@@ -633,7 +633,7 @@ Public NotInheritable Class ScsiCodec
     Private Shared _currentTemplate As ScsiTemplate
     Private Shared ReadOnly Property CurrentTemplate As ScsiTemplate
         Get
-            If _currentTemplate Is Nothing Then Throw New InvalidOperationException("解码模板上下文未初始化。")
+            If _currentTemplate Is Nothing Then Throw New InvalidOperationException("The decode template context is not initialized.")
             Return _currentTemplate
         End Get
     End Property
@@ -682,7 +682,7 @@ Public NotInheritable Class ScsiCodec
             If current.Definition IsNot Nothing Then offset += EffectiveOffsetBits(current)
             current = current.Parent
         End While
-        If current Is Nothing Then Throw New InvalidOperationException("长度字段不属于 Page 模板：" & targetNode.Definition.Name)
+        If current Is Nothing Then Throw New InvalidOperationException("The length field is not part of the page template: " & targetNode.Definition.Name)
         Return offset
     End Function
 
@@ -749,7 +749,7 @@ Public NotInheritable Class ScsiCodec
         If s = "" Then Return New Byte() {}
         s = Regex.Replace(s, "(?i)0x", "")
         s = Regex.Replace(s, "[,\-:\s]", "")
-        If (s.Length Mod 2) <> 0 Then Throw New FormatException("Binary 十六进制字符串必须是偶数个字符。")
+        If (s.Length Mod 2) <> 0 Then Throw New FormatException("A Binary hex string must have an even number of characters.")
         Dim result(s.Length \ 2 - 1) As Byte
         For i As Integer = 0 To result.Length - 1
             result(i) = Byte.Parse(s.Substring(i * 2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture)
@@ -759,8 +759,8 @@ Public NotInheritable Class ScsiCodec
 
     Private Shared Sub EnsureRange(target As Byte(), bitOffset As Integer, bitLength As Integer, fieldName As String)
         If bitOffset < 0 OrElse bitLength < 0 OrElse CLng(bitOffset) + bitLength > CLng(target.Length) * 8L Then
-            Throw New InvalidOperationException("字段 " & fieldName & " 超出输出缓冲区。请检查偏移、位宽和长度定义。")
+            Throw New InvalidOperationException("Field " & fieldName & " is outside the output buffer. Check the offset, bit width and length.")
         End If
-        If bitOffset Mod 8 <> 0 Then Throw New InvalidOperationException("ASCII/Binary 字段必须按字节对齐：" & fieldName)
+        If bitOffset Mod 8 <> 0 Then Throw New InvalidOperationException("ASCII/Binary fields must be byte-aligned: " & fieldName)
     End Sub
 End Class

@@ -671,7 +671,7 @@ Partial Class LTFSWriter
         Me.Chart1.TabStop = False
         Me.Chart1.ThirdColor = System.Drawing.Color.Red
         Me.ToolTipChanErrLog.SetToolTip(Me.Chart1, resources.GetString("Chart1.ToolTip"))
-        Me.Chart1.XAxisTitle = "10分钟"
+        Me.Chart1.XAxisTitle = "10 min"
         '
         'ContextMenuStrip2
         '

@@ -20,7 +20,7 @@ Public NotInheritable Class XmlTemplateStore
     Public Shared Function LoadTemplate(path As String) As ScsiTemplate
         Dim doc = XDocument.Load(path)
         Dim root = doc.Root
-        If root Is Nothing OrElse root.Name <> "ScsiTemplate" Then Throw New InvalidDataException("根节点必须是 ScsiTemplate。")
+        If root Is Nothing OrElse root.Name <> "ScsiTemplate" Then Throw New InvalidDataException("The root element must be ScsiTemplate.")
         Dim model As New ScsiTemplate With {.DeviceType = Attr(root, "deviceType", IO.Path.GetFileNameWithoutExtension(path))}
         Dim pages = root.Element("PageTemplates")
         If pages IsNot Nothing Then
@@ -144,17 +144,17 @@ Public NotInheritable Class XmlTemplateStore
             Collect(p, all)
         Next
         For Each c In model.Commands
-            If c.CdbLength < 1 OrElse c.CdbLength > 260 Then Throw New InvalidDataException("CDB 长度无效：" & c.Name)
+            If c.CdbLength < 1 OrElse c.CdbLength > 260 Then Throw New InvalidDataException("Invalid CDB length: " & c.Name)
             For Each el In c.Elements
                 Collect(el, all)
             Next
         Next
         For Each el In all
-            If String.IsNullOrWhiteSpace(el.Id) Then Throw New InvalidDataException("元素 GUID 不能为空：" & el.Name)
-            If Not ids.Add(el.Id) Then Throw New InvalidDataException("发现重复元素 GUID：" & el.Id)
-            If el.BitOffset < 0 OrElse el.BitLength < 0 Then Throw New InvalidDataException("BitOffset/BitLength 不能为负数：" & el.Name)
+            If String.IsNullOrWhiteSpace(el.Id) Then Throw New InvalidDataException("Element GUID cannot be empty: " & el.Name)
+            If Not ids.Add(el.Id) Then Throw New InvalidDataException("Duplicate element GUID: " & el.Id)
+            If el.BitOffset < 0 OrElse el.BitLength < 0 Then Throw New InvalidDataException("BitOffset/BitLength cannot be negative: " & el.Name)
             If el.Kind = "Field" AndAlso (el.FieldType = ScsiFieldType.IntegerValue OrElse el.FieldType = ScsiFieldType.EnumValue) AndAlso (el.BitLength < 1 OrElse el.BitLength > 64) Then
-                Throw New InvalidDataException("整数/枚举字段位宽必须为 1–64：" & el.Name)
+                Throw New InvalidDataException("Integer/enum field width must be 1–64: " & el.Name)
             End If
         Next
     End Sub

@@ -491,4 +491,10 @@
         AAD///AP//8AAP//8A///wAA///4D///AAA=
 </value>
   </data>
+  <data name="复制ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Copy</value>
+  </data>
+  <data name="粘贴ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Paste</value>
+  </data>
 </root>

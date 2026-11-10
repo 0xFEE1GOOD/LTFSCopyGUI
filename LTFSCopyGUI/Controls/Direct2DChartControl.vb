@@ -104,9 +104,9 @@ Public Class Direct2DChartControl
     Private _thirdColor As DrawingColor = DrawingColor.Red
     Private _gridColor As DrawingColor = DrawingColor.FromArgb(205, 205, 225)
     Private _axisColor As DrawingColor = DrawingColor.FromArgb(110, 110, 130)
-    Private _chartTitle As String = "10分钟"
-    Private _primaryAxisTitle As String = "速度 (MiB/s)"
-    Private _secondaryAxisTitle As String = "每秒文件"
+    Private _chartTitle As String = "10 min"
+    Private _primaryAxisTitle As String = "Speed (MiB/s)"
+    Private _secondaryAxisTitle As String = "Files/s"
     Private _xAxisTitle As String = ""
     Private _lastRenderException As Exception
 
@@ -214,7 +214,7 @@ Public Class Direct2DChartControl
     End Property
 
     <Category("Chart")>
-    <DefaultValue("10分钟")>
+    <DefaultValue("10 min")>
     Public Property ChartTitle As String
         Get
             Return _chartTitle
@@ -226,7 +226,7 @@ Public Class Direct2DChartControl
     End Property
 
     <Category("Chart")>
-    <DefaultValue("速度 (MiB/s)")>
+    <DefaultValue("Speed (MiB/s)")>
     Public Property PrimaryAxisTitle As String
         Get
             Return _primaryAxisTitle
@@ -238,7 +238,7 @@ Public Class Direct2DChartControl
     End Property
 
     <Category("Chart")>
-    <DefaultValue("每秒文件")>
+    <DefaultValue("Files/s")>
     Public Property SecondaryAxisTitle As String
         Get
             Return _secondaryAxisTitle

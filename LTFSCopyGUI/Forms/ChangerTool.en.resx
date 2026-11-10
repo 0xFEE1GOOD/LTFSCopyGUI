@@ -410,4 +410,7 @@
         AAD///AP//8AAP//8A///wAA///4D///AAA=
 </value>
   </data>
+  <data name="批量擦除ToolStripMenuItem.Text" xml:space="preserve">
+    <value>Batch erase (quick)</value>
+  </data>
 </root>

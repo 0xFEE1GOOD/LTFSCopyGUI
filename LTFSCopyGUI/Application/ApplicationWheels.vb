@@ -79,7 +79,7 @@ End Class
 Public Class SerializableDictionary(Of TKey, TValue)
     Inherits Dictionary(Of TKey, TValue)
     Implements IXmlSerializable
-#Region "构造函数"
+#Region "Constructors"
     Public Sub New()
         MyBase.New
 
@@ -1080,7 +1080,7 @@ Public NotInheritable Class DisplayHelper
 
         Public Sub New(text As String, caption As String, timeoutSeconds As Integer, icon As MessageBoxIcon)
             If timeoutSeconds < 0 Then
-                Throw New ArgumentOutOfRangeException(NameOf(timeoutSeconds), "倒计时秒数不能小于 0。")
+                Throw New ArgumentOutOfRangeException(NameOf(timeoutSeconds), "Countdown seconds cannot be less than 0.")
             End If
             _timeoutSeconds = timeoutSeconds
             _remainingSeconds = timeoutSeconds
@@ -1113,7 +1113,7 @@ Public NotInheritable Class DisplayHelper
             _messageLabel = New Label With {.Text = text, .Location = New Point(72, 18), .Size = New Size(365, 75), .TextAlign = ContentAlignment.MiddleLeft}
             Me.Controls.Add(_messageLabel)
             ' 中止按钮
-            Dim abortButton As New Button With {.Text = "中止(&A)", .Size = New Size(105, 30), .Location = New Point(80, 118)}
+            Dim abortButton As New Button With {.Text = "&Abort", .Size = New Size(105, 30), .Location = New Point(80, 118)}
             AddHandler abortButton.Click,
                 Sub(sender, e)
                     Finish(DialogResult.Abort)
@@ -1127,7 +1127,7 @@ Public NotInheritable Class DisplayHelper
                 End Sub
             Me.Controls.Add(_retryButton)
             ' 忽略按钮
-            Dim ignoreButton As New Button With {.Text = "忽略(&I)", .Size = New Size(105, 30), .Location = New Point(325, 118)}
+            Dim ignoreButton As New Button With {.Text = "&Ignore", .Size = New Size(105, 30), .Location = New Point(325, 118)}
             AddHandler ignoreButton.Click,
                 Sub(sender, e)
                     Finish(DialogResult.Ignore)
@@ -1160,7 +1160,7 @@ Public NotInheritable Class DisplayHelper
             End If
         End Sub
         Private Sub UpdateRetryButton()
-            _retryButton.Text = String.Format("重试(&R) ({0})", _remainingSeconds)
+            _retryButton.Text = String.Format("&Retry ({0})", _remainingSeconds)
         End Sub
         Private Sub Finish(result As DialogResult)
             _timer.Stop()

@@ -1363,7 +1363,7 @@ Public Class TapeImage
                                                            If logcount >= 200 OrElse ForceReport Then
                                                                logcount = 0
                                                                Dim debuginfo = debuglogs.ToString()
-                                                               MessageBox.Show($"已复制到剪贴板，请粘贴后回报{vbCrLf}{debuginfo}")
+                                                               MessageBox.Show($"Copied to the clipboard; please paste it into your report{vbCrLf}{debuginfo}")
                                                                Application.OpenForms(0).Invoke(Sub() Clipboard.SetText(debuginfo))
                                                                debuglogs = New StringBuilder
                                                            End If
