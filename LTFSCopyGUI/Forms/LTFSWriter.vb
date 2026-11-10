@@ -7205,12 +7205,12 @@ Public Class LTFSWriter
     Private _fastReaderWaitSuppressed As Integer
     Private ReadOnly Property FastReaderPauseWatermarkFraction As Double
         Get
-            Return My.Settings.LTFSWriter_FastReaderPauseWatermarkFraction
+            Return CachedSetting(Of Double)(NameOf(My.Settings.LTFSWriter_FastReaderPauseWatermarkFraction))
         End Get
     End Property
     Private ReadOnly Property FastReaderResumeWatermarkFraction As Double
         Get
-            Return My.Settings.LTFSWriter_FastReaderResumeWatermarkFraction
+            Return CachedSetting(Of Double)(NameOf(My.Settings.LTFSWriter_FastReaderResumeWatermarkFraction))
         End Get
     End Property
     Public Property PipeBufferLength As Long
@@ -7238,7 +7238,7 @@ Public Class LTFSWriter
                 ' 不推进读取位置，保留数据以便后续读取
                 reader.AdvanceTo(result.Buffer.Start, result.Buffer.Start)
                 Threading.Monitor.Exit(PipeLock)
-                If My.Settings.LTFSWriter_WaitOnBufferEmpty AndAlso length <= My.Settings.LTFSWriter_MinimumSegmentSize * 2 Then PipePause = True
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_WaitOnBufferEmpty)) AndAlso length <= CachedSetting(Of Integer)(NameOf(My.Settings.LTFSWriter_MinimumSegmentSize)) * 2 Then PipePause = True
                 Return length
             Catch ex As Exception
                 PrintMsg(ex.ToString, LogOnly:=True, IsWarn:=True)
@@ -7258,7 +7258,7 @@ Public Class LTFSWriter
             Dim n As Integer = rb.AvailableToRead()
             ' 与 Pipe 重载对称：缓冲区低于暂停水位时置起 PipePause。原先环形缓冲路径没有任何
             ' PipePause 写入点，回填门控因此没有输入；水位按环形缓冲容量取比例（见 WaitForRingRefill）。
-            If My.Settings.LTFSWriter_WaitOnBufferEmpty AndAlso CLng(n) <= GetFastReaderWatermark(rb.Capacity, FastReaderPauseWatermarkFraction) Then PipePause = True
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_WaitOnBufferEmpty)) AndAlso CLng(n) <= GetFastReaderWatermark(rb.Capacity, FastReaderPauseWatermarkFraction) Then PipePause = True
             Return CLng(n)
         Catch ex As Exception
             PrintMsg(ex.ToString, LogOnly:=True, IsWarn:=True)
@@ -7312,7 +7312,7 @@ Public Class LTFSWriter
                     Continue While
                 End If
                 PipeBufferLength = buf.Length
-                If My.Settings.LTFSWriter_WaitOnBufferEmpty AndAlso buf.Length <= My.Settings.LTFSWriter_MinimumSegmentSize * 2 Then PipePause = True
+                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_WaitOnBufferEmpty)) AndAlso buf.Length <= CachedSetting(Of Integer)(NameOf(My.Settings.LTFSWriter_MinimumSegmentSize)) * 2 Then PipePause = True
                 Dim need As Long = count - filled
                 Dim toCopy As Long = Math.Min(need, CLng(buf.Length))
 
@@ -7353,7 +7353,7 @@ Public Class LTFSWriter
             PipeBufferLength = avail
             ' 与 Pipe 重载对称：缓冲区低于暂停水位时置起 PipePause，使下一块写入前门控能够生效。
             ' 判据用局部量而非刚写回的 PipeBufferLength：该属性是共享状态，别的线程也在写。
-            If My.Settings.LTFSWriter_WaitOnBufferEmpty AndAlso CLng(avail) <= GetFastReaderWatermark(rb.Capacity, FastReaderPauseWatermarkFraction) Then PipePause = True
+            If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_WaitOnBufferEmpty)) AndAlso CLng(avail) <= GetFastReaderWatermark(rb.Capacity, FastReaderPauseWatermarkFraction) Then PipePause = True
 
             Dim need As Integer = count - filled
             Dim toCopy As Integer = Math.Min(need, seg.Count)
@@ -7938,7 +7938,7 @@ Public Class LTFSWriter
     Private Sub WaitForFastReaderFillFraction(fastProvider As IFastReaderConsumer,
                                                fraction As Double,
                                                operation As String)
-        If Not My.Settings.LTFSWriter_WaitOnBufferEmpty OrElse
+        If Not CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_WaitOnBufferEmpty)) OrElse
            StopFlag OrElse
            Threading.Volatile.Read(_fastReaderWaitSuppressed) <> 0 Then
             PipePause = False
@@ -7993,7 +7993,7 @@ Public Class LTFSWriter
         If rb Is Nothing OrElse StopFlag Then Return
         ' 门控完全由原有的 LTFSWriter_WaitOnBufferEmpty 开关决定：开关关闭（出厂默认）时直接返回，
         ' 环形缓冲路径的行为与本补丁之前逐字相同，没有主动开启该选项的用户不受影响。
-        If Not My.Settings.LTFSWriter_WaitOnBufferEmpty Then Return
+        If Not CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_WaitOnBufferEmpty)) Then Return
         ' 容量不大于块大小时迟滞毫无意义（一次读取就能把环清空），同时这也排除了水位算式的退化情形：
         ' GetFastReaderWatermark 的 plabel.blocksize 下限是为 FastReader 写的（其容量必 >= 块大小），
         ' 且该下限在容量夹紧之后才取，容量更小时算出的水位大于容量，下面的等待循环会永远等不到。
@@ -8052,7 +8052,7 @@ Public Class LTFSWriter
     End Sub
 
     Private Sub WaitForFastReaderRefill(fastProvider As IFastReaderConsumer)
-        If Not My.Settings.LTFSWriter_WaitOnBufferEmpty OrElse
+        If Not CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_WaitOnBufferEmpty)) OrElse
            StopFlag OrElse
            Threading.Volatile.Read(_fastReaderWaitSuppressed) <> 0 Then
             PipePause = False
@@ -8072,7 +8072,7 @@ Public Class LTFSWriter
     End Sub
 
     Private Sub WaitForInitialFastReaderFill(fastProvider As IFastReaderConsumer)
-        If Not My.Settings.LTFSWriter_WaitOnBufferEmpty OrElse StopFlag Then Return
+        If Not CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_WaitOnBufferEmpty)) OrElse StopFlag Then Return
         WaitForFastReaderFillFraction(fastProvider, FastReaderResumeWatermarkFraction, "initial fill")
     End Sub
 
@@ -8778,6 +8778,7 @@ Public Class LTFSWriter
                         Dim packBuf As Byte() = If(packEnabled, New Byte(plabel.blocksize - 1) {}, Nothing)
                         Dim packFill As Integer = 0
                         Dim packPending As New List(Of FileRecord)
+                        Dim statusSw As Stopwatch = Stopwatch.StartNew()
                         Dim flushPack As Action =
                             Sub()
                                 If packFill = 0 Then Return
@@ -9012,11 +9013,14 @@ Public Class LTFSWriter
                                         End If
                                         fr.File.extentinfo.Add(fileextent)
                                         fr.File.MarkLazyRecordDirty()
-                                        PrintMsg($"{My.Resources.ResText_Writing} {fr.File.name}  {My.Resources.ResText_Size} {IOManager.FormatSize(fr.File.length)}", False,
-                                             $"{My.Resources.ResText_Writing}: {fr.SourcePath}{vbCrLf}{My.Resources.ResText_Size}: {IOManager.FormatSize(fr.File.length)}{vbCrLf _
-                                             }{My.Resources.ResText_WrittenTotal}: {IOManager.FormatSize(TotalBytesProcessed) _
-                                             } {My.Resources.ResText_Remaining}: {IOManager.FormatSize(CLng(Math.Max(0, UnwrittenSize - CurrentBytesProcessed))) _
-                                             } -> {IOManager.FormatSize(CLng(Math.Max(0, UnwrittenSize - CurrentBytesProcessed - fr.File.length)))}", UiOnly:=packThis)
+                                        If Not packThis OrElse statusSw.ElapsedMilliseconds >= 100 Then ' packed files: status at most 10 times a second
+                                            PrintMsg($"{My.Resources.ResText_Writing} {fr.File.name}  {My.Resources.ResText_Size} {IOManager.FormatSize(fr.File.length)}", False,
+                                                 $"{My.Resources.ResText_Writing}: {fr.SourcePath}{vbCrLf}{My.Resources.ResText_Size}: {IOManager.FormatSize(fr.File.length)}{vbCrLf _
+                                                 }{My.Resources.ResText_WrittenTotal}: {IOManager.FormatSize(TotalBytesProcessed) _
+                                                 } {My.Resources.ResText_Remaining}: {IOManager.FormatSize(CLng(Math.Max(0, UnwrittenSize - CurrentBytesProcessed))) _
+                                                 } -> {IOManager.FormatSize(CLng(Math.Max(0, UnwrittenSize - CurrentBytesProcessed - fr.File.length)))}", UiOnly:=packThis)
+                                            statusSw.Restart()
+                                        End If
                                         'write to tape
                                         Dim LastWriteTask As Task = Nothing
                                         If fr.File Is Nothing Then Continue For
