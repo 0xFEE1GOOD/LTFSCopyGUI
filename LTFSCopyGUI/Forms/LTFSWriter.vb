@@ -5417,6 +5417,7 @@ Public Class LTFSWriter
         Public Property AlreadyComplete As Boolean
         Public Property Committed As Boolean
         Public Property Failed As Boolean
+        Public Property Direct As Boolean ' written straight to its name, no temporary file
     End Class
 
     Private Class ExtractionExtentWork
@@ -5785,7 +5786,8 @@ Public Class LTFSWriter
         End If
     End Sub
 
-    Private Function PrepareExtractionFile(request As ExtractionFileRequest) As ExtractionFileWork
+    Private Function PrepareExtractionFile(request As ExtractionFileRequest,
+                                           Optional oneRecord As Boolean = False) As ExtractionFileWork
         If request Is Nothing OrElse request.FileIndex Is Nothing Then Throw New IO.InvalidDataException("Invalid extraction file")
         If request.FileIndex.length < 0 Then Throw New IO.InvalidDataException($"{request.FileIndex.name}: negative file length")
 
@@ -5806,6 +5808,10 @@ Public Class LTFSWriter
         Dim parentPath As String = IO.Path.GetDirectoryName(targetPath)
         If Not String.IsNullOrEmpty(parentPath) Then IO.Directory.CreateDirectory(parentPath)
         Dim tempExists As Boolean = IO.File.Exists(result.TempPath)
+        If oneRecord AndAlso Not tempExists AndAlso Not IO.File.Exists(targetPath) Then
+            result.Direct = True ' see WriteExtractionFileDirect
+            Return result
+        End If
         Dim resetTemp As Boolean = Not tempExists
         If tempExists Then
             Try
@@ -5883,109 +5889,356 @@ Public Class LTFSWriter
         Return result
     End Function
 
-    ' A retried READ must re-read the same block: the failed or short read left the tape after it.
-    Private Sub RelocateForRetry()
-        If RestorePosition IsNot Nothing Then TapeUtils.Locate(driveHandle, RestorePosition.BlockNumber, RestorePosition.PartitionNumber)
-    End Sub
-    Private Function ReadExtractionBlock(blockLength As UInteger,
-                                         ByRef shortReadIgnored As Boolean) As Byte()
-        shortReadIgnored = False
-        While Not StopFlag
-            Dim data As Byte() = Nothing
-            Dim sense() As Byte = {}
-            Try
-                data = TapeUtils.ReadBlock(driveHandle, sense, blockLength, True)
-            Catch ex As Exception
-                Select Case AskExtractionRetry($"{My.Resources.ResText_RErrSCSI}{vbCrLf}{ex}")
-                    Case DialogResult.Abort
-                        StopFlag = True
-                        Throw
-                    Case DialogResult.Retry
-                        RelocateForRetry()
-                        Continue While
-                    Case DialogResult.Ignore
-                        shortReadIgnored = True
-                        Return {}
-                End Select
-            End Try
+    ' Reads the tape records a restore needs, in the order the restore uses them, on its own thread.
+    ' Writing small files runs far below the drive's lowest streaming speed, and a restore that reads
+    ' each record only when the writer wants it makes the drive stop and reposition again and again
+    ' (shoe-shining). This reader fills a large buffer at full drive speed, then waits until three
+    ' quarters of it is used, so the drive stops once per buffer instead of every few records.
+    Private NotInheritable Class ExtractionReadAhead
+        Implements IDisposable
 
-            If data Is Nothing Then data = {}
-            If sense IsNot Nothing AndAlso sense.Length > 2 Then
-                Dim senseValue As Integer = sense(2)
-                Dim senseKey As Integer = senseValue And &HF
-                If ((senseValue >> 6) And 1) = 1 Then
-                    If senseKey <> 13 Then
-                        PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
-                        Throw New IO.EndOfStreamException("The tape reported end of media while reading an extent")
+        Public NotInheritable Class Record
+            Public Partition As Byte
+            Public Block As Long
+            Public Data As Byte()
+            Public Sense As Byte()
+            Public ReadError As Exception
+        End Class
+
+        ' Unneeded records up to this far ahead are read and dropped: a LOCATE stops the tape, while
+        ' 64 records take about 0.1 s to read.
+        Private Const ReadThroughBlocks As Long = 64
+
+        Private ReadOnly _owner As LTFSWriter
+        Private ReadOnly _plan As List(Of ExtractionExtentWork)
+        Private ReadOnly _startIndex As Integer
+        Private ReadOnly _startBlock As Long
+        Private ReadOnly _blockSize As Long
+        Private ReadOnly _lock As New Object
+        Private ReadOnly _queue As New Queue(Of Record)
+        Private ReadOnly _thread As Threading.Thread
+        Private _queuedBytes As Long
+        Private _draining As Boolean
+        Private _finished As Boolean
+        Private _cancel As Boolean
+        Private _partition As Byte
+        Private _block As Long
+
+        Public ReadOnly Property Capacity As Long
+        Public ReadOnly Property StoppedAtError As Boolean
+        Public ReadOnly Property Records As Long
+        Public ReadOnly Property Pauses As Integer
+
+        Public Sub New(owner As LTFSWriter, plan As List(Of ExtractionExtentWork), startIndex As Integer, startBlock As Long)
+            _owner = owner
+            _plan = plan
+            _startIndex = startIndex
+            _startBlock = startBlock
+            _blockSize = owner.GetValidationBlockSize()
+            ' Sized like the write-side read-ahead (LTFSWriter_PreLoadBytes), at least 1 GiB, within half the free memory.
+            Dim wanted As Long = Math.Min(Math.Max(My.Settings.LTFSWriter_PreLoadBytes, 1L << 30), 16L << 30)
+            Try
+                wanted = Math.Min(wanted, CLng(My.Computer.Info.AvailablePhysicalMemory \ 2UL))
+            Catch
+            End Try
+            Capacity = Math.Max(wanted, 64L << 20)
+            _thread = New Threading.Thread(AddressOf Run) With {.IsBackground = True, .Name = "Restore read-ahead"}
+            _thread.Start()
+        End Sub
+
+        Private Shared Function SenseKey(sense As Byte()) As Integer
+            If sense Is Nothing OrElse sense.Length < 3 Then Return 0
+            Return sense(2) And &HF
+        End Function
+
+        Private Function Stopping() As Boolean
+            Return _cancel OrElse _owner.StopFlag
+        End Function
+
+        Private Sub Run()
+            Dim handle As IntPtr = _owner.driveHandle
+            Dim havePos As Boolean = False
+            Dim posPartition As Byte
+            Dim posBlock As Long
+            Dim lastPartition As Byte
+            Dim lastBlock As Long = -1
+            Try
+                Try
+                    Dim p As New TapeUtils.PositionData(handle)
+                    posPartition = p.PartitionNumber
+                    posBlock = CLng(p.BlockNumber)
+                    havePos = True
+                Catch
+                End Try
+                For i As Integer = _startIndex To _plan.Count - 1
+                    Dim extent As ltfsindex.file.extent = _plan(i).Extent
+                    If extent.bytecount <= 0 Then Continue For
+                    Dim part As Byte = _plan(i).PhysicalPartition
+                    Dim first As Long = extent.startblock
+                    Dim last As Long = extent.startblock + (extent.byteoffset + extent.bytecount - 1) \ _blockSize
+                    If i = _startIndex Then first = Math.Max(first, _startBlock)
+                    For b As Long = first To last
+                        If part = lastPartition AndAlso b = lastBlock Then Continue For ' packed small files share a record
+                        _partition = part
+                        _block = b
+                        If Not ReadRecord(handle, part, b, havePos, posPartition, posBlock) Then Return
+                        lastPartition = part
+                        lastBlock = b
+                    Next
+                Next
+            Catch ex As Exception
+                Add(New Record With {.Partition = _partition, .Block = _block, .ReadError = ex}, True)
+            Finally
+                SyncLock _lock
+                    _finished = True
+                    Threading.Monitor.PulseAll(_lock)
+                End SyncLock
+            End Try
+        End Sub
+
+        ' Reads record b into the buffer. False when the reader must stop: cancelled, or the read failed.
+        Private Function ReadRecord(handle As IntPtr, part As Byte, b As Long,
+                                    ByRef havePos As Boolean, ByRef posPartition As Byte, ByRef posBlock As Long) As Boolean
+            If Not WaitForRoom() Then Return False
+            Try
+                If havePos AndAlso posPartition = part AndAlso b >= posBlock AndAlso b - posBlock <= ReadThroughBlocks Then
+                    While posBlock < b AndAlso havePos AndAlso Not Stopping()
+                        Dim skipSense As Byte() = Nothing
+                        TapeUtils.ReadBlock(handle, skipSense, CUInt(_blockSize), True)
+                        If SenseKey(skipSense) > 1 Then havePos = False Else posBlock += 1
+                    End While
+                Else
+                    havePos = False
+                End If
+                If Stopping() Then Return False
+                If Not havePos Then
+                    _owner.PrintMsg($"LOCATE to P{part} B{b}", LogOnly:=True)
+                    TapeUtils.Locate(handle, CULng(b), part, TapeUtils.LocateDestType.Block)
+                    Dim p As New TapeUtils.PositionData(handle)
+                    If p.PartitionNumber <> part OrElse p.BlockNumber <> CULng(b) Then
+                        Throw New IO.IOException($"LOCATE to P{part} B{b} ended at P{p.PartitionNumber} B{p.BlockNumber}")
                     End If
-                ElseIf senseKey <> 0 Then
-                    PrintMsg($"sense err {TapeUtils.Byte2Hex(sense, True)}", IsWarn:=True, LogOnly:=True)
-                    Dim autoIgnore As Boolean = False
-                    If My.Settings.LTFSWriter_IgnoreILI AndAlso sense.Length > 17 Then
-                        Dim driveCode As UShort = CUShort(CUShort(sense(16)) << 8 Or sense(17))
-                        If driveCode = &H2C72 OrElse driveCode = &H2C73 Then
-                            autoIgnore = True
-                        ElseIf driveCode = &H3021 Then
-                            Throw New IO.EndOfStreamException("A filemark was encountered inside an extent")
+                    posPartition = part
+                    posBlock = b
+                    havePos = True
+                End If
+                Dim sense As Byte() = Nothing
+                Dim data As Byte() = TapeUtils.ReadBlock(handle, sense, CUInt(_blockSize), True)
+                posBlock += 1
+                ' Stop after a hard error or an empty read (filemark, end of data); the restore decides what comes next.
+                Dim failed As Boolean = data Is Nothing OrElse data.Length = 0 OrElse SenseKey(sense) > 1
+                Add(New Record With {.Partition = part, .Block = b, .Data = data, .Sense = sense}, failed)
+                Return Not failed
+            Catch ex As Exception
+                havePos = False
+                Add(New Record With {.Partition = part, .Block = b, .ReadError = ex}, True)
+                Return False
+            End Try
+        End Function
+
+        ' Waits while the buffer is full. Once it is full, reading resumes only when three quarters of it
+        ' has been used, so the drive restarts once per buffer, not once per record.
+        Private Function WaitForRoom() As Boolean
+            Dim paused As Diagnostics.Stopwatch = Nothing
+            SyncLock _lock
+                If _queuedBytes >= Capacity AndAlso Not _draining Then
+                    _draining = True
+                    _Pauses += 1
+                    paused = Diagnostics.Stopwatch.StartNew()
+                End If
+                While _draining AndAlso Not Stopping()
+                    Threading.Monitor.Wait(_lock, 250)
+                End While
+            End SyncLock
+            If paused IsNot Nothing Then
+                _owner.PrintMsg($"Restore read-ahead: buffer full ({Capacity >> 20} MiB); reading paused {paused.Elapsed.TotalSeconds:F1} s until {Capacity >> 22} MiB was left", LogOnly:=True)
+            End If
+            Return Not Stopping()
+        End Function
+
+        Private Sub Add(record As Record, failed As Boolean)
+            SyncLock _lock
+                If _cancel Then Return
+                _queue.Enqueue(record)
+                If record.Data IsNot Nothing Then _queuedBytes += record.Data.Length
+                _Records += 1
+                If failed Then _StoppedAtError = True
+                Threading.Monitor.PulseAll(_lock)
+            End SyncLock
+        End Sub
+
+        ' The record for (partition, block). Records of extents the restore skipped (failed files) are
+        ' dropped on the way. Nothing when the reader stopped without reading it.
+        Public Function Take(partition As Byte, block As Long) As Record
+            SyncLock _lock
+                Do
+                    While _queue.Count > 0
+                        Dim r As Record = _queue.Dequeue()
+                        If r.Data IsNot Nothing Then _queuedBytes -= r.Data.Length
+                        If _draining AndAlso _queuedBytes <= Capacity \ 4 Then
+                            _draining = False
+                            Threading.Monitor.PulseAll(_lock)
                         End If
-                    End If
-                    If Not autoIgnore Then
-                        Select Case AskExtractionRetry($"{My.Resources.ResText_RestoreErr}{vbCrLf}{TapeUtils.ParseSenseData(sense)}{vbCrLf}{vbCrLf}sense{vbCrLf}{TapeUtils.Byte2Hex(sense, True)}")
-                            Case DialogResult.Abort
-                                StopFlag = True
-                                Throw New IO.IOException(TapeUtils.ParseSenseData(sense))
-                            Case DialogResult.Retry
-                                RelocateForRetry()
-                                Continue While
-                            Case DialogResult.Ignore
-                                shortReadIgnored = True
-                        End Select
+                        If r.Partition = partition AndAlso r.Block = block Then Return r
+                    End While
+                    If _finished OrElse Stopping() Then Return Nothing
+                    Threading.Monitor.Wait(_lock, 250)
+                Loop
+            End SyncLock
+        End Function
+
+        ' Stops the reader and waits for a READ or LOCATE in progress, so the tape is idle afterwards.
+        Public Sub Dispose() Implements IDisposable.Dispose
+            SyncLock _lock
+                _cancel = True
+                _queue.Clear()
+                _queuedBytes = 0
+                Threading.Monitor.PulseAll(_lock)
+            End SyncLock
+            _thread.Join()
+        End Sub
+    End Class
+
+    Private _extractPlan As List(Of ExtractionExtentWork)
+    Private _extractReader As ExtractionReadAhead
+    Private _extractRecord As ExtractionReadAhead.Record ' last record taken: packed small files share one
+
+    Private Sub RestartExtractionReader(planIndex As Integer, block As Long)
+        _extractRecord = Nothing
+        If _extractReader IsNot Nothing Then _extractReader.Dispose()
+        _extractReader = New ExtractionReadAhead(Me, _extractPlan, planIndex, block)
+    End Sub
+
+    Private Function TakeExtractionRecord(planIndex As Integer, partition As Byte, block As Long) As ExtractionReadAhead.Record
+        Dim record As ExtractionReadAhead.Record = _extractRecord
+        If record IsNot Nothing AndAlso record.Partition = partition AndAlso record.Block = block Then Return record
+        record = _extractReader.Take(partition, block)
+        If record Is Nothing AndAlso _extractReader.StoppedAtError AndAlso Not StopFlag Then
+            ' The reader stops after a failed read; carry on from the record needed now.
+            RestartExtractionReader(planIndex, block)
+            record = _extractReader.Take(partition, block)
+        End If
+        If record Is Nothing AndAlso Not StopFlag Then Throw New IO.IOException($"Tape record P{partition} B{block} was not read")
+        _extractRecord = record
+        Return record
+    End Function
+
+    ' The read checks of a restore, applied to a record read ahead. Returns the data, or Nothing when
+    ' the user chose Retry.
+    Private Function CheckExtractionRecord(record As ExtractionReadAhead.Record,
+                                           blockLength As Long,
+                                           ByRef shortReadIgnored As Boolean) As Byte()
+        shortReadIgnored = False
+        If record.ReadError IsNot Nothing Then
+            Select Case AskExtractionRetry($"{My.Resources.ResText_RErrSCSI}{vbCrLf}{record.ReadError}")
+                Case DialogResult.Abort
+                    StopFlag = True
+                    Throw New IO.IOException(record.ReadError.Message, record.ReadError)
+                Case DialogResult.Retry
+                    Return Nothing
+                Case DialogResult.Ignore
+                    shortReadIgnored = True
+                    Return {}
+            End Select
+        End If
+
+        Dim data As Byte() = If(record.Data, {})
+        Dim sense As Byte() = record.Sense
+        If sense IsNot Nothing AndAlso sense.Length > 2 Then
+            Dim senseValue As Integer = sense(2)
+            Dim senseKey As Integer = senseValue And &HF
+            If ((senseValue >> 6) And 1) = 1 Then
+                If senseKey <> 13 Then
+                    PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
+                    Throw New IO.EndOfStreamException("The tape reported end of media while reading an extent")
+                End If
+            ElseIf senseKey <> 0 Then
+                PrintMsg($"sense err {TapeUtils.Byte2Hex(sense, True)}", IsWarn:=True, LogOnly:=True)
+                Dim autoIgnore As Boolean = False
+                If My.Settings.LTFSWriter_IgnoreILI AndAlso sense.Length > 17 Then
+                    Dim driveCode As UShort = CUShort(CUShort(sense(16)) << 8 Or sense(17))
+                    If driveCode = &H2C72 OrElse driveCode = &H2C73 Then
+                        autoIgnore = True
+                    ElseIf driveCode = &H3021 Then
+                        Throw New IO.EndOfStreamException("A filemark was encountered inside an extent")
                     End If
                 End If
-            End If
-
-            If data.Length = 0 Then Throw New IO.EndOfStreamException("The tape returned an empty block while reading an extent")
-            If data.Length < blockLength Then
-                Dim message As String = $"Error reading tape block: read {data.Length} bytes, expected {blockLength}"
-                PrintMsg(message, LogOnly:=True, IsWarn:=True)
-                If Not My.Settings.LTFSWriter_IgnoreILI AndAlso Not shortReadIgnored Then
-                    Select Case AskExtractionRetry(message)
+                If Not autoIgnore Then
+                    Select Case AskExtractionRetry($"{My.Resources.ResText_RestoreErr}{vbCrLf}{TapeUtils.ParseSenseData(sense)}{vbCrLf}{vbCrLf}sense{vbCrLf}{TapeUtils.Byte2Hex(sense, True)}")
                         Case DialogResult.Abort
                             StopFlag = True
-                            Throw New IO.EndOfStreamException(message)
+                            Throw New IO.IOException(TapeUtils.ParseSenseData(sense))
                         Case DialogResult.Retry
-                            RelocateForRetry()
-                            Continue While
+                            Return Nothing
                         Case DialogResult.Ignore
                             shortReadIgnored = True
                     End Select
-                Else
-                    shortReadIgnored = True
                 End If
             End If
-            Return data
-        End While
-        Return Nothing
+        End If
+
+        If data.Length = 0 Then Throw New IO.EndOfStreamException("The tape returned an empty block while reading an extent")
+        If data.Length < blockLength Then
+            Dim message As String = $"Error reading tape block: read {data.Length} bytes, expected {blockLength}"
+            PrintMsg(message, LogOnly:=True, IsWarn:=True)
+            If Not My.Settings.LTFSWriter_IgnoreILI AndAlso Not shortReadIgnored Then
+                Select Case AskExtractionRetry(message)
+                    Case DialogResult.Abort
+                        StopFlag = True
+                        Throw New IO.EndOfStreamException(message)
+                    Case DialogResult.Retry
+                        Return Nothing
+                    Case DialogResult.Ignore
+                        shortReadIgnored = True
+                End Select
+            Else
+                shortReadIgnored = True
+            End If
+        End If
+        Return data
     End Function
 
-    Private Sub EnsureExtractionPosition(extent As ltfsindex.file.extent)
-        Dim partition As Byte = GetPartitionNumber(CType(extent.partition, ltfslabel.PartitionLabel))
-        Dim blockAddress As ULong = CULng(extent.startblock)
-        If RestorePosition Is Nothing OrElse RestorePosition.PartitionNumber <> partition OrElse
-           RestorePosition.BlockNumber <> blockAddress Then
-            PrintMsg($"LOCATE to P{partition} B{blockAddress}", LogOnly:=True)
-            TapeUtils.Locate(driveHandle, blockAddress, partition, TapeUtils.LocateDestType.Block)
-            RestorePosition = New TapeUtils.PositionData(driveHandle)
-        End If
-    End Sub
+    <DllImport("kernel32.dll", SetLastError:=True)>
+    Private Shared Function SetFileTime(hFile As Microsoft.Win32.SafeHandles.SafeFileHandle,
+                                        lpCreationTime As Long(), lpLastAccessTime As Long(), lpLastWriteTime As Long()) As <MarshalAs(UnmanagedType.Bool)> Boolean
+    End Function
 
-    Private Sub AdvanceExtractionPosition()
-        If RestorePosition Is Nothing Then Return
-        SyncLock RestorePosition
-            If RestorePosition.BlockNumber < UInt64.MaxValue Then
-                RestorePosition.BlockNumber = RestorePosition.BlockNumber + CULng(1)
-            End If
-        End SyncLock
+    Private Shared Function ExtractionFileTime(stamp As String) As Long()
+        If String.IsNullOrEmpty(stamp) Then Return Nothing ' NULL: leave this time as it is
+        Return {TapeUtils.ParseTimeStamp(stamp).ToFileTimeUtc()}
+    End Function
+
+    ' A file held whole in one record, with no file of that name yet: written straight to its name, with
+    ' its times set on the same handle. That is 4 opens fewer than temporary file + rename + attributes,
+    ' which keeps small files fast enough for the drive. A write cut short leaves the current time on the
+    ' file, so the next restore of it does not take it as complete.
+    Private Sub WriteExtractionFileDirect(work As ExtractionFileWork, data As Byte(), offset As Integer, count As Integer)
+        Dim fileIndex As ltfsindex.file = work.Request.FileIndex
+        Dim targetPath As String = NormalizeExtractionPath(work.Request.FileName)
+        Using output As New IO.FileStream(targetPath, IO.FileMode.CreateNew, IO.FileAccess.Write, IO.FileShare.Read, 4096, IO.FileOptions.None)
+            output.Write(data, offset, count)
+            output.Flush()
+            Try
+                If Not SetFileTime(output.SafeFileHandle,
+                                   ExtractionFileTime(fileIndex.creationtime),
+                                   ExtractionFileTime(fileIndex.accesstime),
+                                   ExtractionFileTime(fileIndex.modifytime)) Then
+                    Throw New ComponentModel.Win32Exception(Marshal.GetLastWin32Error())
+                End If
+            Catch ex As Exception
+                PrintMsg($"{fileIndex.name}: cannot apply file attributes: {ex.Message}", IsWarn:=True, LogOnly:=True)
+            End Try
+        End Using
+        If fileIndex.readonly Then
+            Try
+                IO.File.SetAttributes(targetPath, IO.File.GetAttributes(targetPath) Or IO.FileAttributes.ReadOnly)
+            Catch ex As Exception
+                PrintMsg($"{fileIndex.name}: cannot apply file attributes: {ex.Message}", IsWarn:=True, LogOnly:=True)
+            End Try
+        End If
+        work.Committed = True
+        Threading.Interlocked.Increment(CurrentFilesProcessed)
+        Threading.Interlocked.Increment(TotalFilesProcessed)
     End Sub
 
     Private Sub WaitForExtractionPause()
@@ -5994,46 +6247,41 @@ Public Class LTFSWriter
         End While
     End Sub
 
-    ' Last tape record read by RestoreExtractionExtent (see the single-record branch there).
-    Private _extractCache As Byte()
-    Private _extractCacheBlock As Long = -1
-    Private _extractCachePartition As Byte
     Private Sub RestoreExtractionExtent(work As ExtractionExtentWork,
-                                       blockSize As Long)
+                                       blockSize As Long,
+                                       planIndex As Integer)
         If work Is Nothing OrElse work.FileWork Is Nothing OrElse work.Extent Is Nothing Then Return
         Dim extent As ltfsindex.file.extent = work.Extent
         If extent.bytecount <= 0 Then Return
+        Dim part As Byte = work.PhysicalPartition
 
-        ' A record can hold several packed small files. Read a single-record extent whole and keep
-        ' the last record, so the next file in the same record needs no LOCATE back to it.
+        ' A record can hold several packed small files; they all come from the same record.
         If extent.byteoffset + extent.bytecount <= blockSize Then
-            Dim part As Byte = work.PhysicalPartition
-            If _extractCache Is Nothing OrElse _extractCacheBlock <> extent.startblock OrElse _extractCachePartition <> part Then
-                EnsureExtractionPosition(extent)
-                Dim sense As Byte() = Nothing
-                Dim record As Byte() = TapeUtils.ReadBlock(driveHandle, sense, CUInt(blockSize), True)
-                If sense IsNot Nothing AndAlso sense.Length > 2 AndAlso (sense(2) And &HF) > 1 Then Throw New IO.IOException(TapeUtils.ParseSenseData(sense))
-                AdvanceExtractionPosition()
-                _extractCache = record
-                _extractCacheBlock = extent.startblock
-                _extractCachePartition = part
+            Dim record As ExtractionReadAhead.Record = TakeExtractionRecord(planIndex, part, extent.startblock)
+            If record Is Nothing Then Return
+            If record.ReadError IsNot Nothing Then Throw New IO.IOException(record.ReadError.Message, record.ReadError)
+            If record.Sense IsNot Nothing AndAlso record.Sense.Length > 2 AndAlso (record.Sense(2) And &HF) > 1 Then Throw New IO.IOException(TapeUtils.ParseSenseData(record.Sense))
+            Dim data As Byte() = If(record.Data, {})
+            If data.Length < extent.byteoffset + extent.bytecount Then
+                Throw New IO.InvalidDataException($"{work.FileWork.Request.FileIndex.name}: record P{part} B{extent.startblock} has {data.Length} bytes, extent needs {extent.byteoffset + extent.bytecount}")
             End If
-            If _extractCache.Length < extent.byteoffset + extent.bytecount Then
-                Throw New IO.InvalidDataException($"{work.FileWork.Request.FileIndex.name}: record P{part} B{extent.startblock} has {_extractCache.Length} bytes, extent needs {extent.byteoffset + extent.bytecount}")
+            If work.FileWork.Direct Then
+                WriteExtractionFileDirect(work.FileWork, data, CInt(extent.byteoffset), CInt(extent.bytecount))
+            Else
+                Using output As New IO.FileStream(work.FileWork.TempPath, IO.FileMode.Open, IO.FileAccess.ReadWrite, IO.FileShare.Read, 4096, IO.FileOptions.RandomAccess)
+                    output.Seek(extent.fileoffset, IO.SeekOrigin.Begin)
+                    output.Write(data, CInt(extent.byteoffset), CInt(extent.bytecount))
+                End Using
             End If
-            Using output As New IO.FileStream(work.FileWork.TempPath, IO.FileMode.Open, IO.FileAccess.ReadWrite, IO.FileShare.Read, 1048576, IO.FileOptions.RandomAccess)
-                output.Seek(extent.fileoffset, IO.SeekOrigin.Begin)
-                output.Write(_extractCache, CInt(extent.byteoffset), CInt(extent.bytecount))
-            End Using
             Threading.Interlocked.Add(TotalBytesProcessed, extent.bytecount)
             Threading.Interlocked.Add(CurrentBytesProcessed, extent.bytecount)
             Return
         End If
 
-        EnsureExtractionPosition(extent)
         PrintMsg($"Extent {work.ExtentIndex}: P={work.PhysicalPartition} B={extent.startblock} BO={extent.byteoffset} BC={extent.bytecount} FO={extent.fileoffset}", LogOnly:=True)
         Dim remaining As Long = extent.bytecount
         Dim byteOffset As Long = extent.byteoffset
+        Dim block As Long = extent.startblock
         Using output As New IO.FileStream(work.FileWork.TempPath,
                                           IO.FileMode.Open,
                                           IO.FileAccess.ReadWrite,
@@ -6051,10 +6299,16 @@ Public Class LTFSWriter
                 If requested <= 0 OrElse requested > UInteger.MaxValue Then
                     Throw New IO.InvalidDataException("Invalid tape block request length")
                 End If
+                Dim record As ExtractionReadAhead.Record = TakeExtractionRecord(planIndex, part, block)
+                If record Is Nothing Then Exit While
                 Dim ignoredShortRead As Boolean = False
-                Dim data As Byte() = ReadExtractionBlock(CUInt(requested), ignoredShortRead)
-                If StopFlag OrElse data Is Nothing Then Exit While
-                AdvanceExtractionPosition()
+                Dim data As Byte() = CheckExtractionRecord(record, requested, ignoredShortRead)
+                If StopFlag Then Exit While
+                If data Is Nothing Then
+                    RestartExtractionReader(planIndex, block) ' Retry: read this record again
+                    Continue While
+                End If
+                block += 1
                 If data.Length <= byteOffset Then
                     Throw New IO.EndOfStreamException("The tape block does not contain the requested extent offset")
                 End If
@@ -6073,7 +6327,7 @@ Public Class LTFSWriter
                 ' report as already restored.
                 If data.Length < requested Then
                     Throw New IO.InvalidDataException($"{work.FileWork.Request.FileIndex.name}: short tape block " &
-                                                      $"at P{work.PhysicalPartition} B{extent.startblock}: read {data.Length} of {requested} " &
+                                                      $"at P{work.PhysicalPartition} B{block - 1}: read {data.Length} of {requested} " &
                                                       $"bytes with {remaining} extent bytes outstanding; refusing to shift the " &
                                                       $"remaining {remaining - writeLength} bytes")
                 End If
@@ -6207,7 +6461,11 @@ Public Class LTFSWriter
         For Each request As ExtractionFileRequest In requests
             If StopFlag Then Exit For
             If request Is Nothing OrElse request.FileIndex Is Nothing Then Continue For
-            Dim fileWork As ExtractionFileWork = PrepareExtractionFile(request)
+            Dim ei As List(Of ltfsindex.file.extent) = request.FileIndex.extentinfo
+            Dim oneRecord As Boolean = request.FileIndex.length > 0 AndAlso ei IsNot Nothing AndAlso ei.Count = 1 AndAlso ei(0) IsNot Nothing AndAlso
+                                       ei(0).fileoffset = 0 AndAlso ei(0).byteoffset >= 0 AndAlso ei(0).bytecount = request.FileIndex.length AndAlso
+                                       ei(0).byteoffset + ei(0).bytecount <= blockSize
+            Dim fileWork As ExtractionFileWork = PrepareExtractionFile(request, oneRecord)
             fileWorks.Add(fileWork)
             If fileWork.AlreadyComplete OrElse request.FileIndex.length = 0 Then Continue For
             Dim extents As List(Of ltfsindex.file.extent) = GetExtractionExtents(request.FileIndex)
@@ -6245,7 +6503,6 @@ Public Class LTFSWriter
                                         outputRoot As String,
                                         Optional directoryRequests As List(Of ExtractionDirectoryRequest) = Nothing)
         If StopFlag Then Return
-        _extractCache = Nothing ' records may belong to another tape or session
         ValidateExtractionPaths(requests, outputRoot, directoryRequests)
         If StopFlag Then Return
         PrepareExtractionDirectories(directoryRequests)
@@ -6262,44 +6519,60 @@ Public Class LTFSWriter
         Next
         Dim currentExtractionFile As ExtractionFileWork = Nothing
         Dim failedFiles As Integer = 0
-        For planIndex As Integer = 0 To plan.Count - 1
-            If StopFlag Then Exit For
-            Dim extentWork As ExtractionExtentWork = plan(planIndex)
-            Dim extractionFileNumber As Long = 0
-            If Not extractionFileNumbers.TryGetValue(extentWork.FileWork, extractionFileNumber) Then
-                nextExtractionFileNumber += 1
-                extractionFileNumber = nextExtractionFileNumber
-                extractionFileNumbers.Add(extentWork.FileWork, extractionFileNumber)
+        Dim blockSize As Long = GetValidationBlockSize()
+        Dim logEachFile As Boolean = Log.IsEnabled(Serilog.Events.LogEventLevel.Debug) ' else status line only: thousands of files per second
+        _extractPlan = plan
+        _extractRecord = Nothing
+        RestorePosition = Nothing ' the read-ahead thread moves the tape
+        If plan.Count > 0 Then _extractReader = New ExtractionReadAhead(Me, plan, 0, 0)
+        Try
+            For planIndex As Integer = 0 To plan.Count - 1
+                If StopFlag Then Exit For
+                Dim extentWork As ExtractionExtentWork = plan(planIndex)
+                Dim extractionFileNumber As Long = 0
+                If Not extractionFileNumbers.TryGetValue(extentWork.FileWork, extractionFileNumber) Then
+                    nextExtractionFileNumber += 1
+                    extractionFileNumber = nextExtractionFileNumber
+                    extractionFileNumbers.Add(extentWork.FileWork, extractionFileNumber)
+                End If
+                If currentExtractionFile IsNot extentWork.FileWork Then
+                    Dim request As ExtractionFileRequest = extentWork.FileWork.Request
+                    Dim fileName As String = If(request Is Nothing OrElse request.FileIndex Is Nothing,
+                                                String.Empty,
+                                                If(request.FileIndex.name, String.Empty))
+                    Dim filePath As String = If(request Is Nothing, fileName, request.FileName)
+                    PrintMsg($"{My.Resources.ResText_Restoring} [{extractionFileNumber}/{extractionFileTotal}] {fileName}",
+                             False,
+                             $"{My.Resources.ResText_Restoring} [{extractionFileNumber}/{extractionFileTotal}] {filePath}",
+                             UiOnly:=Not logEachFile)
+                    currentExtractionFile = extentWork.FileWork
+                End If
+                If extentWork.FileWork.Failed Then Continue For
+                Try
+                    RestoreExtractionExtent(extentWork, blockSize, planIndex)
+                Catch ex As Exception When Not StopFlag AndAlso (TypeOf ex Is IO.InvalidDataException OrElse TypeOf ex Is IO.EndOfStreamException)
+                    ' One bad file must not abort the rest: drop its temp copy, skip its other extents.
+                    extentWork.FileWork.Failed = True
+                    failedFiles += 1
+                    PrintMsg($"{My.Resources.ResText_RestoreErr} {extentWork.FileWork.Request.FileName}: {ex.Message}", IsWarn:=True)
+                    Try : IO.File.Delete(extentWork.FileWork.TempPath) : Catch : End Try
+                    Continue For
+                End Try
+                Dim lastExtentIndex As Integer = -1
+                If lastExtentByFile.TryGetValue(extentWork.FileWork, lastExtentIndex) AndAlso
+                   lastExtentIndex = planIndex Then
+                    CommitExtractionFile(extentWork.FileWork)
+                End If
+            Next
+        Finally
+            If _extractReader IsNot Nothing Then
+                _extractReader.Dispose()
+                PrintMsg($"Restore read-ahead: {_extractReader.Records} records, buffer {_extractReader.Capacity >> 20} MiB, paused {_extractReader.Pauses} time(s) when full", LogOnly:=True)
+                _extractReader = Nothing
             End If
-            If currentExtractionFile IsNot extentWork.FileWork Then
-                Dim request As ExtractionFileRequest = extentWork.FileWork.Request
-                Dim fileName As String = If(request Is Nothing OrElse request.FileIndex Is Nothing,
-                                            String.Empty,
-                                            If(request.FileIndex.name, String.Empty))
-                Dim filePath As String = If(request Is Nothing, fileName, request.FileName)
-                PrintMsg($"{My.Resources.ResText_Restoring} [{extractionFileNumber}/{extractionFileTotal}] {fileName}",
-                         False,
-                         $"{My.Resources.ResText_Restoring} [{extractionFileNumber}/{extractionFileTotal}] {filePath}")
-                currentExtractionFile = extentWork.FileWork
-            End If
-            If extentWork.FileWork.Failed Then Continue For
-            Try
-                RestoreExtractionExtent(extentWork, GetValidationBlockSize())
-            Catch ex As Exception When Not StopFlag AndAlso (TypeOf ex Is IO.InvalidDataException OrElse TypeOf ex Is IO.EndOfStreamException)
-                ' One bad file must not abort the rest: drop its temp copy, skip its other extents.
-                extentWork.FileWork.Failed = True
-                failedFiles += 1
-                PrintMsg($"{My.Resources.ResText_RestoreErr} {extentWork.FileWork.Request.FileName}: {ex.Message}", IsWarn:=True)
-                Try : IO.File.Delete(extentWork.FileWork.TempPath) : Catch : End Try
-                RestorePosition = Nothing ' tape position is unknown now; force a Locate for the next extent
-                Continue For
-            End Try
-            Dim lastExtentIndex As Integer = -1
-            If lastExtentByFile.TryGetValue(extentWork.FileWork, lastExtentIndex) AndAlso
-               lastExtentIndex = planIndex Then
-                CommitExtractionFile(extentWork.FileWork)
-            End If
-        Next
+            _extractRecord = Nothing
+            _extractPlan = Nothing
+        End Try
         If failedFiles > 0 Then PrintMsg($"{My.Resources.ResText_RestoreErr} {failedFiles} file(s) not restored - see the log", IsWarn:=True, ShowOnWarningLabel:=True)
         If StopFlag Then Return
         For Each fileWork As ExtractionFileWork In fileWorks
