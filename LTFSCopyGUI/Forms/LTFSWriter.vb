@@ -14528,10 +14528,6 @@ Public Class LTFSWriter
     End Function
 
     Private Sub LTFSWriter_DirectCopyClosed(sender As Object, e As FormClosedEventArgs) Handles MyBase.FormClosed
-        ' Closing during an error prompt skips the Finally that unlocks the tape; unlock it here so it can be ejected.
-        If driveHandle <> IntPtr.Zero Then
-            Try : TapeUtils.AllowMediumRemoval(driveHandle) : Catch : End Try
-        End If
         If _directCopySourceOffer IsNot Nothing Then
             _directCopySourceOffer.Dispose()
             _directCopySourceOffer = Nothing

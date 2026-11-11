@@ -6521,8 +6521,10 @@ Public Class TapeUtils
         Msg.AppendLine(ParseAdditionalSenseCode(CUShort(Add_Code)))
         Return Msg.ToString()
     End Function
+    ' Never lock the cartridge: a hung or killed app would leave it trapped in the drive. Sending ALLOW instead
+    ' also clears a lock left by another program.
     Public Shared Function PreventMediaRemoval(handle As IntPtr, Optional ByVal senseReport As Func(Of Byte(), Boolean) = Nothing) As Boolean
-        Return SendSCSICommand(handle, {&H1E, 0, 0, 0, 1, 0}, Nothing, 1, senseReport)
+        Return AllowMediumRemoval(handle, senseReport)
     End Function
     Public Shared Function PreventMediaRemoval(TapeDrive As String, Optional ByVal senseReport As Func(Of Byte(), Boolean) = Nothing) As Boolean
         SyncLock SCSILockManager.GetLock(TapeDrive)
