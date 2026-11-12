@@ -2071,24 +2071,30 @@ Public Class LTFSWriter
         End If
     End Sub
     Private Sub LTFSWriter_Closing(sender As Object, e As CancelEventArgs) Handles Me.Closing
-        Static ForceCloseCount As Integer = 0
         e.Cancel = False
         If TapeEjectedReadOnly Then
             Save_Settings()
             Exit Sub
         End If
+        ' Once the tape is out, or the drive handle is gone, nothing can still be
+        ' running on the drive, so never trap the window on the operation guard -
+        ' whatever the license (a dev license keeps TapeEjectedReadOnly False on
+        ' purpose) or a GUI lock a finished operation left set. This is the case the
+        ' operator hit: tape ejected, yet "operation in progress" refused the quit.
+        If Threading.Volatile.Read(_tapeEjectedValue) <> 0 OrElse
+           driveHandle = IntPtr.Zero OrElse driveHandle = New IntPtr(-1) Then
+            Save_Settings()
+            Exit Sub
+        End If
         If Not AllowOperation Then
-            If ForceCloseCount < 3 Then
-                MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_X0)
+            ' A real operation may still hold the drive. Warn once and let the operator
+            ' decide, rather than the old three "please wait" prompts before a force close.
+            If MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_X1, My.Resources.ResText_Warning, MessageBoxButtons.OKCancel) = DialogResult.OK Then
+                Save_Settings()
+                e.Cancel = False
             Else
-                If MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_X1, My.Resources.ResText_Warning, MessageBoxButtons.OKCancel) = DialogResult.OK Then
-                    Save_Settings()
-                    e.Cancel = False
-                    Exit Sub
-                End If
+                e.Cancel = True
             End If
-            ForceCloseCount += 1
-            e.Cancel = True
             Exit Sub
         End If
         If TotalBytesUnindexed > 0 Then
@@ -11102,8 +11108,10 @@ Public Class LTFSWriter
                                TapeUtils.mkltfs(driveHandle, param.Barcode, param.VolumeLabel, param.ExtraPartitionCount, param.BlockLen, False,
                                         Sub(Message As String)
                                             'ProgressReport
+                                            ' Log/show the line, but do not pop a dialog for it: the drive reports benign
+                                            ' lines such as "Recovered error / Rounded parameter" (LTO rounds a partition to
+                                            ' whole wraps) during a normal format. A real failure comes through OnError below.
                                             PrintMsg(Message)
-                                            If Message.Contains("error") Then Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, Message))
                                         End Sub,
                                         Sub(Message As String)
                                             'OnFinished
