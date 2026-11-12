@@ -639,6 +639,38 @@ Public Class TapeUtils
         Marshal.FreeHGlobal(RawDataU)
         Return RawData
     End Function
+    ''' <summary>
+    ''' ReadBlock(handle, sense, BlockSizeLimit, Truncate:=True) into a caller-owned unmanaged buffer of at least
+    ''' BlockSizeLimit bytes. The overload above allocates, zeroes and copies two buffers of BlockSizeLimit per
+    ''' call, which costs several times the read itself when thousands of small records are read per second.
+    ''' A transport failure throws instead of asking in a dialog.
+    ''' </summary>
+    Public Shared Function ReadBlock(handle As IntPtr, buffer As IntPtr, ByRef sense As Byte(), BlockSizeLimit As UInteger) As Byte()
+        If DriverTypeSetting = DriverType.TapeStream OrElse DriverTypeSetting = DriverType.SLR1 Then
+            Return ReadBlock(handle, sense, BlockSizeLimit, True)
+        End If
+        BlockSizeLimit = CUInt(Math.Min(BlockSizeLimit, GlobalBlockLimit))
+        Dim senseRaw(63) As Byte
+        Dim cdb As Byte() = {8, 0, CByte((BlockSizeLimit >> 16) And &HFF), CByte((BlockSizeLimit >> 8) And &HFF), CByte(BlockSizeLimit And &HFF), 0}
+        SyncLock SCSILockManager.GetLock(handle)
+            If Not TapeSCSIIOCtlUnmanaged(handle, cdb, buffer, BlockSizeLimit, 1, CUInt(SCSI_TIMEOUT_DATA_SECONDS), senseRaw) Then
+                Dim ErrCode As Integer = LastWin32Error
+                Throw New IO.IOException($"SCSI read failed. ErrCode: 0x{ErrCode.ToString("X8")}h {New Win32Exception(ErrCode).Message}")
+            End If
+        End SyncLock
+        sense = senseRaw
+        ' Residual from the sense information field, as above: positive when the record is shorter than asked.
+        Dim DiffBytes As Int32
+        For i As Integer = 3 To 6
+            DiffBytes <<= 8
+            DiffBytes = DiffBytes Or sense(i)
+        Next
+        DiffBytes = Math.Max(DiffBytes, 0)
+        Dim DataLen As Integer = CInt(Math.Min(BlockSizeLimit, BlockSizeLimit - DiffBytes))
+        Dim RawData(DataLen - 1) As Byte
+        If DataLen > 0 Then Marshal.Copy(buffer, RawData, 0, DataLen)
+        Return RawData
+    End Function
     Public Shared Function ReadBlock(TapeDrive As String) As Byte()
         Return ReadBlock(TapeDrive, Nothing, &H80000, False)
     End Function

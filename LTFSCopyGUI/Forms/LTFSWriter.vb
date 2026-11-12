@@ -5923,6 +5923,7 @@ Public Class LTFSWriter
         Private _cancel As Boolean
         Private _partition As Byte
         Private _block As Long
+        Private _buffer As IntPtr ' one record, reused for every read (owned by the reader thread)
 
         Public ReadOnly Property Capacity As Long
         Public ReadOnly Property StoppedAtError As Boolean
@@ -5963,6 +5964,7 @@ Public Class LTFSWriter
             Dim lastPartition As Byte
             Dim lastBlock As Long = -1
             Try
+                _buffer = Runtime.InteropServices.Marshal.AllocHGlobal(New IntPtr(_blockSize))
                 Try
                     Dim p As New TapeUtils.PositionData(handle)
                     posPartition = p.PartitionNumber
@@ -5989,6 +5991,8 @@ Public Class LTFSWriter
             Catch ex As Exception
                 Add(New Record With {.Partition = _partition, .Block = _block, .ReadError = ex}, True)
             Finally
+                If _buffer <> IntPtr.Zero Then Runtime.InteropServices.Marshal.FreeHGlobal(_buffer)
+                _buffer = IntPtr.Zero
                 SyncLock _lock
                     _finished = True
                     Threading.Monitor.PulseAll(_lock)
@@ -6004,7 +6008,7 @@ Public Class LTFSWriter
                 If havePos AndAlso posPartition = part AndAlso b >= posBlock AndAlso b - posBlock <= ReadThroughBlocks Then
                     While posBlock < b AndAlso havePos AndAlso Not Stopping()
                         Dim skipSense As Byte() = Nothing
-                        TapeUtils.ReadBlock(handle, skipSense, CUInt(_blockSize), True)
+                        TapeUtils.ReadBlock(handle, _buffer, skipSense, CUInt(_blockSize))
                         If SenseKey(skipSense) > 1 Then havePos = False Else posBlock += 1
                     End While
                 Else
@@ -6023,7 +6027,7 @@ Public Class LTFSWriter
                     havePos = True
                 End If
                 Dim sense As Byte() = Nothing
-                Dim data As Byte() = TapeUtils.ReadBlock(handle, sense, CUInt(_blockSize), True)
+                Dim data As Byte() = TapeUtils.ReadBlock(handle, _buffer, sense, CUInt(_blockSize))
                 posBlock += 1
                 ' Stop after a hard error or an empty read (filemark, end of data); the restore decides what comes next.
                 Dim failed As Boolean = data Is Nothing OrElse data.Length = 0 OrElse SenseKey(sense) > 1
