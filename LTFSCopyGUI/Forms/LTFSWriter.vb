@@ -1132,6 +1132,9 @@ Public Class LTFSWriter
     Public Property FRTemplate As New FileRecord
     <TypeConverter(GetType(ExpandableObjectConverter))>
     Public Class FileRecord
+        ''' <summary>Source files are opened the way a file copy opens them: a file that another program
+        ''' holds open for writing (a log) can still be read.</summary>
+        Public Const SourceShare As IO.FileShare = IO.FileShare.ReadWrite Or IO.FileShare.Delete
         Public Property ParentDirectory As ltfsindex.directory
         Private _sourcePath As String
         Public Property SourcePath As String
@@ -1277,7 +1280,7 @@ Public Class LTFSWriter
                             IsOpened = True
                             Return 1
                         End If
-                        fs = New IO.FileStream(EnsureSourcePathResolved(), IO.FileMode.Open, IO.FileAccess.Read, IO.FileShare.Read, BufferSize, True)
+                        fs = New IO.FileStream(EnsureSourcePathResolved(), IO.FileMode.Open, IO.FileAccess.Read, SourceShare, BufferSize, True)
                         If FileOffset > 0 Then fs.Seek(FileOffset, IO.SeekOrigin.Begin)
                         IsOpened = True
                         Exit While
@@ -1359,7 +1362,19 @@ Public Class LTFSWriter
                 Buffer = Nothing
                 Return result
             Else
-                Return IO.File.ReadAllBytes(EnsureSourcePathResolved())
+                ' The length the index records and no more: a file that has grown since it was added (a log) is cut there.
+                Using s As New IO.FileStream(EnsureSourcePathResolved(), IO.FileMode.Open, IO.FileAccess.Read, SourceShare, 4096, IO.FileOptions.None)
+                    Dim n As Integer = CInt(If(File Is Nothing, s.Length, Math.Min(s.Length, File.length)))
+                    Dim data(n - 1) As Byte
+                    Dim got As Integer = 0
+                    While got < n
+                        Dim r As Integer = s.Read(data, got, n - got)
+                        If r = 0 Then Exit While
+                        got += r
+                    End While
+                    If got < n Then Array.Resize(data, got) ' shorter than recorded: the caller reports the length change
+                    Return data
+                End Using
             End If
         End Function
     End Class
@@ -9308,6 +9323,9 @@ Public Class LTFSWriter
                                         While (Not useFastReader) AndAlso Not fr.IsOpened AndAlso Not StopFlag
                                             If fr.File Is Nothing Then Continue For
                                             If provider IsNot Nothing AndAlso provider.ProducerCompleted Then
+                                                ' Say why the source reader stopped (e.g. a file locked by another program).
+                                                Dim fault As Exception = provider.ProducerFault
+                                                If fault IsNot Nothing Then Throw New IO.IOException($"Source read failed: {fault.Message}", fault)
                                                 Throw New IO.EndOfStreamException($"Managed file provider completed before opening {fr.SourcePath}.")
                                             End If
                                             Threading.Thread.Sleep(1)

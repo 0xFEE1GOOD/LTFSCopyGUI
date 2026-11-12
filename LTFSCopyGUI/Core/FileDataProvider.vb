@@ -499,7 +499,7 @@ Public Class FileDataProvider
         Try
             ' Cached setting (My.Settings takes a lock), and never a buffer larger than the file itself.
             Dim bufferSize As Integer = CInt(Math.Max(4096L, Math.Min(CLng(CachedSetting(Of Integer)(NameOf(My.Settings.LTFSWriter_FileStreamBufferSize))), fr.File.length)))
-            fs = New FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize, FileOptions.Asynchronous Or FileOptions.SequentialScan)
+            fs = New FileStream(sourcePath, FileMode.Open, FileAccess.Read, LTFSWriter.FileRecord.SourceShare, bufferSize, FileOptions.Asynchronous Or FileOptions.SequentialScan)
             If fr.File.length = 0 Then
                 fr.File.length = fs.Length
                 fr.FileOffset = 0
