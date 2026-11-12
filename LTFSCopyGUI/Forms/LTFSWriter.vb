@@ -9048,6 +9048,7 @@ Public Class LTFSWriter
                         ' written together; each extent points into it (startblock + byteoffset, LTFS "shared
                         ' blocks"). A packed file is committed only after its record reached the tape.
                         Dim packEnabled As Boolean = My.Settings.LTFSWriter_PackSmallFiles AndAlso Not useFastReader
+                        Dim logEachFile As Boolean = Log.IsEnabled(Serilog.Events.LogEventLevel.Debug)
                         Dim packBuf As Byte() = If(packEnabled, New Byte(plabel.blocksize - 1) {}, Nothing)
                         Dim packFill As Integer = 0
                         Dim packPending As New List(Of FileRecord)
@@ -9128,7 +9129,10 @@ Public Class LTFSWriter
                                 Dim currentPlan = writePlan(i)
                                 ValidatePlannedSource(fr, currentPlan)
                                 Dim IsIndexPartition As Boolean = currentPlan.Kind = PlannedWriteKind.IndexPartitionMaterial
-                                If Not packEnabled OrElse Log.IsEnabled(Serilog.Events.LogEventLevel.Debug) Then ' per-file debug events; costly at thousands of files/s
+                                ' A file of one record or less, packed or not: its four per-file log events are written
+                                ' only at Debug level (they cost more than the file at thousands of files/s).
+                                Dim quietFile As Boolean = Not logEachFile AndAlso fr.File.length <= plabel.blocksize
+                                If Not quietFile Then
                                     Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSWriter))
                                         Using categoryScope As IDisposable = LogContext.PushProperty("Category", "Writer")
                                             Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
@@ -9286,12 +9290,12 @@ Public Class LTFSWriter
                                         End If
                                         fr.File.extentinfo.Add(fileextent)
                                         fr.File.MarkLazyRecordDirty()
-                                        If Not packThis OrElse statusSw.ElapsedMilliseconds >= 100 Then ' packed files: status at most 10 times a second
+                                        If Not quietFile OrElse statusSw.ElapsedMilliseconds >= 100 Then ' small files: status at most 10 times a second
                                             PrintMsg($"{My.Resources.ResText_Writing} {fr.File.name}  {My.Resources.ResText_Size} {IOManager.FormatSize(fr.File.length)}", False,
                                                  $"{My.Resources.ResText_Writing}: {fr.SourcePath}{vbCrLf}{My.Resources.ResText_Size}: {IOManager.FormatSize(fr.File.length)}{vbCrLf _
                                                  }{My.Resources.ResText_WrittenTotal}: {IOManager.FormatSize(TotalBytesProcessed) _
                                                  } {My.Resources.ResText_Remaining}: {IOManager.FormatSize(CLng(Math.Max(0, UnwrittenSize - CurrentBytesProcessed))) _
-                                                 } -> {IOManager.FormatSize(CLng(Math.Max(0, UnwrittenSize - CurrentBytesProcessed - fr.File.length)))}", UiOnly:=packThis)
+                                                 } -> {IOManager.FormatSize(CLng(Math.Max(0, UnwrittenSize - CurrentBytesProcessed - fr.File.length)))}", UiOnly:=quietFile)
                                             statusSw.Restart()
                                         End If
                                         'write to tape
@@ -9909,7 +9913,7 @@ Public Class LTFSWriter
                                             CurrentHeight = CLng(p.BlockNumber)
                                         End If
                                         If p.EOP Then PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
-                                        If Not packPending.Contains(fr) Then PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
+                                        If Not quietFile AndAlso Not packPending.Contains(fr) Then PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
                                     End If
                                 Else
                                     fr.File.SetXattr(ltfsindex.file.xattr.HashType.CRC32, "00000000")
@@ -9961,7 +9965,7 @@ Public Class LTFSWriter
                                 End If
                                 RequestListDisplayRefresh()
                                 Dim extentCount As Integer = If(fr.File.extentinfo Is Nothing, 0, fr.File.extentinfo.Count)
-                                If Not packEnabled OrElse Log.IsEnabled(Serilog.Events.LogEventLevel.Debug) Then ' per-file debug events; costly at thousands of files/s
+                                If Not quietFile Then
                                     Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSWriter))
                                         Using categoryScope As IDisposable = LogContext.PushProperty("Category", "Writer")
                                             Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
