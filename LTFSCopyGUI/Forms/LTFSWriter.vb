@@ -507,15 +507,8 @@ Public Class LTFSWriter
         ToolStripStatusLabel5.Text = statusText5
         ToolStripStatusLabel5.ToolTipText = statusTooltip5
         If TapeUtils.IsOpened(driveHandle) Then
-            If IOCtlNum > 0 Then
-                If blinkcycle < blinkticks Then
-                    ToolStripStatusLabelS6.ForeColor = Color.Transparent
-                Else
-                    ToolStripStatusLabelS6.ForeColor = Color.LimeGreen
-                End If
-            Else
-                ToolStripStatusLabelS6.ForeColor = Color.Green
-            End If
+            ' steady bright green while commands run (LTFSWriter.UiExtras.vb), no longer a blink
+            ToolStripStatusLabelS6.ForeColor = If(UiIoLightLit(IOCtlNum > 0), Color.LimeGreen, Color.Green)
         Else
             ToolStripStatusLabelS6.ForeColor = Color.Gray
         End If

@@ -21,7 +21,7 @@ Friend NotInheritable Class UiStyle
     Public Const FontSize As Single = 10.0F
     Private Const LegacySize As Single = 9.0F
 
-    ' SimSun is the old default of both apps ("宋体" and "新宋体" are spelled with escapes so the file stays ASCII).
+    ' SimSun is the old default of both apps (its Chinese names are spelled with ChrW so this file stays ASCII).
     Private Shared ReadOnly LegacyFaces As String() = {"SimSun", ChrW(&H5B8B) & ChrW(&H4F53), "SimSun-ExtB", "NSimSun",
         ChrW(&H65B0) & ChrW(&H5B8B) & ChrW(&H4F53), "Microsoft Sans Serif", "MS Sans Serif", "MS Shell Dlg", "MS Shell Dlg 2"}
 
@@ -274,6 +274,87 @@ Friend NotInheritable Class UiStyle
         If TypeOf c Is ButtonBase Then Return w + c.Padding.Horizontal + 10 * dpi \ 96
         Return w + c.Padding.Horizontal + 2 * dpi \ 96
     End Function
+
+    ' ---- the other program and the shortcut list (the same in both programs) ------------------------------------
+
+    <DllImport("user32.dll")>
+    Private Shared Function SetForegroundWindow(hWnd As IntPtr) As Boolean
+    End Function
+
+    <DllImport("user32.dll")>
+    Private Shared Function ShowWindow(hWnd As IntPtr, cmd As Integer) As Boolean
+    End Function
+
+    <DllImport("user32.dll")>
+    Private Shared Function IsIconic(hWnd As IntPtr) As Boolean
+    End Function
+
+    ''' <summary>
+    ''' Brings the other program (LTFSCopyGUI.exe or LTFSCatalog.exe, in this program's folder) to the front if it is
+    ''' running, otherwise starts it.
+    ''' </summary>
+    Public Shared Sub OpenCompanion(owner As IWin32Window, exeName As String)
+        Dim folder As String = AppDomain.CurrentDomain.BaseDirectory
+        Dim exe As String = System.IO.Path.Combine(folder, exeName)
+        Dim name As String = System.IO.Path.GetFileNameWithoutExtension(exeName)
+        For Each p As System.Diagnostics.Process In System.Diagnostics.Process.GetProcessesByName(name)
+            Using p
+                Try
+                    Dim h As IntPtr = p.MainWindowHandle
+                    If h <> IntPtr.Zero Then
+                        If IsIconic(h) Then ShowWindow(h, 9) ' SW_RESTORE
+                        SetForegroundWindow(h)
+                        Return
+                    End If
+                Catch ex As InvalidOperationException
+                    ' it has just exited
+                End Try
+            End Using
+        Next
+        If Not System.IO.File.Exists(exe) Then
+            MessageBox.Show(owner, exeName & " is not in " & folder, name, MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        Try
+            System.Diagnostics.Process.Start(New System.Diagnostics.ProcessStartInfo(exe) With {.UseShellExecute = True, .WorkingDirectory = folder})
+        Catch ex As System.ComponentModel.Win32Exception
+            ' e.g. the elevation prompt was declined
+        End Try
+    End Sub
+
+    ''' <summary>Help > Keyboard shortcuts: a list of keys and what they do, in the shared look.</summary>
+    Public Shared Sub ShowShortcuts(owner As IWin32Window, title As String, rows As String(,))
+        Using f As New Form With {.Text = title, .FormBorderStyle = FormBorderStyle.FixedDialog, .MaximizeBox = False, .MinimizeBox = False,
+                                  .ShowInTaskbar = False, .StartPosition = FormStartPosition.CenterParent, .ClientSize = New Size(560, 380),
+                                  .Font = UiFont, .KeyPreview = True}
+            Dim list As New ListView With {.View = View.Details, .FullRowSelect = True, .MultiSelect = False, .Dock = DockStyle.Fill,
+                                           .HeaderStyle = ColumnHeaderStyle.Nonclickable}
+            list.Columns.Add("Key")
+            list.Columns.Add("Does")
+            For i As Integer = 0 To rows.GetLength(0) - 1
+                list.Items.Add(New ListViewItem(New String() {rows(i, 0), rows(i, 1)}))
+            Next
+            Dim closeButton As New Button With {.Text = "Close", .DialogResult = DialogResult.OK, .AutoSize = True, .MinimumSize = New Size(84, 26)}
+            Dim bottom As New FlowLayoutPanel With {.Dock = DockStyle.Bottom, .FlowDirection = FlowDirection.RightToLeft, .AutoSize = True,
+                                                    .Padding = New Padding(6)}
+            bottom.Controls.Add(closeButton)
+            f.Controls.Add(list)
+            f.Controls.Add(bottom)
+            f.AcceptButton = closeButton
+            f.CancelButton = closeButton
+            ' laid out in 96-dpi units and scaled once the controls exist, as LTFSCopyGUI's ApplyDynamicFormLayout
+            f.AutoScaleDimensions = New SizeF(96.0F, 96.0F)
+            GC.KeepAlive(f.AccessibilityObject)
+            f.AutoScaleMode = AutoScaleMode.Dpi
+            Apply(f, UiFont)
+            AddHandler f.Shown, Sub()
+                                    list.AutoResizeColumn(0, ColumnHeaderAutoResizeStyle.ColumnContent)
+                                    list.Columns(0).Width += 16 * f.DeviceDpi \ 96
+                                    list.Columns(1).Width = Math.Max(list.ClientSize.Width - list.Columns(0).Width, 80)
+                                End Sub
+            f.ShowDialog(owner)
+        End Using
+    End Sub
 
     ' ---- lists and trees: Explorer style (hover highlight, arrows instead of +/- boxes), double-buffered -----------
 

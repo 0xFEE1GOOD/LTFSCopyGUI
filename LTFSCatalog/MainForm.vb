@@ -116,6 +116,16 @@ Friend NotInheritable Class MainForm
         Return m
     End Function
 
+    Private Shared ReadOnly Shortcuts As String(,) = {
+        {"Ctrl+F, F3", "Go to the search box"},
+        {"Enter", "Search now"},
+        {"Esc", "Clear the search"},
+        {"Down arrow", "From the search box to the results"},
+        {"F5", "Refresh from the index folder"},
+        {"Ctrl+R", "Restore the selection to disk (done by LTFSCopyGUI)"},
+        {"Ctrl+C", "Copy the full path of the selection"},
+        {"F1", "Search syntax"}}
+
     Private Sub BuildMenu()
         Dim mCat As New ToolStripMenuItem("&Catalog")
         mCat.DropDownItems.Add(Item("&Refresh from index folder", AddressOf StartSync, "F5"))
@@ -125,6 +135,8 @@ Friend NotInheritable Class MainForm
         mCat.DropDownItems.Add(New ToolStripSeparator())
         mCat.DropDownItems.Add(Item("Restore to &disk...", AddressOf DoRestore, "Ctrl+R"))
         mCat.DropDownItems.Add(Item("Pending &restore requests", AddressOf OpenRequestFolder))
+        mCat.DropDownItems.Add(New ToolStripSeparator())
+        mCat.DropDownItems.Add(Item("&Open LTFSCopyGUI", Sub() UiStyle.OpenCompanion(Me, "LTFSCopyGUI.exe")))
         mCat.DropDownItems.Add(New ToolStripSeparator())
         mCat.DropDownItems.Add(Item("E&xit", AddressOf Close))
         _mnuTape.DropDownItems.Add(Item("&Re-import from its index", Sub() DoReimport(SelectedTapeId())))
@@ -139,6 +151,7 @@ Friend NotInheritable Class MainForm
                                              End Sub
         Dim mHelp As New ToolStripMenuItem("&Help")
         mHelp.DropDownItems.Add(Item("&Search syntax", AddressOf ShowSearchHelp, "F1"))
+        mHelp.DropDownItems.Add(Item("&Keyboard shortcuts", Sub() UiStyle.ShowShortcuts(Me, "Keyboard shortcuts - LTFSCatalog", Shortcuts)))
         mHelp.DropDownItems.Add(Item("&About", AddressOf ShowAbout))
         _menu.Items.AddRange(New ToolStripItem() {mCat, _mnuTape, mHelp})
 
