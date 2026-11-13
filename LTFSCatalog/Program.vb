@@ -7,7 +7,7 @@ Imports System.Text
 Imports System.Threading
 Imports System.Windows.Forms
 
-''' <summary>Command line: [--index-folder DIR] [--db FILE]; tests: --selftest | --import [--track-all] | --search "q" [--kind files|folders]; --report FILE.</summary>
+''' <summary>Command line: [--index-folder DIR] [--db FILE]; tests: --selftest | --import [--track-all] | --search "q" [--kind files|folders] [--request-to DIR --dest PATH]; --report FILE.</summary>
 Friend NotInheritable Class AppOptions
     Public IndexFolder As String
     Public DbPath As String = Path.Combine(AppDir, "catalog", "LTFSCatalog.db")
@@ -16,6 +16,8 @@ Friend NotInheritable Class AppOptions
     Public Report As String
     Public TrackAll As Boolean
     Public Kind As KindFilter = KindFilter.All
+    Public RequestTo As String
+    Public Dest As String = "C:\LTFSCatalog-restore-test"
 
     Public Shared Function Parse(args As String()) As AppOptions
         Dim o As New AppOptions
@@ -36,6 +38,8 @@ Friend NotInheritable Class AppOptions
                     o.Command = "search"
                     o.Query = nextArg()
                 Case "--track-all" : o.TrackAll = True
+                Case "--request-to" : o.RequestTo = Path.GetFullPath(nextArg())
+                Case "--dest" : o.Dest = nextArg()
                 Case "--kind"
                     Dim k As String = nextArg().ToLowerInvariant()
                     o.Kind = If(k.StartsWith("file", StringComparison.Ordinal), KindFilter.Files, If(k.StartsWith("folder", StringComparison.Ordinal), KindFilter.Folders, KindFilter.All))
@@ -213,6 +217,15 @@ Friend Module Headless
                     Dim folder As String = store.FolderOf(r.ParentId)
                     sb.AppendLine("  " & tapes(r.TapeId).Barcode & ":" & If(folder = "\", "\", folder & "\") & r.Name & If(r.IsDir, "\", "") & "  " & FormatSize(r.Size))
                 Next
+                If o.RequestTo IsNot Nothing Then
+                    ' test of the restore handoff: one request per tape for every result, into a test folder
+                    Dim cache As New Dictionary(Of Long, String())
+                    For Each g As IGrouping(Of Long, EntryRow) In res.Rows.GroupBy(Function(r) r.TapeId)
+                        Dim items As List(Of KeyValuePair(Of Boolean, String())) = g.Select(Function(r) New KeyValuePair(Of Boolean, String())(r.IsDir, store.TapePathParts(r.ParentId, r.Name, cache))).
+                            Where(Function(kv) kv.Value IsNot Nothing).ToList()
+                        sb.AppendLine("Request: " & RestoreRequest.Write(tapes(g.Key), items, o.Dest, True, o.RequestTo) & " (" & items.Count.ToString(CultureInfo.InvariantCulture) & " items)")
+                    Next
+                End If
             End Using
         End Using
         Return 0

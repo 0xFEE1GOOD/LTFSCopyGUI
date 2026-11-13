@@ -122,6 +122,9 @@ Friend NotInheritable Class MainForm
         mCat.DropDownItems.Add(Item("Index &folder...", AddressOf DoChooseFolder))
         mCat.DropDownItems.Add(Item("&Untracked tapes...", AddressOf DoUntracked))
         mCat.DropDownItems.Add(New ToolStripSeparator())
+        mCat.DropDownItems.Add(Item("Restore to &disk...", AddressOf DoRestore, "Ctrl+R"))
+        mCat.DropDownItems.Add(Item("Pending &restore requests", AddressOf OpenRequestFolder))
+        mCat.DropDownItems.Add(New ToolStripSeparator())
         mCat.DropDownItems.Add(Item("E&xit", AddressOf Close))
         _mnuTape.DropDownItems.Add(Item("&Re-import from its index", Sub() DoReimport(SelectedTapeId())))
         _mnuTape.DropDownItems.Add(Item("Re&move from catalog...", Sub() DoRemoveTape(SelectedTapeId())))
@@ -239,6 +242,8 @@ Friend NotInheritable Class MainForm
         _listMenu.Items.Add(Item("Copy name", Sub() CopySelected(False)))
         _listMenu.Items.Add(New ToolStripSeparator())
         _listMenu.Items.Add(Item("Search in this folder", Sub() SearchInSelectedFolder()))
+        _listMenu.Items.Add(New ToolStripSeparator())
+        _listMenu.Items.Add(Item("Restore to disk...", Sub() DoRestore(), "Ctrl+R"))
         AddHandler _listMenu.Opening, Sub()
                                           Dim r As EntryRow = FocusedRow()
                                           _listMenu.Items(0).Text = If(r IsNot Nothing AndAlso r.IsDir, "Open folder", "Open containing folder")
@@ -335,6 +340,9 @@ Friend NotInheritable Class MainForm
                 Return True
             Case Keys.F5
                 StartSync()
+                Return True
+            Case Keys.Control Or Keys.R
+                DoRestore()
                 Return True
         End Select
         Return MyBase.ProcessCmdKey(msg, keyData)
@@ -826,6 +834,105 @@ Friend NotInheritable Class MainForm
                 _list.Focus()
                 ShowEntryDetails(selectId.Value)
             End If
+        End If
+    End Sub
+
+    ' ---- restore (done by LTFSCopyGUI, which owns the drive) ----------------------------------------
+    Private Sub DoRestore()
+        Dim rows As List(Of EntryRow) = SelectedRows()
+        If rows.Count = 0 Then
+            Theme.Ask(Me, "Restore to disk", "Select files or folders first",
+                      "Search, or browse a tape, then select the files and folders to restore and press Ctrl+R.", {"OK"}, 0, 0)
+            Return
+        End If
+        Dim cache As New Dictionary(Of Long, String())
+        Dim byTape As New Dictionary(Of Long, List(Of KeyValuePair(Of Boolean, String())))
+        Dim files As Long = 0, folders As Long = 0, bytes As Long = 0, inFolders As Long = 0
+        For Each r As EntryRow In rows
+            Dim parts As String() = _store.TapePathParts(r.ParentId, r.Name, cache)
+            If parts Is Nothing Then Continue For ' removed by a re-import since the search
+            Dim list As List(Of KeyValuePair(Of Boolean, String())) = Nothing
+            If Not byTape.TryGetValue(r.TapeId, list) Then
+                list = New List(Of KeyValuePair(Of Boolean, String()))
+                byTape(r.TapeId) = list
+            End If
+            list.Add(New KeyValuePair(Of Boolean, String())(r.IsDir, parts))
+            If r.IsDir Then
+                folders += 1
+                inFolders += r.Items
+            Else
+                files += 1
+            End If
+            bytes += r.Size
+        Next
+        Dim tapes As List(Of TapeInfo) = byTape.Keys.Select(Function(id) _store.GetTape(id)).
+            Where(Function(t) t IsNot Nothing AndAlso Not String.IsNullOrEmpty(t.VolumeUuid)).ToList()
+        If tapes.Count = 0 Then Return
+        Dim what As New List(Of String)
+        If files > 0 Then what.Add(FormatCount(files) & If(files = 1, " file", " files"))
+        If folders > 0 Then what.Add(FormatCount(folders) & If(folders = 1, " folder", " folders"))
+        Dim heading As String = "Restore " & String.Join(" and ", what) & " (" & FormatSize(bytes) & ")"
+        Dim details As String
+        If tapes.Count = 1 Then
+            details = "From tape " & TapeLabel(tapes(0)) & "."
+        Else
+            details = "From " & tapes.Count.ToString(CultureInfo.InvariantCulture) & " tapes: " & String.Join(", ", tapes.Select(Function(t) t.Barcode)) &
+                      ". Each tape is restored when its index is loaded in LTFSCopyGUI."
+        End If
+        If folders > 0 Then details &= Environment.NewLine & "The folders hold " & FormatCount(inFolders) & " items in all."
+        Using d As New RestoreDialog(heading, details, _store.GetMeta("restore_dest"), _store.GetMeta("restore_keep_paths") <> "0")
+            If d.ShowDialog(Me) <> DialogResult.OK Then Return
+            _store.SetMeta("restore_dest", d.Destination)
+            _store.SetMeta("restore_keep_paths", If(d.KeepPaths, "1", "0"))
+            Try
+                For Each t As TapeInfo In tapes
+                    RestoreRequest.Write(t, byTape(t.Id), d.Destination, d.KeepPaths)
+                Next
+            Catch ex As Exception When TypeOf ex Is IOException OrElse TypeOf ex Is UnauthorizedAccessException
+                LogError("restore request", ex)
+                Theme.Ask(Me, "Restore to disk", "Could not hand the restore to LTFSCopyGUI", ex.Message & Environment.NewLine & RestoreRequest.Folder, {"OK"}, 0, 0)
+                Return
+            End Try
+        End Using
+        Dim running As Boolean = Diagnostics.Process.GetProcessesByName("LTFSCopyGUI").Length > 0
+        Dim exe As String = Path.Combine(AppDir, "LTFSCopyGUI.exe")
+        Dim howTo As String = "In LTFSCopyGUI, open the drive with tape " & String.Join(", then ", tapes.Select(Function(t) t.Barcode)) &
+                              " and load its index. It shows what it will restore and asks before it starts."
+        If running Then
+            Theme.Ask(Me, "Restore to disk", "Sent to LTFSCopyGUI", howTo, {"OK"}, 0, 0)
+        ElseIf File.Exists(exe) Then
+            If Theme.Ask(Me, "Restore to disk", "Sent - LTFSCopyGUI is not running", howTo, {"Start LTFSCopyGUI", "Later"}, 0, 1) = 0 Then
+                Try
+                    Diagnostics.Process.Start(New Diagnostics.ProcessStartInfo(exe) With {.UseShellExecute = True, .WorkingDirectory = AppDir})
+                Catch ex As System.ComponentModel.Win32Exception
+                    Log("LTFSCopyGUI not started: " & ex.Message) ' e.g. the elevation prompt was declined
+                End Try
+            End If
+        Else
+            Theme.Ask(Me, "Restore to disk", "Sent - LTFSCopyGUI is not running", "Start LTFSCopyGUI. " & howTo, {"OK"}, 0, 0)
+        End If
+        _lblView.Text = "Restore sent to LTFSCopyGUI"
+    End Sub
+
+    Private Shared Function TapeLabel(t As TapeInfo) As String
+        Return If(String.IsNullOrEmpty(t.Serial), t.Barcode, t.Barcode & " (serial " & t.Serial & ")")
+    End Function
+
+    ''' <summary>Opens the folder of restore requests LTFSCopyGUI has not taken yet (delete a file there to cancel it).</summary>
+    Private Sub OpenRequestFolder()
+        Dim n As Integer = RestoreRequest.PendingCount()
+        If n = 0 Then
+            Theme.Ask(Me, "Restore requests", "No restore requests are waiting", "LTFSCopyGUI has taken or declined every request sent so far.", {"OK"}, 0, 0)
+            Return
+        End If
+        If Theme.Ask(Me, "Restore requests", FormatCount(n) & If(n = 1, " restore request is", " restore requests are") & " waiting for LTFSCopyGUI",
+                     "Each one runs when its tape's index is loaded in LTFSCopyGUI. Delete a .req file in the folder to cancel that request.",
+                     {"Open folder", "Close"}, 0, 1) = 0 Then
+            Try
+                Diagnostics.Process.Start(New Diagnostics.ProcessStartInfo(RestoreRequest.Folder) With {.UseShellExecute = True})
+            Catch ex As System.ComponentModel.Win32Exception
+                Log("request folder not opened: " & ex.Message)
+            End Try
         End If
     End Sub
 

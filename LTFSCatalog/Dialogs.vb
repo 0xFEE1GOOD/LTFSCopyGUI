@@ -286,3 +286,76 @@ Friend NotInheritable Class UntrackedTapesDialog
     End Sub
 
 End Class
+
+''' <summary>Where to restore the selected files; the restore itself is done by LTFSCopyGUI.</summary>
+Friend NotInheritable Class RestoreDialog
+    Inherits Form
+
+    Private ReadOnly _dest As New TextBox With {.Width = 380, .Margin = New Padding(0, 1, 6, 0)}
+    Private ReadOnly _keep As New CheckBox With {.Text = "Keep the tape folder paths (recommended: no name clashes)", .AutoSize = True, .Margin = New Padding(0, 8, 0, 8)}
+
+    Public ReadOnly Property Destination As String
+        Get
+            Return _dest.Text.Trim()
+        End Get
+    End Property
+
+    Public ReadOnly Property KeepPaths As Boolean
+        Get
+            Return _keep.Checked
+        End Get
+    End Property
+
+    Public Sub New(heading As String, details As String, lastDestination As String, keepPaths As Boolean)
+        Theme.ApplyDialog(Me, "Restore to disk")
+        _dest.Text = If(lastDestination, "")
+        _keep.Checked = keepPaths
+        Dim layout As New TableLayoutPanel With {.Location = New Point(0, 0), .ColumnCount = 1, .Padding = New Padding(14, 12, 14, 10),
+                                                 .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink}
+        Dim h As New Label With {.Text = heading, .AutoSize = True, .MaximumSize = New Size(480, 0), .Font = New Font(UiFont, FontStyle.Bold), .Margin = New Padding(0, 0, 0, 6)}
+        Dim d As New Label With {.Text = details, .AutoSize = True, .MaximumSize = New Size(480, 0), .Margin = New Padding(0, 0, 0, 12)}
+        Dim lbl As New Label With {.Text = "Restore to:", .AutoSize = True, .Margin = New Padding(0, 0, 0, 3)}
+        Dim browse As New Button With {.Text = "Browse...", .AutoSize = True, .MinimumSize = New Size(84, 24), .Margin = New Padding(0)}
+        Dim pick As New FlowLayoutPanel With {.AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink, .WrapContents = False, .Margin = New Padding(0)}
+        pick.Controls.Add(_dest)
+        pick.Controls.Add(browse)
+        Dim note As New Label With {.AutoSize = True, .MaximumSize = New Size(480, 0), .ForeColor = SystemColors.GrayText, .Margin = New Padding(0, 0, 0, 12),
+                                    .Text = "LTFSCopyGUI does the restore, in tape order. Load the tape's index there and it asks before it starts. " &
+                                            "The catalog never uses the drive."}
+        Dim ok As New Button With {.Text = "Send to LTFSCopyGUI", .AutoSize = True, .MinimumSize = New Size(84, 26)}
+        Dim cancel As New Button With {.Text = "Cancel", .DialogResult = DialogResult.Cancel, .AutoSize = True, .MinimumSize = New Size(84, 26)}
+        Dim row As New FlowLayoutPanel With {.FlowDirection = FlowDirection.RightToLeft, .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                                             .Anchor = AnchorStyles.Right, .WrapContents = False, .Margin = New Padding(0)}
+        row.Controls.Add(cancel)
+        row.Controls.Add(ok)
+        For Each c As Control In New Control() {h, d, lbl, pick, _keep, note, row}
+            layout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+            layout.Controls.Add(c)
+        Next
+        Controls.Add(layout)
+        AutoSize = True
+        AutoSizeMode = AutoSizeMode.GrowAndShrink
+        AcceptButton = ok
+        CancelButton = cancel
+        AddHandler browse.Click, Sub()
+                                     Using f As New FolderBrowserDialog With {.Description = "Restore the files into this folder", .ShowNewFolderButton = True}
+                                         If IO.Directory.Exists(Destination) Then f.SelectedPath = Destination
+                                         If f.ShowDialog(Me) = DialogResult.OK Then _dest.Text = f.SelectedPath
+                                     End Using
+                                 End Sub
+        AddHandler ok.Click, Sub()
+                                 Dim p As String = Destination
+                                 Dim full As Boolean = (p.Length >= 3 AndAlso p(1) = ":"c AndAlso (p(2) = "\"c OrElse p(2) = "/"c)) OrElse p.StartsWith("\\", StringComparison.Ordinal)
+                                 If Not full OrElse p.IndexOfAny(IO.Path.GetInvalidPathChars()) >= 0 Then
+                                     MessageBox.Show(Me, "Enter a full folder path, such as D:\Restore.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                                     _dest.Focus()
+                                     Return
+                                 End If
+                                 DialogResult = DialogResult.OK
+                             End Sub
+        AddHandler Shown, Sub()
+                              If _dest.Text = "" Then _dest.Focus() Else ok.Focus()
+                          End Sub
+    End Sub
+
+End Class

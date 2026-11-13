@@ -424,6 +424,41 @@ Friend NotInheritable Class CatalogStore
         Return chain
     End Function
 
+    ''' <summary>Exact tape path of an entry as names from the tape root (the display path joins with "\", which a name
+    ''' may contain). Nothing when the entry is gone. <paramref name="cache"/> holds folder parts. UI thread only.</summary>
+    Public Function TapePathParts(parentId As Long?, name As String, cache As Dictionary(Of Long, String())) As String()
+        Return Append(FolderParts(parentId, cache, 0), name)
+    End Function
+
+    Private Function FolderParts(id As Long?, cache As Dictionary(Of Long, String()), depth As Integer) As String()
+        If Not id.HasValue Then Return New String() {}
+        Dim parts As String() = Nothing
+        If cache.TryGetValue(id.Value, parts) Then Return parts
+        If depth > 4096 Then Return Nothing
+        Dim parent As Long? = Nothing
+        Dim name As String
+        Using cmd As DbCommand = _ui.CreateCommand()
+            cmd.CommandText = "SELECT parent_id, name FROM entries WHERE id = @p0"
+            AddArgs(cmd, New Object() {id.Value})
+            Using r As DbDataReader = cmd.ExecuteReader()
+                If Not r.Read() Then Return Nothing
+                If Not r.IsDBNull(0) Then parent = r.GetInt64(0)
+                name = r.GetString(1)
+            End Using
+        End Using
+        parts = Append(FolderParts(parent, cache, depth + 1), name)
+        If parts IsNot Nothing Then cache(id.Value) = parts
+        Return parts
+    End Function
+
+    Private Shared Function Append(folder As String(), name As String) As String()
+        If folder Is Nothing Then Return Nothing
+        Dim parts(folder.Length) As String
+        folder.CopyTo(parts, 0)
+        parts(folder.Length) = name
+        Return parts
+    End Function
+
     ''' <summary>Display path of a folder ("\" for a tape's top level). Cached. UI thread only (uses the UI connection).</summary>
     Public Function FolderOf(parentId As Long?) As String
         If Not parentId.HasValue Then Return "\"
