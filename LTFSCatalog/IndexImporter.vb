@@ -329,6 +329,9 @@ Friend NotInheritable Class IndexImporter
     Public Shared Function Run(store As CatalogStore, info As IndexFileInfo, tapeId As Long, progress As Action(Of String), ct As CancellationToken) As IndexImporter
         Dim imp As New IndexImporter With {._tapeId = tapeId}
         Using c As DbConnection = store.OpenConnection()
+            ' A tape's rows land all over the name and FTS indexes of a large catalog: a bigger page cache for this
+            ' connection only (freed when it closes) keeps those inserts and deletes from re-reading pages.
+            CatalogStore.Exec(c, "PRAGMA cache_size = -524288;")
             CatalogStore.Exec(c, "BEGIN IMMEDIATE")
             Dim ok As Boolean = False
             Try
