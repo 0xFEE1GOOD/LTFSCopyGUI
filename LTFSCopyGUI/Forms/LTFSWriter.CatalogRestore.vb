@@ -78,8 +78,13 @@ Partial Class LTFSWriter
         CatalogRequestTimer = Nothing
     End Sub
 
+    <Runtime.InteropServices.DllImport("user32.dll", EntryPoint:="IsWindowEnabled")>
+    Private Shared Function CatalogIsWindowEnabled(hWnd As IntPtr) As Boolean
+    End Function
+
     Private Sub CatalogRequestTimer_Tick(sender As Object, e As EventArgs) Handles CatalogRequestTimer.Tick
         If _catalogBusy OrElse IsDisposed OrElse Not CanOperateTape() Then Return
+        If Not IsHandleCreated OrElse Not CatalogIsWindowEnabled(Handle) Then Return ' a modal dialog of this window is open
         If driveHandle = IntPtr.Zero OrElse driveHandle = New IntPtr(-1) Then Return
         Dim index As ltfsindex = schema
         If index Is Nothing OrElse index._directory Is Nothing OrElse index._directory.Count = 0 OrElse index._directory(0) Is Nothing Then Return
