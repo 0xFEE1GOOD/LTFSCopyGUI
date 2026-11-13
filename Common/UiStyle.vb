@@ -341,9 +341,9 @@ Friend NotInheritable Class UiStyle
         For i As Integer = 0 To rows.GetLength(0) - 1
             list.Items.Add(New ListViewItem(New String() {rows(i, 0), rows(i, 1)}))
         Next
-        ' padding rather than MinimumSize: a minimum size on an auto-sized button got scaled twice at high DPI
-        Dim closeButton As New Button With {.Text = "Close", .DialogResult = DialogResult.OK, .AutoSize = True, .Padding = New Padding(16, 3, 16, 3)}
-        Dim bottom As New FlowLayoutPanel With {.Dock = DockStyle.Bottom, .FlowDirection = FlowDirection.RightToLeft, .AutoSize = True,
+        ' GrowAndShrink: a GrowOnly button measured at the screen DPI would keep the extra size the 96-dpi scaling adds
+        Dim closeButton As New Button With {.Text = "Close", .DialogResult = DialogResult.OK, .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink, .MinimumSize = New Size(84, 26)}
+        Dim bottom As New FlowLayoutPanel With {.Dock = DockStyle.Bottom, .FlowDirection = FlowDirection.RightToLeft, .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink,
                                                 .Padding = New Padding(6)}
         bottom.Controls.Add(closeButton)
         f.Controls.Add(list)
