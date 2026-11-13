@@ -187,7 +187,7 @@ Friend NotInheritable Class NewTapesDialog
         MinimumSize = New Size(520, 300)
         ClientSize = New Size(640, 360)
         Dim head As New Label With {.Text = "LTFSCopyGUI has indexes for tapes the catalog does not track yet. Tick the tapes to add.",
-                                    .Dock = DockStyle.Top, .AutoSize = False, .Height = 34, .Padding = New Padding(8, 8, 8, 0)}
+                                    .Dock = DockStyle.Top, .AutoSize = False, .Height = 52, .Padding = New Padding(8, 8, 8, 0)}  ' two lines at 10 pt
         _list.Columns.Add("Tape", 110)
         _list.Columns.Add("Serial", 110)
         _list.Columns.Add("Format", 70)
@@ -205,15 +205,13 @@ Friend NotInheritable Class NewTapesDialog
         Dim bottom As New Panel With {.Dock = DockStyle.Bottom, .Height = 86, .Padding = New Padding(8)}
         _later.Location = New Point(10, 6)
         _never.Location = New Point(10, 28)
-        Dim ok As New Button With {.Text = "Add ticked", .DialogResult = DialogResult.OK, .Size = New Size(96, 26), .Anchor = AnchorStyles.Right Or AnchorStyles.Bottom}
-        Dim cancel As New Button With {.Text = "Not now", .DialogResult = DialogResult.Cancel, .Size = New Size(96, 26), .Anchor = AnchorStyles.Right Or AnchorStyles.Bottom}
-        ok.Location = New Point(bottom.Width - 210, 52)
-        cancel.Location = New Point(bottom.Width - 108, 52)
-        bottom.Controls.AddRange(New Control() {_later, _never, ok, cancel})
-        AddHandler bottom.Resize, Sub()
-                                      ok.Left = bottom.ClientSize.Width - Px(210, bottom)
-                                      cancel.Left = bottom.ClientSize.Width - Px(108, bottom)
-                                  End Sub
+        ' buttons in a right-to-left flow (pixel positions computed here would be scaled a second time)
+        Dim buttons As New FlowLayoutPanel With {.Dock = DockStyle.Bottom, .FlowDirection = FlowDirection.RightToLeft, .Height = 32, .Margin = New Padding(0)}
+        Dim ok As New Button With {.Text = "Add ticked", .DialogResult = DialogResult.OK, .Size = New Size(96, 26)}
+        Dim cancel As New Button With {.Text = "Not now", .DialogResult = DialogResult.Cancel, .Size = New Size(96, 26)}
+        buttons.Controls.Add(cancel)
+        buttons.Controls.Add(ok)
+        bottom.Controls.AddRange(New Control() {_later, _never, buttons})
         Controls.Add(_list)
         Controls.Add(bottom)
         Controls.Add(head)
@@ -258,7 +256,7 @@ Friend NotInheritable Class SearchHelpForm
             .Text = "Words are matched anywhere in the name, all of them, in any order. Combine words and filters freely, " &
                     "e.g.  ext:jpg 2019 -thumb size:>2MB" & Environment.NewLine &
                     "Double-click an example to try it. Enter searches at once; Esc clears the search.",
-            .Dock = DockStyle.Top, .Height = 46, .Padding = New Padding(8, 8, 8, 0)}
+            .Dock = DockStyle.Top, .Height = 72, .Padding = New Padding(8, 8, 8, 0)}  ' three lines at 10 pt
         Dim list As New DpiListView With {.View = View.Details, .FullRowSelect = True, .Dock = DockStyle.Fill, .HideSelection = False}
         list.Columns.Add("Type this", 200)
         list.Columns.Add("To find", 490)
