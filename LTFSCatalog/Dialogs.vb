@@ -202,9 +202,9 @@ Friend NotInheritable Class NewTapesDialog
             _list.Items.Add(it)
         Next
         _list.SmallImageList = Theme.Images()
-        Dim bottom As New Panel With {.Dock = DockStyle.Bottom, .Height = 86, .Padding = New Padding(8)}
+        Dim bottom As New Panel With {.Dock = DockStyle.Bottom, .Height = 96, .Padding = New Padding(8)}
         _later.Location = New Point(10, 6)
-        _never.Location = New Point(10, 28)
+        _never.Location = New Point(10, 30)
         ' buttons in a right-to-left flow (pixel positions computed here would be scaled a second time)
         Dim buttons As New FlowLayoutPanel With {.Dock = DockStyle.Bottom, .FlowDirection = FlowDirection.RightToLeft, .Height = 32, .Margin = New Padding(0)}
         Dim ok As New Button With {.Text = "Add ticked", .DialogResult = DialogResult.OK, .Size = New Size(96, 26)}
