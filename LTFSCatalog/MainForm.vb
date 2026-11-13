@@ -95,6 +95,7 @@ Friend NotInheritable Class MainForm
         Controls.Add(_status)
         Controls.Add(_menu)
         MainMenuStrip = _menu
+        UiStyle.Apply(Me, Theme.UiFont) ' again now the controls exist (tree style is set before its window is created)
         ResumeLayout(False)
         PerformLayout()
         AddHandler _debounce.Tick, Sub()

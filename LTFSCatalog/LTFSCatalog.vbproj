@@ -29,6 +29,11 @@
     <Deterministic>true</Deterministic>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- The look shared with LTFSCopyGUI (one source file). -->
+    <Compile Include="..\Common\UiStyle.vb" Link="UiStyle.vb" />
+  </ItemGroup>
+
   <PropertyGroup Condition="'$(Platform)' == 'x64'">
     <PlatformTarget>x64</PlatformTarget>
     <OutputPath>..\LTFSCopyGUI\bin\x64\$(Configuration)\</OutputPath>

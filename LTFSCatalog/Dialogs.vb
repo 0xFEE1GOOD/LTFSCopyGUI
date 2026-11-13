@@ -3,10 +3,11 @@ Imports System.Globalization
 Imports System.Linq
 Imports System.Windows.Forms
 
-''' <summary>LTFSCopyGUI's look: its form font, DPI scaling, icon and tree/list images.</summary>
+''' <summary>LTFSCopyGUI's look: the shared UiStyle, DPI scaling, icon and tree/list images.</summary>
 Friend Module Theme
 
-    Public ReadOnly UiFont As Font = MakeFont()
+    ''' <summary>The interface font shared with LTFSCopyGUI (Segoe UI 10 pt, see Common\UiStyle.vb).</summary>
+    Public ReadOnly UiFont As Font = UiStyle.UiFont
     Private _icon As Icon
     Private _images As ImageList
 
@@ -14,14 +15,6 @@ Friend Module Theme
     Public Const ImgDir As Integer = 1
     Public Const ImgFile As Integer = 2
     Public Const ImgArchive As Integer = 3
-
-    Private Function MakeFont() As Font
-        ' LTFSCopyGUI's writer window uses SimSun-ExtB 9pt; GDI substitutes silently when it is missing.
-        Dim f As New Font("SimSun-ExtB", 9.0F, FontStyle.Regular, GraphicsUnit.Point)
-        If String.Equals(f.Name, "SimSun-ExtB", StringComparison.OrdinalIgnoreCase) Then Return f
-        f.Dispose()
-        Return New Font(SystemFonts.MessageBoxFont.FontFamily, 9.0F)
-    End Function
 
     Public ReadOnly Property AppIcon As Icon
         Get
@@ -57,6 +50,7 @@ Friend Module Theme
         f.AutoScaleDimensions = New SizeF(96.0F, 96.0F)
         f.AutoScaleMode = AutoScaleMode.Dpi
         f.Icon = AppIcon
+        UiStyle.Apply(f, UiFont)
     End Sub
 
     Public Sub ApplyDialog(f As Form, title As String)

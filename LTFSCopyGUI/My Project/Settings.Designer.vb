@@ -230,7 +230,7 @@ Namespace My
                 If result IsNot Nothing Then
                     Return result
                 Else
-                    Return New Font("SimSun", 9.0F, FontStyle.Regular, GraphicsUnit.Point)
+                    Return UiStyle.NewMonoFont()
                 End If
             End Get
             Set
@@ -961,7 +961,7 @@ Namespace My
                 If result IsNot Nothing Then
                     Return result
                 Else
-                    Return New Font("SimSun", 9.0F, FontStyle.Regular, GraphicsUnit.Point)
+                    Return UiStyle.NewUiFont()
                 End If
             End Get
             Set

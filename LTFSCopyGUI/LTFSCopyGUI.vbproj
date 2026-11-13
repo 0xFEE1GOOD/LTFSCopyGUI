@@ -309,6 +309,9 @@
     <Compile Include="Application\ApplicationNavigation.vb" />
     <Compile Include="Application\FileDialogHelper.vb" />
     <Compile Include="Application\ApplicationWheels.vb" />
+    <Compile Include="..\Common\UiStyle.vb">
+      <Link>Application\UiStyle.vb</Link>
+    </Compile>
     <Compile Include="Build\Build.vb" />
     <Compile Include="Controls\Direct2DChartControl.vb">
       <SubType>Component</SubType>

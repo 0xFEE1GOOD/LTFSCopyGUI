@@ -946,12 +946,17 @@ Public NotInheritable Class DisplayHelper
     Public Shared Property DisplayFont As Drawing.Font
         Get
             If _font Is Nothing Then
-                _font = New Drawing.Font("SimSun", 9.0F, FontStyle.Regular, GraphicsUnit.Point)
+                _font = UiStyle.NewUiFont()
             End If
             Return _font
         End Get
         Set(value As Drawing.Font)
             If value Is Nothing Then Throw New ArgumentNullException(NameOf(value))
+            If UiStyle.IsLegacyFace(value) Then
+                ' The old default (SimSun 9 pt) means "never chosen": use the interface font shared with LTFSCatalog.
+                If _font Is Nothing OrElse UiStyle.IsLegacyFace(_font) Then _font = UiStyle.NewUiFont()
+                Return
+            End If
 
             Dim pointSize As Single = value.SizeInPoints
             If value.Unit = GraphicsUnit.Pixel Then
@@ -971,6 +976,7 @@ Public NotInheritable Class DisplayHelper
         ' Keep the user-selectable base font. DPI scaling itself is owned by
         ' WinForms' PerMonitorV2/AutoScaleMode pipeline.
         frm.Font = DisplayFont
+        UiStyle.Apply(frm, DisplayFont)
     End Sub
 
     ''' <summary>
@@ -988,6 +994,7 @@ Public NotInheritable Class DisplayHelper
         GC.KeepAlive(frm.AccessibilityObject)
 
         frm.AutoScaleMode = AutoScaleMode.Dpi
+        UiStyle.Apply(frm, DisplayFont)
     End Sub
 
     Public Shared Function ShowInputDialog(Prompt As String, Title As String, ByRef Response As UShort) As DialogResult
