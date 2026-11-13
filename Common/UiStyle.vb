@@ -1,6 +1,7 @@
 Imports System
 Imports System.Collections.Generic
 Imports System.Drawing
+Imports System.Linq
 Imports System.Reflection
 Imports System.Runtime.CompilerServices
 Imports System.Runtime.InteropServices
@@ -168,9 +169,26 @@ Friend NotInheritable Class UiStyle
         Restyle(form, baseFont)
         Try
             FitTexts(form)
+            AlignCommandBar(form)
         Catch
             ' cosmetic only
         End Try
+    End Sub
+
+    ''' <summary>
+    ''' LTFSCopyGUI's command bar sits in the menu bar's row but is a little taller; the menu bar grows to the same
+    ''' bottom edge so the white row has no notch (only when nothing else starts in between).
+    ''' </summary>
+    Private Shared Sub AlignCommandBar(form As Form)
+        For Each bar As Control In form.Controls
+            If bar.GetType().Name <> "ModernCommandBar" Then Continue For
+            For Each m As MenuStrip In form.Controls.OfType(Of MenuStrip)()
+                If m.Dock <> DockStyle.Top OrElse Not m.Bounds.IntersectsWith(bar.Bounds) OrElse bar.Bottom <= m.Bottom Then Continue For
+                Dim band As New Rectangle(0, m.Bottom, form.ClientSize.Width, bar.Bottom - m.Bottom)
+                If form.Controls.Cast(Of Control)().Any(Function(o) o IsNot bar AndAlso o IsNot m AndAlso o.Bounds.IntersectsWith(band)) Then Continue For
+                m.MinimumSize = New Size(0, bar.Bottom - m.Top)
+            Next
+        Next
     End Sub
 
     Private Shared Sub FitTexts(parent As Control)
