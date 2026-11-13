@@ -29,28 +29,64 @@ Friend Module Theme
         End Get
     End Property
 
+    ''' <summary>Tree/list images at the screen's DPI (16 px at 100 %).</summary>
     Public Function Images() As ImageList
         If _images Is Nothing Then
-            _images = New ImageList With {.ColorDepth = ColorDepth.Depth32Bit, .ImageSize = New Size(16, 16), .TransparentColor = Color.Transparent}
+            Dim side As Integer = Px(16)
+            _images = New ImageList With {.ColorDepth = ColorDepth.Depth32Bit, .ImageSize = New Size(side, side), .TransparentColor = Color.Transparent}
             For Each n As String In {"DirRoot", "Dir", "File", "Archive"}
+                Dim bmp As New Bitmap(side, side)
                 Using s = Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("LTFSCatalog." & n & ".png")
                     If s IsNot Nothing Then
-                        _images.Images.Add(n, Image.FromStream(s))
-                    Else
-                        _images.Images.Add(n, New Bitmap(16, 16))
+                        Using src As Image = Image.FromStream(s), g As Graphics = Graphics.FromImage(bmp)
+                            g.InterpolationMode = Drawing2D.InterpolationMode.HighQualityBicubic
+                            g.PixelOffsetMode = Drawing2D.PixelOffsetMode.HighQuality
+                            g.DrawImage(src, New Rectangle(0, 0, side, side))
+                        End Using
                     End If
                 End Using
+                _images.Images.Add(n, bmp)
             Next
         End If
         Return _images
     End Function
 
+    Private _dpi As Integer
+
+    ''' <summary>The screen's DPI. The catalog is per-monitor DPI aware (App.config), like LTFSCopyGUI.</summary>
+    Public ReadOnly Property ScreenDpi As Integer
+        Get
+            If _dpi = 0 Then
+                Using g As Graphics = Graphics.FromHwnd(IntPtr.Zero)
+                    _dpi = CInt(g.DpiX)
+                End Using
+            End If
+            Return _dpi
+        End Get
+    End Property
+
+    ''' <summary>A size in 96-dpi pixels converted to the control's (or the screen's) pixels.</summary>
+    Public Function Px(value As Integer, Optional c As Control = Nothing) As Integer
+        Dim dpi As Integer = If(c IsNot Nothing AndAlso c.IsHandleCreated, c.DeviceDpi, ScreenDpi)
+        Return CInt(Math.Round(value * dpi / 96.0))
+    End Function
+
     Public Sub ApplyForm(f As Form)
         f.Font = UiFont
-        f.AutoScaleDimensions = New SizeF(96.0F, 96.0F)
-        f.AutoScaleMode = AutoScaleMode.Dpi
         f.Icon = AppIcon
         UiStyle.Apply(f, UiFont)
+    End Sub
+
+    ''' <summary>
+    ''' Scales a window built in code from 96-dpi units to its screen; call it once its controls exist (the same
+    ''' contract as LTFSCopyGUI's DisplayHelper.ApplyDynamicFormLayout). Bounds, margins, paddings and minimum/maximum
+    ''' sizes scale; list columns scale in DpiListView.
+    ''' </summary>
+    Public Sub FinishForm(f As Form)
+        UiStyle.Apply(f, UiFont)
+        f.AutoScaleDimensions = New SizeF(96.0F, 96.0F)
+        GC.KeepAlive(f.AccessibilityObject)   ' finishes handle set-up before the scaling reads the DPI (see LTFSCopyGUI)
+        f.AutoScaleMode = AutoScaleMode.Dpi
     End Sub
 
     Public Sub ApplyDialog(f As Form, title As String)
@@ -105,6 +141,7 @@ Friend Module Theme
             AddHandler f.Shown, Sub()
                                     If f.AcceptButton IsNot Nothing Then DirectCast(f.AcceptButton, Button).Focus()
                                 End Sub
+            FinishForm(f)
             f.ShowDialog(owner)
             Return result
         End Using
@@ -125,7 +162,7 @@ End Module
 Friend NotInheritable Class NewTapesDialog
     Inherits Form
 
-    Private ReadOnly _list As New ListView With {.View = View.Details, .CheckBoxes = True, .FullRowSelect = True, .Dock = DockStyle.Fill, .HideSelection = False}
+    Private ReadOnly _list As New DpiListView With {.View = View.Details, .CheckBoxes = True, .FullRowSelect = True, .Dock = DockStyle.Fill, .HideSelection = False}
     Private ReadOnly _never As New RadioButton With {.Text = "Never ask about the unticked tapes", .AutoSize = True}
     Private ReadOnly _later As New RadioButton With {.Text = "Ask about the unticked tapes next time", .AutoSize = True, .Checked = True}
     Private ReadOnly _infos As List(Of IndexFileInfo)
@@ -173,14 +210,15 @@ Friend NotInheritable Class NewTapesDialog
         cancel.Location = New Point(bottom.Width - 108, 52)
         bottom.Controls.AddRange(New Control() {_later, _never, ok, cancel})
         AddHandler bottom.Resize, Sub()
-                                      ok.Left = bottom.ClientSize.Width - 210
-                                      cancel.Left = bottom.ClientSize.Width - 108
+                                      ok.Left = bottom.ClientSize.Width - Px(210, bottom)
+                                      cancel.Left = bottom.ClientSize.Width - Px(108, bottom)
                                   End Sub
         Controls.Add(_list)
         Controls.Add(bottom)
         Controls.Add(head)
         AcceptButton = ok
         CancelButton = cancel
+        Theme.FinishForm(Me)
     End Sub
 
 End Class
@@ -220,7 +258,7 @@ Friend NotInheritable Class SearchHelpForm
                     "e.g.  ext:jpg 2019 -thumb size:>2MB" & Environment.NewLine &
                     "Double-click an example to try it. Enter searches at once; Esc clears the search.",
             .Dock = DockStyle.Top, .Height = 46, .Padding = New Padding(8, 8, 8, 0)}
-        Dim list As New ListView With {.View = View.Details, .FullRowSelect = True, .Dock = DockStyle.Fill, .HideSelection = False}
+        Dim list As New DpiListView With {.View = View.Details, .FullRowSelect = True, .Dock = DockStyle.Fill, .HideSelection = False}
         list.Columns.Add("Type this", 200)
         list.Columns.Add("To find", 490)
         For i As Integer = 0 To Examples.GetLength(0) - 1
@@ -233,6 +271,7 @@ Friend NotInheritable Class SearchHelpForm
                                       End Sub
         Controls.Add(list)
         Controls.Add(head)
+        Theme.FinishForm(Me)
     End Sub
 
 End Class
@@ -241,7 +280,7 @@ End Class
 Friend NotInheritable Class UntrackedTapesDialog
     Inherits Form
 
-    Private ReadOnly _list As New ListView With {.View = View.Details, .CheckBoxes = True, .FullRowSelect = True, .Dock = DockStyle.Fill}
+    Private ReadOnly _list As New DpiListView With {.View = View.Details, .CheckBoxes = True, .FullRowSelect = True, .Dock = DockStyle.Fill}
 
     Public ReadOnly Property ToTrack As List(Of TapeInfo)
         Get
@@ -277,6 +316,7 @@ Friend NotInheritable Class UntrackedTapesDialog
         Controls.Add(head)
         AcceptButton = ok
         CancelButton = cancel
+        Theme.FinishForm(Me)
     End Sub
 
 End Class
@@ -350,6 +390,20 @@ Friend NotInheritable Class RestoreDialog
         AddHandler Shown, Sub()
                               If _dest.Text = "" Then _dest.Focus() Else ok.Focus()
                           End Sub
+        Theme.FinishForm(Me)
     End Sub
 
+End Class
+
+''' <summary>A ListView whose column widths follow the window's DPI scaling (like LTFSCopyGUI's DpiAwareListView).</summary>
+Friend Class DpiListView
+    Inherits ListView
+
+    Protected Overrides Sub ScaleControl(factor As SizeF, specified As BoundsSpecified)
+        MyBase.ScaleControl(factor, specified)
+        If factor.Width = 1.0F Then Return
+        For Each col As ColumnHeader In Columns
+            If col.Width > 0 Then col.Width = CInt(Math.Round(col.Width * factor.Width))
+        Next
+    End Sub
 End Class

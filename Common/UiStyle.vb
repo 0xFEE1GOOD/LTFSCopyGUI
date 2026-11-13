@@ -108,7 +108,7 @@ Friend NotInheritable Class UiStyle
             If Hooked.TryGetValue(form, seen) Then Return
             Hooked.Add(form, baseFont)
         End SyncLock
-        AddHandler form.Load, Sub(s, e) Restyle(form, baseFont)
+        AddHandler form.Load, Sub(s, e) OnLoaded(form, baseFont)
     End Sub
 
     Private Shared Sub Restyle(form As Form, baseFont As Font)
@@ -150,7 +150,112 @@ Friend NotInheritable Class UiStyle
         End If
         If c.ContextMenuStrip IsNot Nothing Then StyleStrip(c.ContextMenuStrip, baseFont)
         If TypeOf c Is ListView OrElse TypeOf c Is TreeView Then StyleView(c)
+        ' LTFSCopyGUI's command bar is transparent and sits in the menu bar's row: give it the menu bar's white
+        If c.GetType().Name = "ModernCommandBar" Then c.BackColor = SystemColors.Window
     End Sub
+
+    ' ---- text that no longer fits: layouts were drawn for SimSun 9 pt ---------------------------------------------
+
+    ''' <summary>
+    ''' The style's pass when a form loads, after layout and DPI scaling: styles controls added in code, then makes
+    ''' clipped captions fit. A fixed-size button, check box or label is widened into free space beside it; when there
+    ''' is none, only that control's font steps down (to 9 pt at most). An auto-sized one that now overlaps a neighbour
+    ''' steps down the same way.
+    ''' </summary>
+    Public Shared Sub OnLoaded(form As Form, Optional baseFont As Font = Nothing)
+        If form Is Nothing Then Return
+        If baseFont Is Nothing Then baseFont = UiFont
+        Restyle(form, baseFont)
+        Try
+            FitTexts(form)
+        Catch
+            ' cosmetic only
+        End Try
+    End Sub
+
+    Private Shared Sub FitTexts(parent As Control)
+        For Each c As Control In parent.Controls
+            If TypeOf c Is ToolStrip OrElse TypeOf c Is TextBoxBase OrElse TypeOf c Is ListControl Then Continue For
+            If TypeOf c Is ButtonBase OrElse TypeOf c Is Label Then FitOne(c)
+            If c.HasChildren Then FitTexts(c)
+        Next
+    End Sub
+
+    Private Shared Sub FitOne(c As Control)
+        Dim text As String = c.Text
+        If String.IsNullOrEmpty(text) OrElse text.IndexOf(ControlChars.Lf) >= 0 OrElse c.Width < 4 OrElse c.Parent Is Nothing Then Return
+        Dim b As ButtonBase = TryCast(c, ButtonBase)
+        If b IsNot Nothing AndAlso b.Image IsNot Nothing Then Return
+        Dim lbl As Label = TryCast(c, Label)
+        If lbl IsNot Nothing AndAlso (lbl.AutoEllipsis OrElse lbl.Image IsNot Nothing) Then Return
+        ' layout panels and docking place the control themselves: there only the font may change
+        Dim placed As Boolean = c.Dock <> DockStyle.None OrElse TypeOf c.Parent Is TableLayoutPanel OrElse TypeOf c.Parent Is FlowLayoutPanel
+        If c.AutoSize Then
+            If Not placed AndAlso Overlaps(c, c.Bounds) Then StepDown(c, Function(f) Not Overlaps(c, c.Bounds))
+            Return
+        End If
+        Dim need As Integer = NeededWidth(c, c.Font)
+        If need <= c.Width Then Return
+        If placed Then
+            StepDown(c, Function(f) NeededWidth(c, f) <= c.Width)
+            Return
+        End If
+        Dim grow As Integer = need - c.Width
+        Dim rightAnchored As Boolean = (c.Anchor And AnchorStyles.Right) <> 0 AndAlso (c.Anchor And AnchorStyles.Left) = 0
+        Dim tryRects As Rectangle() = {
+            New Rectangle(If(rightAnchored, c.Left - grow, c.Left), c.Top, need, c.Height),
+            New Rectangle(If(rightAnchored, c.Left, c.Left - grow), c.Top, need, c.Height),
+            New Rectangle(c.Left - grow \ 2, c.Top, need, c.Height)}
+        Dim room As Rectangle = c.Parent.ClientRectangle
+        For Each r As Rectangle In tryRects
+            If room.Contains(r) AndAlso Not Overlaps(c, r) Then
+                c.Bounds = r
+                Return
+            End If
+        Next
+        StepDown(c, Function(f) NeededWidth(c, f) <= c.Width)
+    End Sub
+
+    ''' <summary>Steps the control's font down by half points until it fits, stopping at the old 9 pt size.</summary>
+    Private Shared Sub StepDown(c As Control, fits As Func(Of Font, Boolean))
+        Dim size As Single = c.Font.SizeInPoints - 0.5F
+        While size >= LegacySize - 0.01F
+            Dim f As Font = Sized(c.Font, size)
+            c.Font = f
+            If fits(f) Then Return
+            size -= 0.5F
+        End While
+    End Sub
+
+    Private Shared Function Sized(old As Font, size As Single) As Font
+        Dim key As String = old.FontFamily.Name & "|" & size.ToString(System.Globalization.CultureInfo.InvariantCulture) & "|" & CInt(old.Style).ToString()
+        SyncLock Gate
+            Dim f As Font = Nothing
+            If Not FontCache.TryGetValue(key, f) Then
+                f = New Font(old.FontFamily, size, old.Style, GraphicsUnit.Point)
+                FontCache(key) = f
+            End If
+            Return f
+        End SyncLock
+    End Function
+
+    Private Shared Function Overlaps(c As Control, r As Rectangle) As Boolean
+        For Each s As Control In c.Parent.Controls
+            If s IsNot c AndAlso s.Bounds.IntersectsWith(r) AndAlso Not s.Bounds.Contains(r) Then Return True
+        Next
+        Return False
+    End Function
+
+    Private Shared Function NeededWidth(c As Control, f As Font) As Integer
+        Dim w As Integer = TextRenderer.MeasureText(c.Text, f, New Size(Integer.MaxValue, Integer.MaxValue), TextFormatFlags.SingleLine).Width
+        Dim dpi As Integer = c.DeviceDpi
+        If TypeOf c Is CheckBox OrElse TypeOf c Is RadioButton Then
+            Dim cb As CheckBox = TryCast(c, CheckBox)
+            If cb Is Nothing OrElse cb.Appearance = Appearance.Normal Then Return w + 20 * dpi \ 96
+        End If
+        If TypeOf c Is ButtonBase Then Return w + c.Padding.Horizontal + 10 * dpi \ 96
+        Return w + c.Padding.Horizontal + 2 * dpi \ 96
+    End Function
 
     ' ---- lists and trees: Explorer style (hover highlight, arrows instead of +/- boxes), double-buffered -----------
 
@@ -279,9 +384,10 @@ Friend NotInheritable Class UiStyle
 
         Public Overrides ReadOnly Property MenuStripGradientBegin As Color = Bar
         Public Overrides ReadOnly Property MenuStripGradientEnd As Color = Bar
-        Public Overrides ReadOnly Property ToolStripGradientBegin As Color = Bar
-        Public Overrides ReadOnly Property ToolStripGradientMiddle As Color = Bar
-        Public Overrides ReadOnly Property ToolStripGradientEnd As Color = Bar
+        ' tool bars are light grey, so white search boxes and combo boxes on them stand out (the combo/text box colours are internal in .NET Framework)
+        Public Overrides ReadOnly Property ToolStripGradientBegin As Color = Status
+        Public Overrides ReadOnly Property ToolStripGradientMiddle As Color = Status
+        Public Overrides ReadOnly Property ToolStripGradientEnd As Color = Status
         Public Overrides ReadOnly Property ToolStripBorder As Color = Line
         Public Overrides ReadOnly Property ToolStripContentPanelGradientBegin As Color = Bar
         Public Overrides ReadOnly Property ToolStripContentPanelGradientEnd As Color = Bar

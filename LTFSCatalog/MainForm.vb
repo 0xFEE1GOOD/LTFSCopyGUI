@@ -39,8 +39,8 @@ Friend NotInheritable Class MainForm
     Private ReadOnly _split1 As New SplitContainer()
     Private ReadOnly _split2 As New SplitContainer()
     Private ReadOnly _tree As New TreeView()
-    Private ReadOnly _list As New ListView()
-    Private ReadOnly _details As New ListView()
+    Private ReadOnly _list As New DpiListView()
+    Private ReadOnly _details As New DpiListView()
     Private ReadOnly _status As New StatusStrip()
     Private ReadOnly _lblTotals As New ToolStripStatusLabel()
     Private ReadOnly _lblView As New ToolStripStatusLabel()
@@ -95,7 +95,7 @@ Friend NotInheritable Class MainForm
         Controls.Add(_status)
         Controls.Add(_menu)
         MainMenuStrip = _menu
-        UiStyle.Apply(Me, Theme.UiFont) ' again now the controls exist (tree style is set before its window is created)
+        Theme.FinishForm(Me) ' styles and scales from 96 dpi now the controls exist
         ResumeLayout(False)
         PerformLayout()
         AddHandler _debounce.Tick, Sub()
@@ -187,12 +187,14 @@ Friend NotInheritable Class MainForm
     End Sub
 
     Private Sub LayoutSearchBar()
+        _cboTape.Width = Theme.Px(130, Me)
+        _cboKind.Width = Theme.Px(120, Me)
         Dim others As Integer = 0
         For Each it As ToolStripItem In _bar.Items
             If it IsNot _txt AndAlso it.Available Then others += it.Width + it.Margin.Horizontal
         Next
-        Dim w As Integer = _bar.ClientSize.Width - _bar.Padding.Horizontal - others - _txt.Margin.Horizontal - 8
-        _txt.Width = Math.Max(160, w)
+        Dim w As Integer = _bar.ClientSize.Width - _bar.Padding.Horizontal - others - _txt.Margin.Horizontal - Theme.Px(8, Me)
+        _txt.Width = Math.Max(Theme.Px(160, Me), w)
     End Sub
 
     Private Sub BuildViews()
@@ -349,21 +351,22 @@ Friend NotInheritable Class MainForm
         Return MyBase.ProcessCmdKey(msg, keyData)
     End Function
 
+    ''' <summary>The saved layout is in 96-dpi units (as the catalog saved it before it was DPI aware).</summary>
     Private Sub RestoreLayout()
         Dim parts As String() = If(_store.GetMeta("layout"), "").Split(","c)
         Dim v(6) As Integer
         If parts.Length = 7 AndAlso Enumerable.Range(0, 7).All(Function(i) Integer.TryParse(parts(i), NumberStyles.Integer, CultureInfo.InvariantCulture, v(i))) Then
-            Dim r As New Rectangle(v(0), v(1), v(2), v(3))
-            If Screen.AllScreens.Any(Function(s) s.WorkingArea.IntersectsWith(r)) AndAlso r.Width > 300 AndAlso r.Height > 200 Then
+            Dim r As New Rectangle(Theme.Px(v(0), Me), Theme.Px(v(1), Me), Theme.Px(v(2), Me), Theme.Px(v(3), Me))
+            If Screen.AllScreens.Any(Function(s) s.WorkingArea.IntersectsWith(r)) AndAlso v(2) > 300 AndAlso v(3) > 200 Then
                 StartPosition = FormStartPosition.Manual
                 Bounds = r
                 If v(4) = 1 Then WindowState = FormWindowState.Maximized
             End If
-            SetSplit(_split1, v(5))
-            SetSplit(_split2, v(6))
+            SetSplit(_split1, Theme.Px(v(5), Me))
+            SetSplit(_split2, Theme.Px(v(6), Me))
         Else
-            SetSplit(_split1, 236)
-            SetSplit(_split2, Math.Max(120, _split2.Height - 200))
+            SetSplit(_split1, Theme.Px(236, Me))
+            SetSplit(_split2, Math.Max(Theme.Px(120, Me), _split2.Height - Theme.Px(200, Me)))
         End If
     End Sub
 
@@ -377,8 +380,10 @@ Friend NotInheritable Class MainForm
 
     Private Sub SaveLayout()
         Dim b As Rectangle = If(WindowState = FormWindowState.Normal, Bounds, RestoreBounds)
-        _store.SetMeta("layout", String.Join(",", New Integer() {b.X, b.Y, b.Width, b.Height, If(WindowState = FormWindowState.Maximized, 1, 0),
-                                                                  _split1.SplitterDistance, _split2.SplitterDistance}))
+        Dim k As Double = DeviceDpi / 96.0
+        Dim u As Func(Of Integer, Integer) = Function(x) CInt(Math.Round(x / k))
+        _store.SetMeta("layout", String.Join(",", New Integer() {u(b.X), u(b.Y), u(b.Width), u(b.Height), If(WindowState = FormWindowState.Maximized, 1, 0),
+                                                                  u(_split1.SplitterDistance), u(_split2.SplitterDistance)}))
     End Sub
 
     ' ---- index folder, watcher, refresh -----------------------------------------------------------
