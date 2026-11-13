@@ -50,6 +50,7 @@ Friend Class EntryRow
     Public MTime As Long?
     Public CTime As Long?
     Public HasDirs As Boolean
+    Public Key As String = "" ' normalised name (search results only)
 End Class
 
 ''' <summary>Everything stored for one entry (the details pane).</summary>
@@ -178,7 +179,7 @@ Friend NotInheritable Class CatalogStore
                 "id INTEGER PRIMARY KEY, tape_id INTEGER NOT NULL REFERENCES tapes(id) ON DELETE CASCADE, " &
                 "parent_id INTEGER, is_dir INTEGER NOT NULL, name TEXT NOT NULL, ext TEXT, " &
                 "size INTEGER NOT NULL DEFAULT 0, items INTEGER, mtime INTEGER, ctime INTEGER, atime INTEGER, " &
-                "readonly INTEGER, part TEXT, startblock INTEGER, fileuid INTEGER, hashes TEXT, path TEXT, pkey TEXT);")
+                "readonly INTEGER, part TEXT, startblock INTEGER, fileuid INTEGER, hashes TEXT, path TEXT, pkey TEXT, k TEXT);")
         Exec(c, "CREATE INDEX IF NOT EXISTS ix_entries_tape_parent ON entries(tape_id, parent_id);")
         Exec(c, "CREATE INDEX IF NOT EXISTS ix_entries_ext ON entries(ext);")
         Exec(c, "CREATE INDEX IF NOT EXISTS ix_entries_size ON entries(size);")
@@ -207,7 +208,68 @@ Friend NotInheritable Class CatalogStore
                 End Try
             End If
         End If
-        If GetMeta("schema_version") Is Nothing Then SetMeta("schema_version", "1")
+        ' v2: the normalised name is also kept on entries, indexed, so filters, prefix ranking and name order work
+        ' without the FTS table; folder paths get a folders-only index for path: searches.
+        Dim migrated As Boolean = False
+        If CLng(Scalar(c, "SELECT COUNT(*) FROM pragma_table_info('entries') WHERE name = 'k'")) = 0 Then
+            Dim sw As Stopwatch = Stopwatch.StartNew()
+            Exec(c, "BEGIN IMMEDIATE")
+            Dim ok As Boolean = False
+            Try
+                Exec(c, "ALTER TABLE entries ADD COLUMN k TEXT;")
+                Exec(c, "UPDATE entries SET k = (SELECT f.k FROM entry_fts f WHERE f.rowid = entries.id);")
+                Exec(c, "COMMIT")
+                ok = True
+            Finally
+                If Not ok Then
+                    Try
+                        Exec(c, "ROLLBACK")
+                    Catch
+                    End Try
+                End If
+            End Try
+            migrated = True
+            Log("Catalog upgraded: search key column filled in " & sw.Elapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) & " s")
+        End If
+        FillMissingKeys(c)
+        Exec(c, "CREATE INDEX IF NOT EXISTS ix_entries_k ON entries(k);")
+        Exec(c, "CREATE INDEX IF NOT EXISTS ix_entries_dirpath ON entries(pkey) WHERE is_dir = 1;")
+        If migrated Then Optimize(c)
+        If GetMeta("schema_version") <> "2" Then SetMeta("schema_version", "2")
+    End Sub
+
+    ''' <summary>Keys for rows without one (an entry the FTS table did not have when the column was added).</summary>
+    Private Sub FillMissingKeys(c As DbConnection)
+        Dim rows As New List(Of KeyValuePair(Of Long, String))
+        Using sel As DbCommand = c.CreateCommand()
+            sel.CommandText = "SELECT id, name FROM entries WHERE k IS NULL"
+            Using r As DbDataReader = sel.ExecuteReader()
+                While r.Read()
+                    rows.Add(New KeyValuePair(Of Long, String)(L(r, 0), S(r, 1)))
+                End While
+            End Using
+        End Using
+        If rows.Count = 0 Then Return
+        Exec(c, "BEGIN IMMEDIATE")
+        Try
+            For Each kv As KeyValuePair(Of Long, String) In rows
+                Exec(c, "UPDATE entries SET k = @p0 WHERE id = @p1", SearchKey(kv.Value), kv.Key)
+            Next
+            Exec(c, "COMMIT")
+        Catch
+            Exec(c, "ROLLBACK")
+            Throw
+        End Try
+    End Sub
+
+    ''' <summary>Refreshes the query planner's statistics where they are missing or stale (sampled, so cheap even
+    ''' on millions of rows). Run after imports.</summary>
+    Public Sub Optimize(Optional conn As DbConnection = Nothing)
+        Try
+            Exec(If(conn, _ui), "PRAGMA analysis_limit = 1000; PRAGMA optimize = 0x10002;")
+        Catch ex As Exception
+            LogError("PRAGMA optimize", ex)
+        End Try
     End Sub
 
     ' ---- small ADO.NET helpers (positional @p0, @p1, ...) -----------------------------------------

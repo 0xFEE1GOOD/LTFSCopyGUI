@@ -108,12 +108,12 @@ Friend Module Headless
                     Dim names As String() = {"Annual Report 2024.pdf", "ёлка.jpg", "IMG_2019_beach.JPG", "draft budget.xlsx", "budget final.xlsx",
                                              "Äpfel-Liste.txt", "Отчёт за год.docx", "notes [old].txt", "a.b"}
                     Dim id As Long = 1
-                    CatalogStore.Exec(c, "INSERT INTO entries(id, tape_id, parent_id, is_dir, name, size, path, pkey) VALUES(1, @p0, NULL, 1, 'Projects', 0, '\Projects', @p1)", tapeId, SearchKey("\Projects"))
+                    CatalogStore.Exec(c, "INSERT INTO entries(id, tape_id, parent_id, is_dir, name, size, path, pkey, k) VALUES(1, @p0, NULL, 1, 'Projects', 0, '\Projects', @p1, @p2)", tapeId, SearchKey("\Projects"), SearchKey("Projects"))
                     CatalogStore.Exec(c, "INSERT INTO entry_fts(rowid, k) VALUES(1, @p0)", SearchKey("Projects"))
                     For Each n As String In names
                         id += 1
-                        CatalogStore.Exec(c, "INSERT INTO entries(id, tape_id, parent_id, is_dir, name, ext, size, mtime) VALUES(@p0, @p1, 1, 0, @p2, @p3, @p4, @p5)",
-                                          id, tapeId, n, ExtensionOf(n), id * 1000000L, ToUnix(New DateTime(2024, 6, 15, 12, 0, 0, DateTimeKind.Utc)))
+                        CatalogStore.Exec(c, "INSERT INTO entries(id, tape_id, parent_id, is_dir, name, ext, size, mtime, k) VALUES(@p0, @p1, 1, 0, @p2, @p3, @p4, @p5, @p6)",
+                                          id, tapeId, n, ExtensionOf(n), id * 1000000L, ToUnix(New DateTime(2024, 6, 15, 12, 0, 0, DateTimeKind.Utc)), SearchKey(n))
                         CatalogStore.Exec(c, "INSERT INTO entry_fts(rowid, k) VALUES(@p0, @p1)", id, SearchKey(n))
                     Next
                 End Using
@@ -135,6 +135,26 @@ Friend Module Headless
                                       If(res IsNot Nothing AndAlso res.ErrorText IsNot Nothing, "  error: " & res.ErrorText, "") &
                                       If(pq.Errors.Count > 0, "  parse: " & pq.Errors(0), ""))
                     Next
+                    ' capped results (cap lowered to 2): best matches first; an explicit sort is re-queried in order
+                    Dim savedCap As Integer = SearchEngine.Cap
+                    Try
+                        SearchEngine.Cap = 2
+                        Dim capped As Object(,) = {
+                            {"a", SortColumn.Relevance, False, "a.b, Annual Report 2024.pdf (capped)"},
+                            {"a", SortColumn.Size, True, "a.b, Äpfel-Liste.txt (capped)"}}
+                        For i As Integer = 0 To capped.GetLength(0) - 1
+                            Dim opts As New SearchOptions With {.Sort = CType(capped(i, 1), SortColumn), .Descending = CBool(capped(i, 2))}
+                            Dim res As SearchResult = engine.Run(ParsedQuery.Parse(CStr(capped(i, 0))), opts, CancellationToken.None)
+                            Dim got As String = If(res Is Nothing OrElse res.ErrorText IsNot Nothing, "error",
+                                                   String.Join(", ", res.Rows.Select(Function(r) r.Name)) & If(res.Capped, " (capped)", ""))
+                            Dim want As String = CStr(capped(i, 3))
+                            Dim ok As Boolean = got = want
+                            If Not ok Then failed += 1
+                            sb.AppendLine(If(ok, "PASS  ", "FAIL  ") & ("cap 2, " & opts.Sort.ToString() & ": " & CStr(capped(i, 0))).PadRight(26) & " want " & want & ", got " & got)
+                        Next
+                    Finally
+                        SearchEngine.Cap = savedCap
+                    End Try
                 End Using
             End Using
         Finally
@@ -183,6 +203,7 @@ Friend Module Headless
                     sb.AppendLine("  FAILED " & w.Item2.Label & ": " & ex.Message)
                 End Try
             Next
+            store.Optimize()
             Dim tt As Tuple(Of Long, Long, Long) = store.Totals()
             sb.AppendLine(String.Format(CultureInfo.InvariantCulture, "Catalog: {0} tapes, {1:N0} files, {2}; database {3}; total {4:0.0} s",
                           tt.Item1, tt.Item2, FormatSize(tt.Item3), FormatSize(New FileInfo(o.DbPath).Length), total.Elapsed.TotalSeconds))

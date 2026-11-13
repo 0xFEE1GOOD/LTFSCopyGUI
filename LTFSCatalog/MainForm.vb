@@ -500,6 +500,8 @@ Friend NotInheritable Class MainForm
                     RefreshTapes(New Long() {tapeId})
                 Next
             Loop While _syncAgain AndAlso Not _closing
+            If _closing Then Return
+            _store.Optimize() ' planner statistics; a no-op when nothing changed
             If failures.Count > 0 Then
                 SetActivity("Import failed for " & String.Join(", ", failures) & " - see catalog\LTFSCatalog.log; it is retried on the next refresh")
             Else
@@ -1229,6 +1231,7 @@ Friend NotInheritable Class MainForm
         SetActivity("Importing " & info.Label & " ...")
         Try
             Await Task.Run(Sub() IndexImporter.Run(store, info, tapeId, AddressOf SetActivity, ct))
+            _store.Optimize()
             SetActivity("Imported " & info.Label)
         Catch ex As OperationCanceledException
             Return

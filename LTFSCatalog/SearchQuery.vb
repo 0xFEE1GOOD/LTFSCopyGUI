@@ -299,7 +299,8 @@ End Class
 Friend NotInheritable Class SearchEngine
     Implements IDisposable
 
-    Public Const Cap As Integer = 50000
+    ''' <summary>Most rows a search returns (the self-test lowers it).</summary>
+    Public Shared Property Cap As Integer = 50000
     Private ReadOnly _store As CatalogStore
     Private ReadOnly _conn As DbConnection
     Private ReadOnly _gate As New SemaphoreSlim(1, 1)
@@ -321,30 +322,37 @@ Friend NotInheritable Class SearchEngine
     End Sub
 
     ''' <summary>Nothing when cancelled.</summary>
+    ''' <remarks>Scales to millions of entries: the first query has no ORDER BY, so it stops at Cap + 1 rows, and a
+    ''' complete result is sorted in memory. Only a capped result needs more: the exact and prefix matches of the
+    ''' first word (a range on ix_entries_k) are merged in front, or an explicit sort column is re-queried in order.</remarks>
     Public Function Run(q As ParsedQuery, opts As SearchOptions, ct As CancellationToken) As SearchResult
         _gate.Wait()
-        Dim cmd As DbCommand = Nothing
         Try
             If ct.IsCancellationRequested Then Return Nothing
             Dim res As New SearchResult
             Dim sw As Stopwatch = Stopwatch.StartNew()
-            cmd = _conn.CreateCommand()
-            Build(cmd, q, opts, _store.FtsAvailable)
-            SyncLock _cmdLock
-                _running = cmd
-            End SyncLock
-            Using r As DbDataReader = cmd.ExecuteReader()
-                While r.Read()
-                    If res.Rows.Count >= Cap Then
-                        res.Capped = True
-                        Exit While
-                    End If
-                    res.Rows.Add(New EntryRow With {.Id = CatalogStore.L(r, 0), .TapeId = CatalogStore.L(r, 1), .ParentId = CatalogStore.LN(r, 2),
-                        .IsDir = CatalogStore.L(r, 3) <> 0, .Name = CatalogStore.S(r, 4), .Size = CatalogStore.L(r, 5), .Items = CatalogStore.L(r, 6),
-                        .MTime = CatalogStore.LN(r, 7), .CTime = CatalogStore.LN(r, 8)})
-                    If (res.Rows.Count And 4095) = 0 AndAlso ct.IsCancellationRequested Then Return Nothing
-                End While
-            End Using
+            Dim fts As Boolean = _store.FtsAvailable
+            Dim rows As List(Of EntryRow) = Fetch(q, opts, fts, Shape.Unsorted, ct)
+            If rows Is Nothing Then Return Nothing
+            If rows.Count <= Cap Then
+                SortInMemory(rows, q, opts)
+            ElseIf opts.Sort = SortColumn.Relevance Then
+                res.Capped = True
+                If q.RankKey IsNot Nothing Then
+                    Dim first As List(Of EntryRow) = Fetch(q, opts, fts, Shape.Prefix, ct)
+                    If first Is Nothing Then Return Nothing
+                    Dim seen As New HashSet(Of Long)(first.Select(Function(r) r.Id))
+                    first.AddRange(rows.Where(Function(r) Not seen.Contains(r.Id)))
+                    rows = first
+                End If
+                SortInMemory(rows, q, opts)
+            Else
+                res.Capped = True
+                rows = Fetch(q, opts, fts, Shape.Sorted, ct)
+                If rows Is Nothing Then Return Nothing
+            End If
+            If rows.Count > Cap Then rows.RemoveRange(Cap, rows.Count - Cap)
+            res.Rows = rows
             res.Elapsed = sw.Elapsed
             Return res
         Catch ex As Exception When ct.IsCancellationRequested
@@ -353,13 +361,67 @@ Friend NotInheritable Class SearchEngine
             LogError("Search failed", ex)
             Return New SearchResult With {.ErrorText = ex.Message}
         Finally
-            SyncLock _cmdLock
-                _running = Nothing
-            End SyncLock
-            cmd?.Dispose()
             _gate.Release()
         End Try
     End Function
+
+    Private Enum Shape
+        Unsorted  ' any Cap + 1 matches
+        Prefix    ' matches whose key starts with the first word, in key order
+        Sorted    ' the first Cap + 1 matches in the chosen sort order
+    End Enum
+
+    ''' <summary>Up to Cap + 1 rows, or Nothing when cancelled.</summary>
+    Private Function Fetch(q As ParsedQuery, opts As SearchOptions, fts As Boolean, sh As Shape, ct As CancellationToken) As List(Of EntryRow)
+        Dim rows As New List(Of EntryRow)
+        Using cmd As DbCommand = _conn.CreateCommand()
+            Build(cmd, q, opts, fts, sh)
+            SyncLock _cmdLock
+                _running = cmd
+            End SyncLock
+            Try
+                If ct.IsCancellationRequested Then Return Nothing
+                Using r As DbDataReader = cmd.ExecuteReader()
+                    While r.Read()
+                        rows.Add(New EntryRow With {.Id = CatalogStore.L(r, 0), .TapeId = CatalogStore.L(r, 1), .ParentId = CatalogStore.LN(r, 2),
+                            .IsDir = CatalogStore.L(r, 3) <> 0, .Name = CatalogStore.S(r, 4), .Size = CatalogStore.L(r, 5), .Items = CatalogStore.L(r, 6),
+                            .MTime = CatalogStore.LN(r, 7), .CTime = CatalogStore.LN(r, 8), .Key = CatalogStore.S(r, 9)})
+                        If (rows.Count And 4095) = 0 AndAlso ct.IsCancellationRequested Then Return Nothing
+                    End While
+                End Using
+            Finally
+                SyncLock _cmdLock
+                    _running = Nothing
+                End SyncLock
+            End Try
+        End Using
+        Return If(ct.IsCancellationRequested, Nothing, rows)
+    End Function
+
+    ''' <summary>Relevance: exact name, then names starting with the first word, then the rest; folders first; then by
+    ''' key. Other columns: by key (the window applies its own column sort on top).</summary>
+    Private Shared Sub SortInMemory(rows As List(Of EntryRow), q As ParsedQuery, opts As SearchOptions)
+        If opts.Sort = SortColumn.Relevance Then
+            Dim rk As String = q.RankKey
+            Dim rank As Func(Of EntryRow, Integer) =
+                Function(r As EntryRow) As Integer
+                    If rk Is Nothing Then Return 0
+                    If String.Equals(r.Key, rk, StringComparison.Ordinal) Then Return 0
+                    Return If(r.Key.StartsWith(rk, StringComparison.Ordinal), 1, 2)
+                End Function
+            Dim ranked As List(Of KeyValuePair(Of Integer, EntryRow)) = rows.Select(Function(r) New KeyValuePair(Of Integer, EntryRow)(rank(r), r)).ToList()
+            ranked.Sort(Function(a, b)
+                            If a.Key <> b.Key Then Return a.Key.CompareTo(b.Key)
+                            If a.Value.IsDir <> b.Value.IsDir Then Return If(a.Value.IsDir, -1, 1)
+                            Return String.CompareOrdinal(a.Value.Key, b.Value.Key)
+                        End Function)
+            rows.Clear()
+            rows.AddRange(ranked.Select(Function(kv) kv.Value))
+        Else
+            Dim sign As Integer = If(opts.Sort = SortColumn.Name AndAlso opts.Descending, -1, 1)
+            rows.Sort(Function(a, b) sign * String.CompareOrdinal(a.Key, b.Key))
+        End If
+    End Sub
 
     ''' <summary>GLOB pattern text: literal [ * ? escaped unless wildcards are wanted.</summary>
     Private Shared Function GlobEscape(k As String, keepWildcards As Boolean) As String
@@ -381,12 +443,24 @@ Friend NotInheritable Class SearchEngine
         Return "*" & GlobEscape(k, False) & "*"
     End Function
 
+    ''' <summary>Longest run of characters that are not wildcards (the trigram index needs 3).</summary>
+    Private Shared Function LiteralRun(k As String) As Integer
+        Dim best As Integer = 0, cur As Integer = 0
+        For Each ch As Char In k
+            If ch = "*"c OrElse ch = "?"c OrElse ch = "["c OrElse ch = "]"c Then cur = 0 Else cur += 1
+            best = Math.Max(best, cur)
+        Next
+        Return best
+    End Function
+
     Private Shared Function FtsPhrase(k As String) As String
         Return """" & k.Replace("""", """""") & """"
     End Function
 
-    Public Shared Sub Build(cmd As DbCommand, q As ParsedQuery, o As SearchOptions, fts As Boolean)
-        Dim sql As New StringBuilder()
+    ''' <summary>The highest character: key &lt; prefix + MaxChar for every key that starts with prefix.</summary>
+    Private Shared ReadOnly MaxChar As String = Char.ConvertFromUtf32(&H10FFFF)
+
+    Private Shared Sub Build(cmd As DbCommand, q As ParsedQuery, o As SearchOptions, fts As Boolean, sh As Shape)
         Dim n As Integer = 0
         Dim P As Func(Of Object, String) =
             Function(v As Object) As String
@@ -399,65 +473,76 @@ Friend NotInheritable Class SearchEngine
                 Return name
             End Function
 
-        sql.Append("SELECT e.id, e.tape_id, e.parent_id, e.is_dir, e.name, e.size, e.items, e.mtime, e.ctime ")
-        sql.Append("FROM entry_fts JOIN entries e ON e.id = entry_fts.rowid JOIN tapes t ON t.id = e.tape_id ")
-        sql.Append("WHERE t.state = 1 AND t.hidden = 0")
-
-        ' Words: indexed MATCH for plain positive words (unless names must also match the folder path),
-        ' GLOB for wildcards, short words and exclusions.
+        ' Words: indexed MATCH for plain positive words (unless names must also match the folder path); a positive
+        ' wildcard pattern with 3+ literal characters lets FTS5 use the trigram index for GLOB; everything else
+        ' (short words, exclusions) tests e.k on the rows the other conditions select.
+        Dim where As New StringBuilder()
         Dim matchParts As New List(Of String)
+        Dim useFts As Boolean = False
         For Each t As SearchTerm In q.Terms
             If fts AndAlso Not o.MatchPath AndAlso t.Indexable Then
                 matchParts.Add(If(t.Alternatives.Count = 1, FtsPhrase(t.Alternatives(0)),
                                   "(" & String.Join(" OR ", t.Alternatives.Select(Function(a) FtsPhrase(a))) & ")"))
+                useFts = True
+                Continue For
+            End If
+            If fts AndAlso Not t.Exclude AndAlso t.Alternatives.Count = 1 AndAlso SearchTerm.IsWildcard(t.Alternatives(0)) AndAlso
+               LiteralRun(t.Alternatives(0)) >= 3 Then
+                where.Append(" AND entry_fts.k GLOB ").Append(P(NamePattern(t.Alternatives(0))))
+                useFts = True
                 Continue For
             End If
             Dim alts As New List(Of String)
             For Each a As String In t.Alternatives
-                Dim cond As String = "entry_fts.k GLOB " & P(NamePattern(a))
+                Dim cond As String = "e.k GLOB " & P(NamePattern(a))
                 If o.MatchPath AndAlso Not t.Exclude AndAlso Not SearchTerm.IsWildcard(a) Then
                     cond = "(" & cond & " OR e.parent_id IN (SELECT d.id FROM entries d WHERE d.is_dir = 1 AND d.pkey GLOB " & P("*" & GlobEscape(a, False) & "*") & "))"
                 End If
                 alts.Add(cond)
             Next
             Dim joined As String = If(alts.Count = 1, alts(0), "(" & String.Join(" OR ", alts) & ")")
-            sql.Append(If(t.Exclude, " AND NOT ", " AND ")).Append(joined)
+            where.Append(If(t.Exclude, " AND NOT ", " AND ")).Append(joined)
         Next
-        If matchParts.Count > 0 Then sql.Append(" AND entry_fts MATCH ").Append(P(String.Join(" AND ", matchParts)))
+        If matchParts.Count > 0 Then where.Append(" AND entry_fts MATCH ").Append(P(String.Join(" AND ", matchParts)))
 
-        If q.Exts.Count > 0 Then sql.Append(" AND e.ext IN (").Append(String.Join(", ", q.Exts.Select(Function(x) P(x)))).Append(")")
-        If q.SizeMin.HasValue Then sql.Append(" AND e.size >= ").Append(P(q.SizeMin.Value))
-        If q.SizeMax.HasValue Then sql.Append(" AND e.size <= ").Append(P(q.SizeMax.Value))
-        If q.MTimeFrom.HasValue Then sql.Append(" AND e.mtime >= ").Append(P(q.MTimeFrom.Value))
-        If q.MTimeTo.HasValue Then sql.Append(" AND e.mtime < ").Append(P(q.MTimeTo.Value))
-        If q.CTimeFrom.HasValue Then sql.Append(" AND e.ctime >= ").Append(P(q.CTimeFrom.Value))
-        If q.CTimeTo.HasValue Then sql.Append(" AND e.ctime < ").Append(P(q.CTimeTo.Value))
+        If q.Exts.Count > 0 Then where.Append(" AND e.ext IN (").Append(String.Join(", ", q.Exts.Select(Function(x) P(x)))).Append(")")
+        If q.SizeMin.HasValue Then where.Append(" AND e.size >= ").Append(P(q.SizeMin.Value))
+        If q.SizeMax.HasValue Then where.Append(" AND e.size <= ").Append(P(q.SizeMax.Value))
+        If q.MTimeFrom.HasValue Then where.Append(" AND e.mtime >= ").Append(P(q.MTimeFrom.Value))
+        If q.MTimeTo.HasValue Then where.Append(" AND e.mtime < ").Append(P(q.MTimeTo.Value))
+        If q.CTimeFrom.HasValue Then where.Append(" AND e.ctime >= ").Append(P(q.CTimeFrom.Value))
+        If q.CTimeTo.HasValue Then where.Append(" AND e.ctime < ").Append(P(q.CTimeTo.Value))
+        ' Tapes as a subquery, and "+" keeps the planner off ix_entries_tape_parent: with a join it walked every
+        ' tracked tape's entries even when a size or date index would find a handful of rows.
+        where.Append(" AND +e.tape_id IN (SELECT id FROM tapes WHERE state = 1 AND hidden = 0")
         If Not String.IsNullOrEmpty(q.TapeLike) Then
             Dim lit As String = q.TapeLike.Replace("\", "\\").Replace("%", "\%").Replace("_", "\_")
-            sql.Append(" AND t.barcode LIKE ").Append(P("%" & lit & "%")).Append(" ESCAPE '\'")
+            where.Append(" AND barcode LIKE ").Append(P("%" & lit & "%")).Append(" ESCAPE '\'")
         End If
+        where.Append(")")
+        If o.TapeId.HasValue Then where.Append(" AND +e.tape_id = ").Append(P(o.TapeId.Value))
         For Each pk As String In q.PathKeys
-            sql.Append(" AND e.parent_id IN (SELECT d.id FROM entries d WHERE d.is_dir = 1 AND d.pkey GLOB ").Append(P("*" & GlobEscape(pk, False) & "*")).Append(")")
+            where.Append(" AND e.parent_id IN (SELECT d.id FROM entries d WHERE d.is_dir = 1 AND d.pkey GLOB ").Append(P("*" & GlobEscape(pk, False) & "*")).Append(")")
         Next
-        If o.TapeId.HasValue Then sql.Append(" AND e.tape_id = ").Append(P(o.TapeId.Value))
-        If o.Kind = KindFilter.Files OrElse q.Kind = KindFilter.Files Then sql.Append(" AND e.is_dir = 0")
-        If o.Kind = KindFilter.Folders OrElse q.Kind = KindFilter.Folders Then sql.Append(" AND e.is_dir = 1")
+        If o.Kind = KindFilter.Files OrElse q.Kind = KindFilter.Files Then where.Append(" AND e.is_dir = 0")
+        If o.Kind = KindFilter.Folders OrElse q.Kind = KindFilter.Folders Then where.Append(" AND e.is_dir = 1")
 
+        Dim sql As New StringBuilder("SELECT e.id, e.tape_id, e.parent_id, e.is_dir, e.name, e.size, e.items, e.mtime, e.ctime, e.k ")
+        sql.Append(If(useFts, "FROM entry_fts JOIN entries e ON e.id = entry_fts.rowid ", "FROM entries e "))
+        sql.Append("WHERE 1").Append(where.ToString())
         Dim dir As String = If(o.Descending, " DESC", "")
-        Select Case o.Sort
-            Case SortColumn.Name : sql.Append(" ORDER BY entry_fts.k").Append(dir)
-            Case SortColumn.Size : sql.Append(" ORDER BY e.size").Append(dir).Append(", entry_fts.k")
-            Case SortColumn.Modified : sql.Append(" ORDER BY e.mtime").Append(dir).Append(", entry_fts.k")
-            Case SortColumn.Tape : sql.Append(" ORDER BY t.barcode COLLATE NOCASE").Append(dir).Append(", entry_fts.k")
-            Case SortColumn.Folder : sql.Append(" ORDER BY (SELECT d.path FROM entries d WHERE d.id = e.parent_id) COLLATE NOCASE").Append(dir).Append(", entry_fts.k")
-            Case Else
+        Select Case sh
+            Case Shape.Prefix
                 Dim rk As String = q.RankKey
-                If rk Is Nothing Then
-                    sql.Append(" ORDER BY e.is_dir DESC, entry_fts.k")
-                Else
-                    ' exact name, then name starting with the word, then the rest; folders before files
-                    sql.Append(" ORDER BY CASE WHEN entry_fts.k = ").Append(P(rk)).Append(" THEN 0 WHEN entry_fts.k GLOB ").Append(P(GlobEscape(rk, False) & "*")).Append(" THEN 1 ELSE 2 END, e.is_dir DESC, entry_fts.k")
-                End If
+                sql.Append(" AND e.k >= ").Append(P(rk)).Append(" AND e.k < ").Append(P(rk & MaxChar)).Append(" ORDER BY e.k")
+            Case Shape.Sorted
+                Select Case o.Sort
+                    Case SortColumn.Size : sql.Append(" ORDER BY e.size").Append(dir).Append(", e.k")
+                    Case SortColumn.Modified : sql.Append(" ORDER BY e.mtime").Append(dir).Append(", e.k")
+                    Case SortColumn.Tape : sql.Append(" ORDER BY (SELECT barcode FROM tapes WHERE id = e.tape_id) COLLATE NOCASE").Append(dir).Append(", e.k")
+                    Case SortColumn.Folder : sql.Append(" ORDER BY (SELECT d.path FROM entries d WHERE d.id = e.parent_id) COLLATE NOCASE").Append(dir).Append(", e.k")
+                    Case Else : sql.Append(" ORDER BY e.k").Append(dir)
+                End Select
         End Select
         sql.Append(" LIMIT ").Append(P(Cap + 1))
         cmd.CommandText = sql.ToString()

@@ -374,9 +374,9 @@ Friend NotInheritable Class IndexImporter
 
     Private Sub PrepareCommands(c As DbConnection)
         _ins = c.CreateCommand()
-        _ins.CommandText = "INSERT INTO entries(id, tape_id, parent_id, is_dir, name, ext, size, items, mtime, ctime, atime, readonly, part, startblock, fileuid, hashes, path, pkey) " &
-                           "VALUES(@id, @tape, @parent, @dir, @name, @ext, @size, @items, @mtime, @ctime, @atime, @ro, @part, @sb, @uid, @hashes, @path, @pkey)"
-        For Each n As String In {"@id", "@tape", "@parent", "@dir", "@name", "@ext", "@size", "@items", "@mtime", "@ctime", "@atime", "@ro", "@part", "@sb", "@uid", "@hashes", "@path", "@pkey"}
+        _ins.CommandText = "INSERT INTO entries(id, tape_id, parent_id, is_dir, name, ext, size, items, mtime, ctime, atime, readonly, part, startblock, fileuid, hashes, path, pkey, k) " &
+                           "VALUES(@id, @tape, @parent, @dir, @name, @ext, @size, @items, @mtime, @ctime, @atime, @ro, @part, @sb, @uid, @hashes, @path, @pkey, @k)"
+        For Each n As String In {"@id", "@tape", "@parent", "@dir", "@name", "@ext", "@size", "@items", "@mtime", "@ctime", "@atime", "@ro", "@part", "@sb", "@uid", "@hashes", "@path", "@pkey", "@k"}
             _p(n) = CatalogStore.NewParam(_ins, n)
         Next
         _ins.Prepare()
@@ -419,9 +419,11 @@ Friend NotInheritable Class IndexImporter
         _p("@hashes").Value = If(String.IsNullOrEmpty(hashes), DBNull.Value, CObj(hashes))
         _p("@path").Value = If(path, CObj(DBNull.Value))
         _p("@pkey").Value = If(path Is Nothing, DBNull.Value, CObj(SearchKey(path)))
+        Dim key As String = SearchKey(name)
+        _p("@k").Value = key
         _ins.ExecuteNonQuery()
         _fid.Value = id
-        _fk.Value = SearchKey(name)
+        _fk.Value = key
         _fts.ExecuteNonQuery()
     End Sub
 
