@@ -94,8 +94,72 @@ Friend NotInheritable Class CatalogStore
         Dim c As DbConnection = DirectCast(Activator.CreateInstance(_connType, New Object() {b.ConnectionString}), DbConnection)
         c.Open()
         Exec(c, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=15000; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-65536;")
+        LoadFts5(c)
         Return c
     End Function
+
+    Private _fts5Logged As Boolean
+    ''' <summary>True when the FTS5 module could be loaded into the connections.</summary>
+    Public Property Fts5Loaded As Boolean
+
+    ''' <summary>
+    ''' System.Data.SQLite ships FTS5 as an extension inside its native SQLite.Interop.dll; every connection
+    ''' that touches the search index has to load it (sqlite3_fts5_init).
+    ''' </summary>
+    Private Sub LoadFts5(c As DbConnection)
+        Dim interop As String = Path.Combine(AppDir, If(Environment.Is64BitProcess, "x64", "x86"), "SQLite.Interop.dll")
+        If Not File.Exists(interop) Then interop = Path.Combine(AppDir, "SQLite.Interop.dll")
+        Try
+            _connType.GetMethod("EnableExtensions", New Type() {GetType(Boolean)}).Invoke(c, New Object() {True})
+            _connType.GetMethod("LoadExtension", New Type() {GetType(String), GetType(String)}).Invoke(c, New Object() {interop, "sqlite3_fts5_init"})
+            Fts5Loaded = True
+        Catch ex As Exception
+            Fts5Loaded = False
+            If Not _fts5Logged Then
+                _fts5Logged = True
+                LogError("Cannot load FTS5 from " & interop, If(ex.InnerException, ex))
+            End If
+        End Try
+    End Sub
+
+    ''' <summary>Replaces a plain fallback search table with the FTS5 trigram index (catalog made without FTS5).</summary>
+    Private Sub RebuildSearchIndex(c As DbConnection)
+        Exec(c, "BEGIN IMMEDIATE")
+        Dim ok As Boolean = False
+        Try
+            Exec(c, "DROP TABLE entry_fts;")
+            Exec(c, "CREATE VIRTUAL TABLE entry_fts USING fts5(k, tokenize = 'trigram case_sensitive 1');")
+            Using ins As DbCommand = c.CreateCommand()
+                ins.CommandText = "INSERT INTO entry_fts(rowid, k) VALUES(@id, @k)"
+                Dim pid As DbParameter = NewParam(ins, "@id")
+                Dim pk As DbParameter = NewParam(ins, "@k")
+                Using sel As DbCommand = c.CreateCommand()
+                    sel.CommandText = "SELECT id, name FROM entries"
+                    Dim rows As New List(Of KeyValuePair(Of Long, String))
+                    Using r As DbDataReader = sel.ExecuteReader()
+                        While r.Read()
+                            rows.Add(New KeyValuePair(Of Long, String)(L(r, 0), S(r, 1)))
+                        End While
+                    End Using
+                    For Each kv As KeyValuePair(Of Long, String) In rows
+                        pid.Value = kv.Key
+                        pk.Value = SearchKey(kv.Value)
+                        ins.ExecuteNonQuery()
+                    Next
+                End Using
+            End Using
+            Exec(c, "COMMIT")
+            ok = True
+            Log("Search index rebuilt with FTS5")
+        Finally
+            If Not ok Then
+                Try
+                    Exec(c, "ROLLBACK")
+                Catch
+                End Try
+            End If
+        End Try
+    End Sub
 
     Private Sub EnsureSchema(c As DbConnection)
         Exec(c, "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);")
@@ -134,6 +198,14 @@ Friend NotInheritable Class CatalogStore
             End Try
         Else
             FtsAvailable = existing.IndexOf("fts5", StringComparison.OrdinalIgnoreCase) >= 0
+            If Not FtsAvailable AndAlso Fts5Loaded Then
+                Try
+                    RebuildSearchIndex(c)
+                    FtsAvailable = True
+                Catch ex As Exception
+                    LogError("Rebuilding the search index with FTS5 failed; staying with the scan", ex)
+                End Try
+            End If
         End If
         If GetMeta("schema_version") Is Nothing Then SetMeta("schema_version", "1")
     End Sub

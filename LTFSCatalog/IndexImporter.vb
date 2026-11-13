@@ -69,10 +69,20 @@ Friend Module IndexScanner
             ApplyCartridgeReport(info)
             all.Add(info)
         Next
-        For Each g In all.GroupBy(Function(i) i.Barcode.ToUpperInvariant() & "|" & i.Serial)
+        For Each g In all.GroupBy(Function(i) IdentityKey(i.Barcode, i.Serial))
             result.Add(g.OrderByDescending(Function(i) i.StampKey, StringComparer.Ordinal).First())
         Next
         Return result
+    End Function
+
+    ''' <summary>
+    ''' One physical cartridge = one catalog tape. With a cartridge serial (from the .cm report) the serial decides,
+    ''' so an older index saved under another barcode (a relabelled cartridge) cannot show stale contents as a second
+    ''' tape; without a report the barcode decides.
+    ''' </summary>
+    Public Function IdentityKey(barcode As String, serial As String) As String
+        If Not String.IsNullOrEmpty(serial) Then Return "S|" & serial.ToUpperInvariant()
+        Return "B|" & If(barcode, "").ToUpperInvariant()
     End Function
 
     Private Function SafeEnumerate(root As String, pattern As String, errors As List(Of String)) As List(Of String)
@@ -233,7 +243,13 @@ Friend Module IndexScanner
         Dim known As New Dictionary(Of String, TapeInfo)(StringComparer.Ordinal)
         Using c As DbConnection = store.OpenConnection()   ' runs off the UI thread: its own connection
             For Each t As TapeInfo In store.GetTapes(c)
-                known(t.Barcode.ToUpperInvariant() & "|" & t.Serial) = t
+                Dim k As String = IdentityKey(t.Barcode, t.Serial)
+                Dim prev As TapeInfo = Nothing
+                ' several rows for one cartridge (older catalogs): prefer the tracked, most recently updated one
+                If known.TryGetValue(k, prev) AndAlso
+                   (prev.State = TapeInfo.StateTracked AndAlso t.State <> TapeInfo.StateTracked OrElse
+                    prev.State = t.State AndAlso If(prev.Updated, 0L) >= If(t.Updated, 0L)) Then Continue For
+                known(k) = t
             Next
         End Using
         For Each info As IndexFileInfo In Scan(folder, p.Errors)
@@ -244,7 +260,7 @@ Friend Module IndexScanner
                 Continue For
             End Try
             Dim tape As TapeInfo = Nothing
-            known.TryGetValue(info.Barcode.ToUpperInvariant() & "|" & info.Serial, tape)
+            known.TryGetValue(IdentityKey(info.Barcode, info.Serial), tape)
             If tape Is Nothing OrElse tape.State = TapeInfo.StateAsk Then
                 p.NewTapes.Add(info)
             ElseIf tape.State = TapeInfo.StateTracked Then
@@ -333,6 +349,8 @@ Friend NotInheritable Class IndexImporter
                     "dir_count = @p11, total_bytes = @p12, updated = @p13, hidden = 0, last_error = NULL WHERE id = @p0",
                     tapeId, imp.VolumeUuid, imp.Generation, CatalogStore.DbVal(imp.UpdateTime), info.Path, info.FileSize, info.MTime,
                     info.Format, info.Vendor, info.Capacity, imp.FileCount, imp.DirCount, imp.ByteCount, ToUnix(DateTime.UtcNow))
+                ' a relabelled cartridge keeps its catalog tape; show the barcode of its newest index
+                CatalogStore.Exec(c, "UPDATE OR IGNORE tapes SET barcode = @p1 WHERE id = @p0", tapeId, info.Barcode)
                 CatalogStore.Exec(c, "COMMIT")
                 ok = True
             Finally

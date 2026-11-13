@@ -429,7 +429,7 @@ Friend NotInheritable Class MainForm
     End Sub
 
     Private Shared Function TapeKey(info As IndexFileInfo) As String
-        Return info.Barcode & "|" & info.Serial
+        Return IndexScanner.IdentityKey(info.Barcode, info.Serial)
     End Function
 
     ''' <summary>Reads the index folder, asks about new tapes, imports what changed. Never runs twice at once.</summary>
