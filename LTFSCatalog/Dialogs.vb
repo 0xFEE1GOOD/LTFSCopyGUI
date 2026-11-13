@@ -115,9 +115,10 @@ Friend Module Theme
             Dim row As New FlowLayoutPanel With {.FlowDirection = FlowDirection.RightToLeft, .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink,
                                                  .Anchor = AnchorStyles.Right, .WrapContents = False, .Margin = New Padding(0)}
             ' RightToLeft flow: adding the last button first leaves buttons(0) at the left.
+            ' Buttons are sized by padding, not MinimumSize (a minimum size on an auto-sized button got scaled twice at high DPI).
             For i As Integer = buttons.Length - 1 To 0 Step -1
                 Dim idx As Integer = i
-                Dim b As New Button With {.Text = buttons(i), .AutoSize = True, .MinimumSize = New Size(84, 26)}
+                Dim b As New Button With {.Text = buttons(i), .AutoSize = True, .Padding = New Padding(16, 3, 16, 3)}
                 AddHandler b.Click, Sub()
                                         result = idx
                                         f.Close()
@@ -349,15 +350,15 @@ Friend NotInheritable Class RestoreDialog
         Dim h As New Label With {.Text = heading, .AutoSize = True, .MaximumSize = New Size(480, 0), .Font = New Font(UiFont, FontStyle.Bold), .Margin = New Padding(0, 0, 0, 6)}
         Dim d As New Label With {.Text = details, .AutoSize = True, .MaximumSize = New Size(480, 0), .Margin = New Padding(0, 0, 0, 12)}
         Dim lbl As New Label With {.Text = "Restore to:", .AutoSize = True, .Margin = New Padding(0, 0, 0, 3)}
-        Dim browse As New Button With {.Text = "Browse...", .AutoSize = True, .MinimumSize = New Size(84, 24), .Margin = New Padding(0)}
+        Dim browse As New Button With {.Text = "Browse...", .AutoSize = True, .Padding = New Padding(10, 2, 10, 2), .Margin = New Padding(0)}
         Dim pick As New FlowLayoutPanel With {.AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink, .WrapContents = False, .Margin = New Padding(0)}
         pick.Controls.Add(_dest)
         pick.Controls.Add(browse)
         Dim note As New Label With {.AutoSize = True, .MaximumSize = New Size(480, 0), .ForeColor = SystemColors.GrayText, .Margin = New Padding(0, 0, 0, 12),
                                     .Text = "LTFSCopyGUI does the restore, in tape order. Load the tape's index there and it asks before it starts. " &
                                             "The catalog never uses the drive."}
-        Dim ok As New Button With {.Text = "Send to LTFSCopyGUI", .AutoSize = True, .MinimumSize = New Size(84, 26)}
-        Dim cancel As New Button With {.Text = "Cancel", .DialogResult = DialogResult.Cancel, .AutoSize = True, .MinimumSize = New Size(84, 26)}
+        Dim ok As New Button With {.Text = "Send to LTFSCopyGUI", .AutoSize = True, .Padding = New Padding(16, 3, 16, 3)}
+        Dim cancel As New Button With {.Text = "Cancel", .DialogResult = DialogResult.Cancel, .AutoSize = True, .Padding = New Padding(16, 3, 16, 3)}
         Dim row As New FlowLayoutPanel With {.FlowDirection = FlowDirection.RightToLeft, .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink,
                                              .Anchor = AnchorStyles.Right, .WrapContents = False, .Margin = New Padding(0)}
         row.Controls.Add(cancel)

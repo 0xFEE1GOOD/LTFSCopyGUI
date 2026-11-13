@@ -324,37 +324,44 @@ Friend NotInheritable Class UiStyle
 
     ''' <summary>Help > Keyboard shortcuts: a list of keys and what they do, in the shared look.</summary>
     Public Shared Sub ShowShortcuts(owner As IWin32Window, title As String, rows As String(,))
-        Using f As New Form With {.Text = title, .FormBorderStyle = FormBorderStyle.FixedDialog, .MaximizeBox = False, .MinimizeBox = False,
-                                  .ShowInTaskbar = False, .StartPosition = FormStartPosition.CenterParent, .ClientSize = New Size(560, 380),
-                                  .Font = UiFont, .KeyPreview = True}
-            Dim list As New ListView With {.View = View.Details, .FullRowSelect = True, .MultiSelect = False, .Dock = DockStyle.Fill,
-                                           .HeaderStyle = ColumnHeaderStyle.Nonclickable}
-            list.Columns.Add("Key")
-            list.Columns.Add("Does")
-            For i As Integer = 0 To rows.GetLength(0) - 1
-                list.Items.Add(New ListViewItem(New String() {rows(i, 0), rows(i, 1)}))
-            Next
-            Dim closeButton As New Button With {.Text = "Close", .DialogResult = DialogResult.OK, .AutoSize = True, .MinimumSize = New Size(84, 26)}
-            Dim bottom As New FlowLayoutPanel With {.Dock = DockStyle.Bottom, .FlowDirection = FlowDirection.RightToLeft, .AutoSize = True,
-                                                    .Padding = New Padding(6)}
-            bottom.Controls.Add(closeButton)
-            f.Controls.Add(list)
-            f.Controls.Add(bottom)
-            f.AcceptButton = closeButton
-            f.CancelButton = closeButton
-            ' laid out in 96-dpi units and scaled once the controls exist, as LTFSCopyGUI's ApplyDynamicFormLayout
-            f.AutoScaleDimensions = New SizeF(96.0F, 96.0F)
-            GC.KeepAlive(f.AccessibilityObject)
-            f.AutoScaleMode = AutoScaleMode.Dpi
-            Apply(f, UiFont)
-            AddHandler f.Shown, Sub()
-                                    list.AutoResizeColumn(0, ColumnHeaderAutoResizeStyle.ColumnContent)
-                                    list.Columns(0).Width += 16 * f.DeviceDpi \ 96
-                                    list.Columns(1).Width = Math.Max(list.ClientSize.Width - list.Columns(0).Width, 80)
-                                End Sub
+        Using f As Form = BuildShortcutsForm(title, rows)
             f.ShowDialog(owner)
         End Using
     End Sub
+
+    ''' <summary>The shortcut list window (separate from ShowShortcuts so it can be shown without a modal loop).</summary>
+    Public Shared Function BuildShortcutsForm(title As String, rows As String(,)) As Form
+        Dim f As New Form With {.Text = title, .FormBorderStyle = FormBorderStyle.FixedDialog, .MaximizeBox = False, .MinimizeBox = False,
+                                .ShowInTaskbar = False, .StartPosition = FormStartPosition.CenterParent, .ClientSize = New Size(560, 380),
+                                .Font = UiFont, .KeyPreview = True}
+        Dim list As New ListView With {.View = View.Details, .FullRowSelect = True, .MultiSelect = False, .Dock = DockStyle.Fill,
+                                       .HeaderStyle = ColumnHeaderStyle.Nonclickable}
+        list.Columns.Add("Key")
+        list.Columns.Add("Does")
+        For i As Integer = 0 To rows.GetLength(0) - 1
+            list.Items.Add(New ListViewItem(New String() {rows(i, 0), rows(i, 1)}))
+        Next
+        ' padding rather than MinimumSize: a minimum size on an auto-sized button got scaled twice at high DPI
+        Dim closeButton As New Button With {.Text = "Close", .DialogResult = DialogResult.OK, .AutoSize = True, .Padding = New Padding(16, 3, 16, 3)}
+        Dim bottom As New FlowLayoutPanel With {.Dock = DockStyle.Bottom, .FlowDirection = FlowDirection.RightToLeft, .AutoSize = True,
+                                                .Padding = New Padding(6)}
+        bottom.Controls.Add(closeButton)
+        f.Controls.Add(list)
+        f.Controls.Add(bottom)
+        f.AcceptButton = closeButton
+        f.CancelButton = closeButton
+        ' laid out in 96-dpi units and scaled once the controls exist, as LTFSCopyGUI's ApplyDynamicFormLayout
+        f.AutoScaleDimensions = New SizeF(96.0F, 96.0F)
+        GC.KeepAlive(f.AccessibilityObject)
+        f.AutoScaleMode = AutoScaleMode.Dpi
+        Apply(f, UiFont)
+        AddHandler f.Shown, Sub()
+                                list.AutoResizeColumn(0, ColumnHeaderAutoResizeStyle.ColumnContent)
+                                list.Columns(0).Width += 16 * f.DeviceDpi \ 96
+                                list.Columns(1).Width = Math.Max(list.ClientSize.Width - list.Columns(0).Width, 80)
+                            End Sub
+        Return f
+    End Function
 
     ' ---- lists and trees: Explorer style (hover highlight, arrows instead of +/- boxes), double-buffered -----------
 
