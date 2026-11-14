@@ -7,7 +7,7 @@ Imports System.Xml
 Public Class ltfsindex
     'Public Property version As String
     <Category("LTFSIndex")>
-    Public Property creator As String = My.Application.Info.ProductName & " " & My.Application.Info.Version.ToString(3) & " - Windows - TapeUtils"
+    Public Property creator As String = AppVersion.CopyGuiName & " " & AppVersion.Number & " - Windows - TapeUtils"
     <Category("LTFSIndex")>
     Public Property volumeuuid As Guid
     <Category("LTFSIndex")>
@@ -3838,7 +3838,7 @@ End Class
 <Category("LTFSIndex")>
 Public Class ltfslabel
     <Category("LTFSIndex")>
-    Public Property creator As String = My.Application.Info.ProductName & " " & My.Application.Info.Version.ToString(3) & " - Windows - TapeUtils"
+    Public Property creator As String = AppVersion.CopyGuiName & " " & AppVersion.Number & " - Windows - TapeUtils"
     <Category("LTFSIndex")>
     Public Property formattime As String = Now.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
     <Category("LTFSIndex")>

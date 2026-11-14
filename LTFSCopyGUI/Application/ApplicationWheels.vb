@@ -1294,7 +1294,7 @@ End Class
 Partial Public Class ApplicationWheels
     Public Shared ReadOnly Property ApplicationInfo As String
         Get
-            Return $"{My.Application.Info.ProductName} {My.Application.Info.Version.ToString(3)} Build {Build}{My.Settings.Application_License}"
+            Return $"{AppVersion.CopyGuiName} v{AppVersion.Number}"
         End Get
     End Property
     Public Shared Function TryExecute(ByVal command As Func(Of Byte()), Optional ByVal AutoRetryCount As Integer = 0) As Boolean

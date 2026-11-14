@@ -170,9 +170,6 @@
   -remoteraw &lt;ip&gt; &lt;port&gt; &lt;drive&gt; &lt;cdb&gt; &lt;param&gt; &lt;dataDir&gt; [&lt;timeout, default=60000&gt;]
                                                 remote SCSI command</value>
   </data>
-  <data name="StrDefaultLicense" xml:space="preserve">
-    <value> Non-commercial License</value>
-  </data>
   <data name="StrFormatError" xml:space="preserve">
     <value>Format failed</value>
   </data>
@@ -899,9 +896,6 @@ If no Partition Size field is set to 65535, the sum of the specified partition s
   </data>
   <data name="ResText_Directories_C" xml:space="preserve">
     <value> directories?</value>
-  </data>
-  <data name="DefaultLicense" xml:space="preserve">
-    <value> Non-commercial License</value>
   </data>
   <data name="LicenseInvalid" xml:space="preserve">
     <value>License invalid</value>

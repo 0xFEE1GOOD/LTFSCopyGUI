@@ -83,7 +83,7 @@ Friend NotInheritable Class MainForm
         _opts = opts
         SuspendLayout()
         Theme.ApplyForm(Me)
-        Text = "LTFSCatalog"
+        Text = "LTFSCatalog v" & AppVersion.Number
         ClientSize = New Size(1264, 661)
         KeyPreview = True
         BuildMenu()
@@ -122,7 +122,7 @@ Friend NotInheritable Class MainForm
         {"Esc", "Clear the search"},
         {"Down arrow", "From the search box to the results"},
         {"F5", "Refresh from the index folder"},
-        {"Ctrl+R", "Restore the selection to disk (done by LTFSCopyGUI)"},
+        {"Ctrl+R", "Restore the selection to disk (done by LTFSCopyGui2)"},
         {"Ctrl+C", "Copy the full path of the selection"},
         {"F1", "Search syntax"}}
 
@@ -136,7 +136,7 @@ Friend NotInheritable Class MainForm
         mCat.DropDownItems.Add(Item("Restore to &disk...", AddressOf DoRestore, "Ctrl+R"))
         mCat.DropDownItems.Add(Item("Pending &restore requests", AddressOf OpenRequestFolder))
         mCat.DropDownItems.Add(New ToolStripSeparator())
-        mCat.DropDownItems.Add(Item("&Open LTFSCopyGUI", Sub() UiStyle.OpenCompanion(Me, "LTFSCopyGUI.exe")))
+        mCat.DropDownItems.Add(Item("&Open LTFSCopyGui2", Sub() UiStyle.OpenCompanion(Me, "LTFSCopyGUI.exe")))
         mCat.DropDownItems.Add(New ToolStripSeparator())
         mCat.DropDownItems.Add(Item("E&xit", AddressOf Close))
         _mnuTape.DropDownItems.Add(Item("&Re-import from its index", Sub() DoReimport(SelectedTapeId())))
@@ -898,7 +898,7 @@ Friend NotInheritable Class MainForm
             details = "From tape " & TapeLabel(tapes(0)) & "."
         Else
             details = "From " & tapes.Count.ToString(CultureInfo.InvariantCulture) & " tapes: " & String.Join(", ", tapes.Select(Function(t) t.Barcode)) &
-                      ". Each tape is restored when its index is loaded in LTFSCopyGUI."
+                      ". Each tape is restored when its index is loaded in LTFSCopyGui2."
         End If
         If folders > 0 Then details &= Environment.NewLine & "The folders hold " & FormatCount(inFolders) & " items in all."
         Using d As New RestoreDialog(heading, details, _store.GetMeta("restore_dest"), _store.GetMeta("restore_keep_paths") <> "0")
@@ -911,28 +911,28 @@ Friend NotInheritable Class MainForm
                 Next
             Catch ex As Exception When TypeOf ex Is IOException OrElse TypeOf ex Is UnauthorizedAccessException
                 LogError("restore request", ex)
-                Theme.Ask(Me, "Restore to disk", "Could not hand the restore to LTFSCopyGUI", ex.Message & Environment.NewLine & RestoreRequest.Folder, {"OK"}, 0, 0)
+                Theme.Ask(Me, "Restore to disk", "Could not hand the restore to LTFSCopyGui2", ex.Message & Environment.NewLine & RestoreRequest.Folder, {"OK"}, 0, 0)
                 Return
             End Try
         End Using
         Dim running As Boolean = Diagnostics.Process.GetProcessesByName("LTFSCopyGUI").Length > 0
         Dim exe As String = Path.Combine(AppDir, "LTFSCopyGUI.exe")
-        Dim howTo As String = "In LTFSCopyGUI, open the drive with tape " & String.Join(", then ", tapes.Select(Function(t) t.Barcode)) &
+        Dim howTo As String = "In LTFSCopyGui2, open the drive with tape " & String.Join(", then ", tapes.Select(Function(t) t.Barcode)) &
                               " and load its index. It shows what it will restore and asks before it starts."
         If running Then
-            Theme.Ask(Me, "Restore to disk", "Sent to LTFSCopyGUI", howTo, {"OK"}, 0, 0)
+            Theme.Ask(Me, "Restore to disk", "Sent to LTFSCopyGui2", howTo, {"OK"}, 0, 0)
         ElseIf File.Exists(exe) Then
-            If Theme.Ask(Me, "Restore to disk", "Sent - LTFSCopyGUI is not running", howTo, {"Start LTFSCopyGUI", "Later"}, 0, 1) = 0 Then
+            If Theme.Ask(Me, "Restore to disk", "Sent - LTFSCopyGui2 is not running", howTo, {"Start LTFSCopyGui2", "Later"}, 0, 1) = 0 Then
                 Try
                     Diagnostics.Process.Start(New Diagnostics.ProcessStartInfo(exe) With {.UseShellExecute = True, .WorkingDirectory = AppDir})
                 Catch ex As System.ComponentModel.Win32Exception
-                    Log("LTFSCopyGUI not started: " & ex.Message) ' e.g. the elevation prompt was declined
+                    Log("LTFSCopyGui2 not started: " & ex.Message) ' e.g. the elevation prompt was declined
                 End Try
             End If
         Else
-            Theme.Ask(Me, "Restore to disk", "Sent - LTFSCopyGUI is not running", "Start LTFSCopyGUI. " & howTo, {"OK"}, 0, 0)
+            Theme.Ask(Me, "Restore to disk", "Sent - LTFSCopyGui2 is not running", "Start LTFSCopyGui2. " & howTo, {"OK"}, 0, 0)
         End If
-        _lblView.Text = "Restore sent to LTFSCopyGUI"
+        _lblView.Text = "Restore sent to LTFSCopyGui2"
     End Sub
 
     Private Shared Function TapeLabel(t As TapeInfo) As String
@@ -943,11 +943,11 @@ Friend NotInheritable Class MainForm
     Private Sub OpenRequestFolder()
         Dim n As Integer = RestoreRequest.PendingCount()
         If n = 0 Then
-            Theme.Ask(Me, "Restore requests", "No restore requests are waiting", "LTFSCopyGUI has taken or declined every request sent so far.", {"OK"}, 0, 0)
+            Theme.Ask(Me, "Restore requests", "No restore requests are waiting", "LTFSCopyGui2 has taken or declined every request sent so far.", {"OK"}, 0, 0)
             Return
         End If
-        If Theme.Ask(Me, "Restore requests", FormatCount(n) & If(n = 1, " restore request is", " restore requests are") & " waiting for LTFSCopyGUI",
-                     "Each one runs when its tape's index is loaded in LTFSCopyGUI. Delete a .req file in the folder to cancel that request.",
+        If Theme.Ask(Me, "Restore requests", FormatCount(n) & If(n = 1, " restore request is", " restore requests are") & " waiting for LTFSCopyGui2",
+                     "Each one runs when its tape's index is loaded in LTFSCopyGui2. Delete a .req file in the folder to cancel that request.",
                      {"Open folder", "Close"}, 0, 1) = 0 Then
             Try
                 Diagnostics.Process.Start(New Diagnostics.ProcessStartInfo(RestoreRequest.Folder) With {.UseShellExecute = True})
@@ -1219,7 +1219,7 @@ Friend NotInheritable Class MainForm
     End Sub
 
     Private Sub DoChooseFolder()
-        Using d As New FolderBrowserDialog With {.Description = "Folder where LTFSCopyGUI saves tape indexes (its ""schema"" folder)", .SelectedPath = IndexFolder}
+        Using d As New FolderBrowserDialog With {.Description = "Folder where LTFSCopyGui2 saves tape indexes (its ""schema"" folder)", .SelectedPath = IndexFolder}
             If d.ShowDialog(Me) <> DialogResult.OK Then Return
             _store.SetMeta("index_folder", d.SelectedPath)
         End Using
@@ -1263,9 +1263,8 @@ Friend NotInheritable Class MainForm
     End Sub
 
     Private Sub ShowAbout()
-        Dim v As Version = GetType(MainForm).Assembly.GetName().Version
-        MessageBox.Show(Me, "LTFSCatalog " & v.ToString(3) & Environment.NewLine &
-                        "Offline catalog of LTFS tapes, built from the indexes LTFSCopyGUI saves." & Environment.NewLine & Environment.NewLine &
+        MessageBox.Show(Me, "LTFSCatalog v" & AppVersion.Number & Environment.NewLine &
+                        "Offline catalog of LTFS tapes, built from the indexes LTFSCopyGui2 saves." & Environment.NewLine & Environment.NewLine &
                         "Catalog: " & _store.DbPath & Environment.NewLine & "Index folder: " & IndexFolder,
                         "About LTFSCatalog", MessageBoxButtons.OK, MessageBoxIcon.Information)
     End Sub

@@ -60,7 +60,7 @@ Partial Class LTFSWriter
 
         ' Help sits at the right end: the command bar occupies the menu row after Tape and Data
         Dim keysItem As New ToolStripMenuItem("Keyboard shortcuts") With {.ShortcutKeys = Keys.F1}
-        AddHandler keysItem.Click, Sub() UiStyle.ShowShortcuts(Me, "Keyboard shortcuts - LTFSCopyGUI", UiShortcuts)
+        AddHandler keysItem.Click, Sub() UiStyle.ShowShortcuts(Me, "Keyboard shortcuts - LTFSCopyGui2", UiShortcuts)
         Dim help As New ToolStripMenuItem("&Help") With {.Alignment = ToolStripItemAlignment.Right}
         help.DropDownItems.Add(keysItem)
         MenuStrip1.Items.Add(help)

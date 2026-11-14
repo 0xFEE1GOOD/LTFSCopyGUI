@@ -61,15 +61,6 @@ Namespace My.Resources
         End Property
         
         '''<summary>
-        '''  查找类似  非商业许可 的本地化字符串。
-        '''</summary>
-        Friend ReadOnly Property DefaultLicense() As String
-            Get
-                Return ResourceManager.GetString("DefaultLicense", resourceCulture)
-            End Get
-        End Property
-        
-        '''<summary>
         '''  查找 System.Drawing.Bitmap 类型的本地化资源。
         '''</summary>
         Friend ReadOnly Property dragdrop() As System.Drawing.Bitmap
@@ -2685,15 +2676,6 @@ Namespace My.Resources
         Friend ReadOnly Property StrCMDHelpText() As String
             Get
                 Return ResourceManager.GetString("StrCMDHelpText", resourceCulture)
-            End Get
-        End Property
-        
-        '''<summary>
-        '''  查找类似  非商业许可 的本地化字符串。
-        '''</summary>
-        Friend ReadOnly Property StrDefaultLicense() As String
-            Get
-                Return ResourceManager.GetString("StrDefaultLicense", resourceCulture)
             End Get
         End Property
         

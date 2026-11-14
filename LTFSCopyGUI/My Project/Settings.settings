@@ -97,7 +97,7 @@
       <Value Profile="(Default)">False</Value>
     </Setting>
     <Setting Name="Application_License" Type="System.String" Scope="User">
-      <Value Profile="(Default)"> 非商业许可</Value>
+      <Value Profile="(Default)" />
     </Setting>
     <Setting Name="LTFSWriter_AutoCleanDownLim" Description="容量损失判定速度下限" Type="System.Double" Scope="User">
       <Value Profile="(Default)">60</Value>

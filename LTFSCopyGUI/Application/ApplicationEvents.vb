@@ -155,7 +155,7 @@ Namespace My
                 End Try
             End If
             TapeUtils.DriverTypeSetting = Settings.TapeUtils_DriverType
-            Settings.Application_License = Resources.StrDefaultLicense
+            Settings.Application_License = ""
             If File.Exists(Settings.licenseFile) Then
                 Dim rsa As New Security.Cryptography.RSACryptoServiceProvider()
 

@@ -1,45 +1,32 @@
-#define MyAppName "LTFSCopyGUI"
+#define MyAppName "LTFSCopyGui2"
 #define MyAppPublisher "Nullpinter"
 #define MyAppExeName "LTFSCopyGUI.exe"
 
-; Read the application version from AssemblyInfo.vb while compiling the installer.
-#define VersionFile FileOpen("..\LTFSCopyGUI\My Project\AssemblyInfo.vb")
+; Read the version (shared with LTFSCatalog) from Common\AppVersion.vb while compiling the installer:
+; the line is   Public Const Number As String = "1.001"
+#define VersionFile FileOpen("..\Common\AppVersion.vb")
 #if !VersionFile
-  #error "Unable to open LTFSCopyGUI\My Project\AssemblyInfo.vb"
+  #error "Unable to open Common\AppVersion.vb"
 #endif
-#define VersionMarker "<Assembly: AssemblyFileVersion("""
+#define VersionMarker "Public Const Number As String = """
 #define VersionLine ""
 #define ReadVersionLine
 #for {VersionLine = FileRead(VersionFile); Pos(VersionMarker, VersionLine) == 0 && !FileEof(VersionFile); VersionLine = FileRead(VersionFile)} ReadVersionLine
 #expr FileClose(VersionFile)
 #if Pos(VersionMarker, VersionLine) == 0
-  #error "Unable to find AssemblyFileVersion in LTFSCopyGUI\My Project\AssemblyInfo.vb"
+  #error "Unable to find the version Number in Common\AppVersion.vb"
 #endif
-#define MyAppVersion Copy(VersionLine, Pos(VersionMarker, VersionLine) + Len(VersionMarker), Len(VersionLine) - Pos(VersionMarker, VersionLine) - Len(VersionMarker) - 2)
-
-; Read the internal build number from Build\Build.vb while compiling the installer.
-#define BuildFile FileOpen("..\LTFSCopyGUI\Build\Build.vb")
-#if !BuildFile
-  #error "Unable to open LTFSCopyGUI\Build\Build.vb"
-#endif
-#define BuildMarker "Public Const Build As String = "
-#define BuildLine ""
-#define ReadBuildLine
-#for {BuildLine = FileRead(BuildFile); Pos(BuildMarker, BuildLine) == 0 && !FileEof(BuildFile); BuildLine = FileRead(BuildFile)} ReadBuildLine
-#expr FileClose(BuildFile)
-#if Pos(BuildMarker, BuildLine) == 0
-  #error "Unable to find the internal build number in LTFSCopyGUI\Build\Build.vb"
-#endif
-#define InternalBuild Copy(BuildLine, Pos(BuildMarker, BuildLine) + Len(BuildMarker) + 1, Len(BuildLine) - Pos(BuildMarker, BuildLine) - Len(BuildMarker) - 1)
+#define MyAppVersion Copy(VersionLine, Pos(VersionMarker, VersionLine) + Len(VersionMarker), Len(VersionLine) - Pos(VersionMarker, VersionLine) - Len(VersionMarker))
 
 [Setup]
-AppId={{DBC4887A-8A7A-11F1-BAE5-325096B39F47}
+; Own AppId: installs beside upstream LTFSCopyGUI instead of upgrading it.
+AppId={{587A2853-343C-4D13-A421-B0AF3BE58CDA}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName=C:\{#MyAppName}
 OutputDir=.
-OutputBaseFilename={#MyAppName}-{#MyAppVersion}+build.{#InternalBuild}
+OutputBaseFilename={#MyAppName}-{#MyAppVersion}
 SetupIconFile=Koko.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}

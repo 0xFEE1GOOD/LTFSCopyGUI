@@ -312,7 +312,9 @@
     <Compile Include="..\Common\UiStyle.vb">
       <Link>Application\UiStyle.vb</Link>
     </Compile>
-    <Compile Include="Build\Build.vb" />
+    <Compile Include="..\Common\AppVersion.vb">
+      <Link>My Project\AppVersion.vb</Link>
+    </Compile>
     <Compile Include="Controls\Direct2DChartControl.vb">
       <SubType>Component</SubType>
     </Compile>
@@ -563,9 +565,6 @@
     <Copy SourceFiles="$(MSBuildProjectDirectory)\..\LTFSCopyGUIOxide\target\x86_64-win7-windows-msvc\$(OxideCargoOutputDirectory)\ltfscopy_oxide.dll" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="$(MSBuildProjectDirectory)\..\LTFSCopyGUIOxide\target\x86_64-win7-windows-msvc\$(OxideCargoOutputDirectory)\ltfscopy_oxide.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(MSBuildProjectDirectory)\..\LTFSCopyGUIOxide\target\x86_64-win7-windows-msvc\$(OxideCargoOutputDirectory)\ltfscopy_oxide.pdb')" />
   </Target>
-  <PropertyGroup>
-    <PreBuildEvent>"$(ProjectDir)Build\BuildVersionPropagator.exe" "$(ProjectDir)Build\Build.vb"</PreBuildEvent>
-  </PropertyGroup>
   <Import Project="..\packages\Serilog.4.4.0\build\Serilog.targets" Condition="Exists('..\packages\Serilog.4.4.0\build\Serilog.targets')" />
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>

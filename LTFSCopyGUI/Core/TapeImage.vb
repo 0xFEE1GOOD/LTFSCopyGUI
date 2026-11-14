@@ -8,6 +8,9 @@ End Class
 Public Class TapeImage
     Implements IDisposable
 
+    ''' <summary>Serial/revision digits of the emulated drive (was the upstream build number, which no longer exists).</summary>
+    Private Const EmulatedBuild As String = "26102503"
+
     Public Class SenseData
         Public Shared BlankCheck As Byte() = {&HF0, 0, 8, 0, 0, 0, 0, &H10, 0, 0, 0, 0, 0, 5, 0, 0, &H50, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
         Public Shared MediumError As Byte() = {&H70, 0, 3, 0, 0, 0, 0, &H10, 0, 0, 0, 0, &H31, 0, 0, 0, &H50, &H89, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
@@ -433,7 +436,7 @@ Public Class TapeImage
                                         &HC0, &HC1, &HC2, &HC3, &HC4, &HC5, &HC8, &HCC, &HD0}
                         Case &H80 'Unit Serial Number page
                             Response = {&H1, &H80, 0, &HA}
-                            Response = Response.Concat(Encoding.ASCII.GetBytes($"LT{ApplicationWheels.Build}")).ToArray()
+                            Response = Response.Concat(Encoding.ASCII.GetBytes($"LT{EmulatedBuild}")).ToArray()
                         Case &H83 'Device Identification page
                             Response = {&H1, &H83, &H0, &H5A, &H1, &H3, &H0, &H8, &H51, &H40, &H2E, &HC0, &H12, &H9, &H2D, &HF6,
                                         &H1, &H93, &H0, &H8, &H51, &H40, &H2E, &HC0, &H12, &H9, &H2D, &HF4, &H1, &H94, &H0, &H4,
@@ -441,7 +444,7 @@ Public Class TapeImage
                                         &H51, &H40, &H2E, &HC0, &H12, &H9, &H2D, &HF6, &H2, &HA1, &H0, &H22, &H48, &H50, &H20, &H20,
                                         &H20, &H20, &H20, &H20, &H55, &H6C, &H74, &H72, &H69, &H75, &H6D, &H20, &H36, &H2D, &H53, &H43,
                                         &H53, &H49, &H20, &H20}
-                            Response = Response.Concat(Encoding.ASCII.GetBytes($"LT{ApplicationWheels.Build}")).ToArray()
+                            Response = Response.Concat(Encoding.ASCII.GetBytes($"LT{EmulatedBuild}")).ToArray()
                         Case &H85 'Management Network Address page
                             Response = {&H1, &H85, 0, 0}
                         Case &H86 'Extended Inquiry Data page
@@ -459,12 +462,12 @@ Public Class TapeImage
                             Response = {&H1, &HB0, 0, 4, 1, 0, 0, 0}
                         Case &HB1
                             Response = {&H1, &HB1, 0, &HA}
-                            Response = Response.Concat(Encoding.ASCII.GetBytes($"LT{ApplicationWheels.Build}")).ToArray()
+                            Response = Response.Concat(Encoding.ASCII.GetBytes($"LT{EmulatedBuild}")).ToArray()
                         Case &HB2
                             Response = {&H1, &HB2, 0, 8, &HFE, &HFF, &HFF, &HFF, &HFE, 0, &HFF, &HF0}
                         Case &HB3
                             Response = {&H1, &HB3, 0, &H10}
-                            Response = Response.Concat(Encoding.ASCII.GetBytes($"LCG{ApplicationWheels.Build}")).ToArray()
+                            Response = Response.Concat(Encoding.ASCII.GetBytes($"LCG{EmulatedBuild}")).ToArray()
                             ReDim Preserve Response(&H14 - 1)
                         Case &HB4
                             Response = {&H1, &HB4, 0, 4, &HFF, &HFF, &HFF, &HFF}
@@ -811,7 +814,7 @@ Public Class TapeImage
                                       CByte((VolumeChangeReference >> 16) And &HFF),
                                       CByte((VolumeChangeReference >> 8) And &HFF),
                                       CByte(VolumeChangeReference And &HFF)})
-                        Dim DeviceSN As Byte() = Encoding.ASCII.GetBytes($"LT{ApplicationWheels.Build}".PadRight(&H28).Substring(0, &H28))
+                        Dim DeviceSN As Byte() = Encoding.ASCII.GetBytes($"LT{EmulatedBuild}".PadRight(&H28).Substring(0, &H28))
                         paramData.Add((New Byte() {&H2, &HA, &H81, 0, &H28}).Concat(DeviceSN).ToArray())
                         paramData.Add((New Byte() {&H2, &HB, &H81, 0, &H28}).Concat(DeviceSN).ToArray())
                         paramData.Add((New Byte() {&H2, &HC, &H81, 0, &H28}).Concat(DeviceSN).ToArray())
@@ -847,10 +850,10 @@ Public Class TapeImage
                         If Not MAM080C.ContainsKey(Partition) Then MAM080C.Add(Partition, {})
                         paramData.Add((New Byte() {8, &HC, &H0, 0, CByte(MAM080C(Partition).Length And &HFF)}).Concat(MAM080C(Partition)).ToArray())
                         paramData.Add((New Byte() {&H10, 0, &H80, 0, &H1C}).Concat(
-                                      Encoding.ASCII.GetBytes(MediumSN.PadRight(4).Substring(0, 4) & ApplicationWheels.Build.PadRight(8).Substring(0, 8) & "LCGVT   ")).Concat(
+                                      Encoding.ASCII.GetBytes(MediumSN.PadRight(4).Substring(0, 4) & EmulatedBuild.PadRight(8).Substring(0, 8) & "LCGVT   ")).Concat(
                                       {0, 0, 0, 0, 0, &H10, 0, 0}).ToArray())
                         paramData.Add((New Byte() {&H10, 1, &H80, 0, &H18}).Concat(
-                                      Encoding.ASCII.GetBytes(MediumSN.PadRight(4).Substring(0, 4) & ApplicationWheels.Build.PadRight(8).Substring(0, 8) & MediumSN.PadRight(10).Substring(0, 10))).Concat(
+                                      Encoding.ASCII.GetBytes(MediumSN.PadRight(4).Substring(0, 4) & EmulatedBuild.PadRight(8).Substring(0, 8) & MediumSN.PadRight(10).Substring(0, 10))).Concat(
                                       {0, &H10}).ToArray())
                         Dim respData As New List(Of Byte)
                         For i As Integer = 0 To paramData.Count - 1
@@ -991,7 +994,7 @@ Public Class TapeImage
                         paramData.Add({&H0, &H43, &H1, &H8, &H52, &H43, &H47, &H20, &H20, &H20, &H20, &H20})
                         paramData.Add({&H0, &H44, &H1, &H4, &H55, &H31, &H30, &H37})
                         paramData.Add({&H0, &H45, &H1, &H9, &H55, &H6C, &H74, &H72, &H69, &H75, &H6D, &H2D, &H36})
-                        paramData.Add((New Byte() {&H0, &H46, &H1, &H8}).Concat(Encoding.ASCII.GetBytes($"{ApplicationWheels.Build.PadRight(8, "0"c).Substring(0, 8)}")).ToArray())
+                        paramData.Add((New Byte() {&H0, &H46, &H1, &H8}).Concat(Encoding.ASCII.GetBytes($"{EmulatedBuild.PadRight(8, "0"c).Substring(0, 8)}")).ToArray())
                         paramData.Add({&H0, &H80, &H3, &H2, &H0, &H0})
                         paramData.Add({&H0, &H81, &H3, &H2, &H0, &H0})
                         paramData.Add({&H0, &H82, &H3, &H2, &H0, &H0})

@@ -716,7 +716,7 @@ Namespace My
 
         <Global.System.Configuration.UserScopedSettingAttribute(),
          Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
-         Global.System.Configuration.DefaultSettingValueAttribute(" 非商业许可"),
+         Global.System.Configuration.DefaultSettingValueAttribute(""),
          Category("Application"),
          LocalizedDescription("PropertyDescription_Application_License")>
         Public Property Application_License() As String

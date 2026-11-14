@@ -186,7 +186,7 @@ Friend NotInheritable Class NewTapesDialog
         FormBorderStyle = FormBorderStyle.Sizable
         MinimumSize = New Size(520, 300)
         ClientSize = New Size(640, 360)
-        Dim head As New Label With {.Text = "LTFSCopyGUI has indexes for tapes the catalog does not track yet. Tick the tapes to add.",
+        Dim head As New Label With {.Text = "LTFSCopyGui2 has indexes for tapes the catalog does not track yet. Tick the tapes to add.",
                                     .Dock = DockStyle.Top, .AutoSize = False, .Height = 52, .Padding = New Padding(8, 8, 8, 0)}  ' two lines at 10 pt
         _list.Columns.Add("Tape", 110)
         _list.Columns.Add("Serial", 110)
@@ -291,7 +291,7 @@ Friend NotInheritable Class UntrackedTapesDialog
         Theme.ApplyDialog(Me, "Untracked tapes")
         FormBorderStyle = FormBorderStyle.Sizable
         ClientSize = New Size(560, 320)
-        Dim head As New Label With {.Text = If(tapes.Count = 0, "Every tape LTFSCopyGUI has an index for is tracked.", "Tick the tapes to add to the catalog."),
+        Dim head As New Label With {.Text = If(tapes.Count = 0, "Every tape LTFSCopyGui2 has an index for is tracked.", "Tick the tapes to add to the catalog."),
                                     .Dock = DockStyle.Top, .Height = 28, .Padding = New Padding(8, 8, 8, 0)}
         _list.Columns.Add("Tape", 120)
         _list.Columns.Add("Serial", 120)
@@ -353,9 +353,9 @@ Friend NotInheritable Class RestoreDialog
         pick.Controls.Add(_dest)
         pick.Controls.Add(browse)
         Dim note As New Label With {.AutoSize = True, .MaximumSize = New Size(480, 0), .ForeColor = SystemColors.GrayText, .Margin = New Padding(0, 0, 0, 12),
-                                    .Text = "LTFSCopyGUI does the restore, in tape order. Load the tape's index there and it asks before it starts. " &
+                                    .Text = "LTFSCopyGui2 does the restore, in tape order. Load the tape's index there and it asks before it starts. " &
                                             "The catalog never uses the drive."}
-        Dim ok As New Button With {.Text = "Send to LTFSCopyGUI", .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink, .MinimumSize = New Size(84, 26)}
+        Dim ok As New Button With {.Text = "Send to LTFSCopyGui2", .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink, .MinimumSize = New Size(84, 26)}
         Dim cancel As New Button With {.Text = "Cancel", .DialogResult = DialogResult.Cancel, .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink, .MinimumSize = New Size(84, 26)}
         Dim row As New FlowLayoutPanel With {.FlowDirection = FlowDirection.RightToLeft, .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink,
                                              .Anchor = AnchorStyles.Right, .WrapContents = False, .Margin = New Padding(0)}

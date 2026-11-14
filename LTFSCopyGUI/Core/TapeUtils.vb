@@ -8367,16 +8367,16 @@ Public Class TapeUtils
                         Return False
                     End If
                     'Set AppName
-                    ProgressReport($"WRITE ATTRIBUTE: Application Name = LTFSCopyGUI..")
-                    If checked(Function() SetMAMAttribute(handle, &H801, "LTFSCopyGUI".PadRight(32), SenseReport:=senseReportFunc)) Then
+                    ProgressReport($"WRITE ATTRIBUTE: Application Name = {AppVersion.CopyGuiName}..")
+                    If checked(Function() SetMAMAttribute(handle, &H801, AppVersion.CopyGuiName.PadRight(32), SenseReport:=senseReportFunc)) Then
                         ProgressReport("WRITE ATTRIBUTE: 0801 OK" & vbCrLf)
                     Else
                         OnError("WRITE ATTRIBUTE: 0801 Fail" & vbCrLf)
                         Return False
                     End If
                     'Set Version
-                    ProgressReport($"WRITE ATTRIBUTE: Application Version={My.Application.Info.Version.ToString(3)}..")
-                    If checked(Function() SetMAMAttribute(handle, &H802, My.Application.Info.Version.ToString(3).PadRight(8), SenseReport:=senseReportFunc)) Then
+                    ProgressReport($"WRITE ATTRIBUTE: Application Version={AppVersion.Number}..")
+                    If checked(Function() SetMAMAttribute(handle, &H802, AppVersion.Number.PadRight(8), SenseReport:=senseReportFunc)) Then
                         ProgressReport("WRITE ATTRIBUTE: 0802 OK" & vbCrLf)
                     Else
                         OnError("WRITE ATTRIBUTE: 0802 Fail" & vbCrLf)
