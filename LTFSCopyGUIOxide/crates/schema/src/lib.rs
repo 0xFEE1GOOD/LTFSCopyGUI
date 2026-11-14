@@ -2154,13 +2154,24 @@ impl MergeDirectoryNormalizer<'_> {
         header: &StoreDirectoryHeader,
         file_uid: i64,
     ) -> Result<(), String> {
+        // The UID follows name, read-only flag and five times; it is no longer the last field (a folder
+        // record may end with the XML of elements this program does not model).
+        let bytes = self.read_bytes(
+            header.scalar_offset,
+            read_store_length(header.scalar_length, "merge directory scalar record")?,
+            "merge directory scalar",
+        )?;
+        let mut cursor = StoreCursor::new(&bytes);
+        cursor.nullable_string()?;
+        cursor.boolean()?;
+        for _ in 0..5 {
+            cursor.nullable_string()?;
+        }
         let uid_offset = header
             .scalar_offset
             .checked_add(
-                header
-                    .scalar_length
-                    .checked_sub(8)
-                    .ok_or_else(|| invalid("merge directory scalar record is truncated"))?,
+                i64::try_from(cursor.position)
+                    .map_err(|_| invalid("merge directory scalar offset overflow"))?,
             )
             .ok_or_else(|| invalid("merge directory scalar offset overflow"))?;
         let uid_end = uid_offset
