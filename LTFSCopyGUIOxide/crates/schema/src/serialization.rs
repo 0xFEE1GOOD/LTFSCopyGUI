@@ -214,7 +214,7 @@ pub(super) fn write_fragment<W: Write>(writer: &mut Writer<W>, bytes: &[u8]) -> 
                 // Written as text: the index writer indents, and it puts a line break before a
                 // GeneralRef event (and before the end tag after one), so `<name>&apos;x</name>`
                 // came out as a name starting with a line break, which Windows cannot restore.
-                let name = str::from_utf8(value.as_ref()).map_err(|error| error.to_string())?;
+                let name: &str = value.as_ref();
                 writer.write_event(Event::Text(BytesText::from_escaped(format!("&{name};"))))
             }
             Event::Eof => break,
