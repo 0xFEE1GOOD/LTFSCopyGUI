@@ -757,3 +757,14 @@ fn sorts_directory_children_into_fixed_index_chains() {
     drop(context);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn fragment_entities_stay_inside_the_name() {
+    // The index writer indents; entity references used to get a line break before them
+    // (and before the end tag after them), so this name started and ended with a line break.
+    let mut writer = new_xml_writer(Vec::new());
+    write_fragment(&mut writer, b"<file><name>&apos;Lectric &amp;&amp; Co&apos;</name></file>")
+        .expect("write fragment");
+    let text = String::from_utf8(writer.into_inner()).expect("utf8");
+    assert!(text.contains("<name>&apos;Lectric &amp;&amp; Co&apos;</name>"), "{text}");
+}

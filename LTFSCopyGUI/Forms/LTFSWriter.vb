@@ -4346,6 +4346,7 @@ Public Class LTFSWriter
         End If
         Dim originalGeneration As ULong = schema.generationnumber
         Dim originalUpdateTime As String = schema.updatetime
+        Dim originalCreator As String = schema.creator
         Dim originalLocationPartition As ltfsindex.PartitionLabel = schema.location.partition
         Dim originalLocationStartBlock As ULong = schema.location.startblock
         Dim originalPreviousPartition As ltfsindex.PartitionLabel = schema.previousgenerationlocation.partition
@@ -4356,6 +4357,8 @@ Public Class LTFSWriter
             WriteIndexFileMark()
             schema.generationnumber = CULng(schema.generationnumber + 1)
             schema.updatetime = Now.ToUniversalTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
+            ' Each index generation names the program that wrote it (the loaded index keeps whoever wrote the last one).
+            schema.creator = AppVersion.CopyGuiName & " " & AppVersion.Number & " - Windows - TapeUtils"
             schema.location.partition = ltfsindex.PartitionLabel.b
             schema.previousgenerationlocation = New ltfsindex.LocationDef With {.partition = schema.location.partition, .startblock = schema.location.startblock}
             CurrentPos = GetPos
@@ -4402,6 +4405,7 @@ Public Class LTFSWriter
             PrintMsg(ex.ToString(), LogOnly:=True, IsWarn:=True)
             schema.generationnumber = originalGeneration
             schema.updatetime = originalUpdateTime
+            schema.creator = originalCreator
             schema.location = New ltfsindex.LocationDef With {.partition = originalLocationPartition, .startblock = originalLocationStartBlock}
             schema.previousgenerationlocation = New ltfsindex.LocationDef With {.partition = originalPreviousPartition, .startblock = originalPreviousStartBlock}
             Throw
@@ -7239,7 +7243,7 @@ Public Class LTFSWriter
                         Dim requests As New List(Of ExtractionFileRequest)
                         For Each fileIndex As ltfsindex.file In flist
                             requests.Add(New ExtractionFileRequest With {
-                                             .FileName = IO.Path.Combine(BasePath, fileIndex.name),
+                                             .FileName = IO.Path.Combine(BasePath, RestoreName(fileIndex.name)),
                                              .FileIndex = fileIndex})
                         Next
                         RestoreFilesInTapeOrder(requests, BasePath)
@@ -7323,7 +7327,7 @@ Public Class LTFSWriter
                             If StopFlag Then Exit For
                             Dim selectedDir As ltfsindex.directory = TryCast(node.Tag, ltfsindex.directory)
                             If selectedDir Is Nothing Then Continue For
-                            Dim outputPath As String = IO.Path.Combine(selectedPath, If(selectedDir.name, String.Empty))
+                            Dim outputPath As String = IO.Path.Combine(selectedPath, RestoreName(selectedDir.name))
                             If Not outputPath.StartsWith("\\") Then outputPath = $"\\?\{outputPath}"
                             Dim outputDirectory As New IO.DirectoryInfo(outputPath)
                             directoryRequests.Add(New ExtractionDirectoryRequest With {
@@ -7889,6 +7893,32 @@ Public Class LTFSWriter
         End If
     End Sub
 
+    ''' <summary>The Windows name for a tape file or folder when restoring. LTFS names can hold characters Windows rejects
+    ''' (control characters and \ / : * ? " &lt; &gt; |), and indexes written by LTFSCopyGUI 3.6.0 and LTFSCopyGui2 1.001
+    ''' put a line break before a name that starts with ' &amp; &lt; &gt; or " (and after one that ends with them).
+    ''' Line breaks at the ends are dropped and other such characters become _; each change is logged.</summary>
+    Private Function RestoreName(name As String) As String
+        Dim safe As String = WindowsSafeName(name)
+        If Not String.Equals(safe, If(name, String.Empty), StringComparison.Ordinal) Then
+            Dim shown As New System.Text.StringBuilder()
+            For Each c As Char In name
+                If c < " "c Then shown.Append($"\x{AscW(c):X2}") Else shown.Append(c)
+            Next
+            PrintMsg($"Name changed for Windows: tape name ""{shown}"" -> ""{safe}""", LogOnly:=True, IsWarn:=True)
+        End If
+        Return safe
+    End Function
+
+    Friend Shared Function WindowsSafeName(name As String) As String
+        If String.IsNullOrEmpty(name) Then Return String.Empty
+        Dim chars As Char() = name.Trim(ControlChars.Cr, ControlChars.Lf).ToCharArray()
+        For i As Integer = 0 To chars.Length - 1
+            If chars(i) < " "c OrElse "\/:*?""<>|".IndexOf(chars(i)) >= 0 Then chars(i) = "_"c
+        Next
+        Dim safe As New String(chars)
+        Return If(safe.Length = 0 OrElse safe = "." OrElse safe = "..", "_", safe)
+    End Function
+
     Private Sub TraverseRestoreFiles(directory As ltfsindex.directory,
                                      outputDirectory As IO.DirectoryInfo,
                                      onFile As Action(Of FileRecord),
@@ -7902,21 +7932,22 @@ Public Class LTFSWriter
                 file.TempObj = New ltfsindex.file.refFile() With {.FileName = ""}
                 onFile(New FileRecord With {
                        .File = file,
-                       .SourcePath = IO.Path.Combine(outputDirectory.FullName, If(file.name, String.Empty))})
+                       .SourcePath = IO.Path.Combine(outputDirectory.FullName, RestoreName(file.name))})
             Next
         Else
             Parallel.ForEach(directory.EnumerateLazyFiles(), Sub(file As ltfsindex.file)
                                                                  If StopFlag Then Exit Sub
                                                                  file.TempObj = New ltfsindex.file.refFile() With {.FileName = ""}
                                                                  Dim fr As FileRecord
+                                                                 Dim name As String = RestoreName(file.name)
                                                                  Try
                                                                      fr = New FileRecord With {
                                                                         .File = file,
-                                                                        .SourcePath = IO.Path.Combine(outputDirectory.FullName, If(file.name, String.Empty))}
+                                                                        .SourcePath = IO.Path.Combine(outputDirectory.FullName, name)}
                                                                  Catch ex As Exception
                                                                      fr = New FileRecord With {
                                                                         .File = file,
-                                                                        .SourcePath = outputDirectory.FullName & "\" & If(file.name, String.Empty)}
+                                                                        .SourcePath = outputDirectory.FullName & "\" & name}
                                                                      PrintMsg($"Path error for {fr.SourcePath} - {ex.ToString}", LogOnly:=True, IsWarn:=True)
                                                                  End Try
                                                                  onFile(fr)
@@ -7925,7 +7956,7 @@ Public Class LTFSWriter
         End If
         For Each childDirectory As ltfsindex.directory In directory.EnumerateLazyDirectories()
             If StopFlag Then Exit Sub
-            Dim childPath As String = IO.Path.Combine(outputDirectory.FullName, If(childDirectory.name, String.Empty))
+            Dim childPath As String = IO.Path.Combine(outputDirectory.FullName, RestoreName(childDirectory.name))
             If onDirectory IsNot Nothing Then onDirectory(childPath, childDirectory)
             Dim restoreTimeStamp As Boolean = createDirectories AndAlso Not IO.Directory.Exists(childPath)
             If createDirectories AndAlso Not IO.Directory.Exists(childPath) Then IO.Directory.CreateDirectory(childPath)
@@ -13033,11 +13064,11 @@ Public Class LTFSWriter
             For Each file As ltfsindex.file In current.Item1.EnumerateLazyFiles()
                 Yield New FileRecord With {
                     .File = file,
-                    .SourcePath = IO.Path.Combine(currentPath, If(file.name, String.Empty))}
+                    .SourcePath = IO.Path.Combine(currentPath, WindowsSafeName(file.name))}
             Next
             For Each childDirectory As ltfsindex.directory In current.Item1.EnumerateLazyDirectories()
                 For Each nestedRecord As FileRecord In EnumerateDirectoryFileRecords(childDirectory,
-                                                                                      IO.Path.Combine(currentPath, If(childDirectory.name, String.Empty)))
+                                                                                      IO.Path.Combine(currentPath, WindowsSafeName(childDirectory.name)))
                     Yield nestedRecord
                 Next
             Next
@@ -17151,7 +17182,7 @@ Public Class LTFSWriter
                             If StopFlag Then Exit For
                             Dim selectedDir As ltfsindex.directory = TryCast(node.Tag, ltfsindex.directory)
                             If selectedDir Is Nothing Then Continue For
-                            Dim outputPath As String = IO.Path.Combine(outputDirectory, If(selectedDir.name, String.Empty))
+                            Dim outputPath As String = IO.Path.Combine(outputDirectory, RestoreName(selectedDir.name))
 
                             If Not outputPath.StartsWith("\\") Then outputPath = $"\\?\{outputPath}"
                             If Not IO.Directory.Exists(outputPath) Then IO.Directory.CreateDirectory(outputPath)
@@ -17226,7 +17257,7 @@ Public Class LTFSWriter
                             If StopFlag Then Exit For
                             Dim selectedDir As ltfsindex.directory = TryCast(node.Tag, ltfsindex.directory)
                             If selectedDir Is Nothing Then Continue For
-                            Dim outputPath As String = IO.Path.Combine(outputDirectory, If(selectedDir.name, String.Empty))
+                            Dim outputPath As String = IO.Path.Combine(outputDirectory, RestoreName(selectedDir.name))
                             If Not outputPath.StartsWith("\\") Then outputPath = $"\\?\{outputPath}"
                             If Not IO.Directory.Exists(outputPath) Then IO.Directory.CreateDirectory(outputPath)
                             TraverseRestoreFiles(selectedDir, New IO.DirectoryInfo(outputPath),

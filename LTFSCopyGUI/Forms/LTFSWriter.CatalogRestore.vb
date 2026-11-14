@@ -312,11 +312,11 @@ Partial Class LTFSWriter
                         Dim parentDir As String = baseDir
                         If req.KeepPaths Then
                             For i As Integer = 0 To it.Parts.Length - 2
-                                parentDir = IO.Path.Combine(parentDir, it.Parts(i))
+                                parentDir = IO.Path.Combine(parentDir, RestoreName(it.Parts(i)))
                                 addDir(parentDir, it.Ancestors(i))
                             Next
                         End If
-                        Dim target As String = IO.Path.Combine(parentDir, it.Parts(it.Parts.Length - 1))
+                        Dim target As String = IO.Path.Combine(parentDir, RestoreName(it.Parts(it.Parts.Length - 1)))
                         If it.Directory IsNot Nothing Then
                             addDir(target, it.Directory)
                             TraverseRestoreFiles(it.Directory, New IO.DirectoryInfo(target),
