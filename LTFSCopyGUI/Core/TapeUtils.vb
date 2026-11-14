@@ -12761,10 +12761,12 @@ Public Class TapeUtils
                     For i As Integer = 0 To 7
                         For j As Integer = 0 To 7
                             Dim TAFValue As String = ""
-                            If TapeAlertFlag.TryGetValue(i * 8 + j, TAFValue) Then TAFValue = $" {TAFValue}"
+                            ' Flags are numbered from 01h: bit 7 of the first flag byte is flag 01h, bit 0 of the last is 40h (SSC).
+                            Dim flagNumber As Integer = i * 8 + j + 1
+                            If TapeAlertFlag.TryGetValue(flagNumber, TAFValue) Then TAFValue = $" {TAFValue}"
                             pdata.Items.Add(New DataItem With {
                                                     .Parent = pdata,
-                                                    .Name = $"Flag {Hex(i * 8 + j).ToUpper().PadLeft(2, "0"c)}h{TAFValue}",
+                                                    .Name = $"Flag {Hex(flagNumber).ToUpper().PadLeft(2, "0"c)}h{TAFValue}",
                                                     .StartByte = i + 8,
                                                     .BitOffset = CByte(j),
                                                     .TotalBits = 1,
