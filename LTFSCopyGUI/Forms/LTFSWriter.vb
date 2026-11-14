@@ -7555,8 +7555,6 @@ Public Class LTFSWriter
                 End If
             End While
 
-            schema.location.startblock = schema.previousgenerationlocation.startblock
-            schema.location.partition = schema.previousgenerationlocation.partition
             PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
             PrintMsg(My.Resources.ResText_RI)
             Dim tmpf As String = LazySchemaStore.CreateTempFilePath("schema-read")
@@ -7566,9 +7564,18 @@ Public Class LTFSWriter
             Dim sch2 As ltfsindex = ltfsindex.FromSchFile(tmpf)
             IO.File.Delete(tmpf)
             PrintMsg(My.Resources.ResText_AISucc)
-            schema.previousgenerationlocation = sch2.previousgenerationlocation
             p = GetPos
             PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
+            ' The index partition can be older than the data partition: the tape left the drive after a write but
+            ' before its index partition was updated. Then more data (and a newer index) follows this index copy, and
+            ' writing here would overwrite it. Checked before the index or the write pointer is changed.
+            If Not DataEndsAfterIndexCopy(p) Then
+                LockGUI(False)
+                Return False
+            End If
+            schema.location.startblock = schema.previousgenerationlocation.startblock
+            schema.location.partition = schema.previousgenerationlocation.partition
+            schema.previousgenerationlocation = sch2.previousgenerationlocation
             CurrentHeight = CLng(p.BlockNumber)
             Dim Loc As String = GetLocInfo()
             Invoke(Sub() Text = Loc)
@@ -7610,6 +7617,79 @@ Public Class LTFSWriter
         End If
         Return True
     End Function
+
+    ''' <summary>
+    ''' After reading the data-partition copy of an index loaded from the index partition, at the end of that copy:
+    ''' True when the data partition ends there (normal), False - with a message - when more data follows (the index
+    ''' partition is out of date; writing would overwrite the later data). Leaves the tape at the end of the copy.
+    ''' </summary>
+    Private Function DataEndsAfterIndexCopy(indexEnd As TapeUtils.PositionData) As Boolean
+        TapeUtils.Locate(driveHandle, 0UL, DataPartition, TapeUtils.LocateDestType.EOD)
+        Dim eod As TapeUtils.PositionData = GetPos
+        PrintMsg($"End of data = {eod.ToString()}", LogOnly:=True)
+        If eod.PartitionNumber = DataPartition AndAlso eod.BlockNumber > indexEnd.BlockNumber Then
+            PrintMsg($"Nothing written: the data partition continues after the loaded index (index ends at block {indexEnd.BlockNumber}, data ends at block {eod.BlockNumber}). Read the index from the data partition first.", IsWarn:=True)
+            SetStatusLight(LWStatus.Err)
+            If Not SilentMode Then
+                Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True},
+                    $"Nothing was written.{vbCrLf}{vbCrLf}The loaded index (generation {schema.generationnumber}, from the index partition) is not the newest on this tape: the data partition continues after it, from block {indexEnd.BlockNumber} to block {eod.BlockNumber}. The tape was probably written later and left the drive before its index partition was updated. Writing now would overwrite that data.{vbCrLf}{vbCrLf}Use Tape > Index > Read from data partition, check the files, then write again (or Safe Eject to bring the index partition up to date).",
+                    My.Resources.ResText_Warning, MessageBoxButtons.OK, MessageBoxIcon.Warning))
+            End If
+            Return False
+        End If
+        If eod.PartitionNumber <> DataPartition OrElse eod.BlockNumber <> indexEnd.BlockNumber Then
+            TapeUtils.Locate(driveHandle, indexEnd.BlockNumber, DataPartition, TapeUtils.LocateDestType.Block) ' undetermined: as before
+        End If
+        Return True
+    End Function
+
+    ''' <summary>
+    ''' Whether the cartridge memory says the tape was written after its index partition was last brought up to date.
+    ''' The LTFS Volume Coherency Information (MAM 080Ch) keeps the drive's Volume Change Reference (MAM 0009h, changed
+    ''' by the drive on every write) as it was when the index partition was last updated (WriteVCI). When it differs
+    ''' now, the data partition was written later - normally with a newer index there - e.g. the tape left the drive by
+    ''' its eject button, a power cut or a crash before Safe Eject. False when there is nothing to compare (no LTFS VCI,
+    ''' or one of another volume). Pure, for tests.
+    ''' </summary>
+    Friend Shared Function IndexPartitionLooksStale(vcr As Byte(), vci As Byte(), loadedGeneration As ULong, volumeUuid As String, ByRef detail As String) As Boolean
+        detail = "no LTFS volume coherency information"
+        If vcr Is Nothing OrElse vcr.Length < 4 OrElse vci Is Nothing OrElse vci.Length < 68 Then Return False
+        If vci(0) <> 8 OrElse Encoding.ASCII.GetString(vci, 27, 4) <> "LTFS" Then Return False
+        Dim vciUuid As String = Encoding.ASCII.GetString(vci, 32, 36).Trim()
+        If Not String.Equals(vciUuid, If(volumeUuid, "").Trim(), StringComparison.OrdinalIgnoreCase) Then
+            detail = $"volume coherency information of another volume ({vciUuid})"
+            Return False
+        End If
+        Dim bigEndian As Func(Of Byte(), Integer, Integer, ULong) = Function(b, offset, count)
+                                                                       Dim v As ULong = 0
+                                                                       For i As Integer = offset To offset + count - 1
+                                                                           v = (v << 8) Or b(i)
+                                                                       Next
+                                                                       Return v
+                                                                   End Function
+        Dim stored As ULong = bigEndian(vci, 5, 4) ' WriteVCI keeps the low 4 bytes (bytes 1-4 are zero)
+        Dim current As ULong = bigEndian(vcr, vcr.Length - 4, 4)
+        Dim vciGeneration As ULong = bigEndian(vci, 9, 8)
+        detail = $"volume change reference {current}, at the last index partition update {stored}; generation there {vciGeneration}, loaded {loadedGeneration}"
+        Return current <> stored OrElse vciGeneration > loadedGeneration
+    End Function
+
+    ''' <summary>IndexPartitionLooksStale for the tape in the drive (logged); False when the attributes cannot be read.</summary>
+    Private Function TapeIndexPartitionLooksStale() As Boolean
+        If ExtraPartitionCount = 0 OrElse schema Is Nothing OrElse schema.location.partition <> ltfsindex.PartitionLabel.a Then Return False
+        Try
+            Dim detail As String = ""
+            Dim stale As Boolean = IndexPartitionLooksStale(TapeUtils.GetMAMAttributeBytes(driveHandle, 0, 9),
+                                                            TapeUtils.GetMAMAttributeBytes(driveHandle, 8, 12, 0),
+                                                            schema.generationnumber, schema.volumeuuid.ToString(), detail)
+            PrintMsg($"Index partition coherency: {If(stale, "OUT OF DATE", "ok")} ({detail})", LogOnly:=True, IsWarn:=stale)
+            Return stale
+        Catch ex As Exception
+            PrintMsg($"Index partition coherency not checked: {ex.Message}", LogOnly:=True, IsWarn:=True)
+            Return False
+        End Try
+    End Function
+
     Public StartTime As Date
     Public Property IsWriting As Boolean = False
     Private _PipeBufferLength As Long = 0
@@ -10732,6 +10812,7 @@ Public Class LTFSWriter
         If TapeEjectedReadOnly Then Exit Sub
         Dim th As New Threading.Thread(
             Sub()
+                Dim readDataPartitionNext As Boolean = False
                 Try
                     If TapeUtils.DriverTypeSetting = TapeUtils.DriverType.TapeStream Then
                         TapeUtils.CloseTapeDrive(driveHandle)
@@ -10933,6 +11014,16 @@ Public Class LTFSWriter
                     PrintMsg(My.Resources.ResText_IRSucc)
                     SetStatusLight(LWStatus.Succ)
                     Invoke(Sub() RaiseEvent LTFSLoaded())
+                    If TapeIndexPartitionLooksStale() Then
+                        PrintMsg($"The index partition of {Barcode.TrimEnd()} looks out of date: the tape was written after it was last updated. Use Tape > Index > Read from data partition before writing.", IsWarn:=True)
+                        If Not SilentMode Then
+                            Dim answer As DialogResult = DialogResult.No
+                            Invoke(Sub() answer = MessageBox.Show(New Form With {.TopMost = True},
+                                $"The index partition of {Barcode.TrimEnd()} looks out of date.{vbCrLf}{vbCrLf}The cartridge memory shows the tape was written after its index partition was last updated, for example it left the drive before Safe Eject finished. The index just loaded (generation {schema.generationnumber}) may not list the files written since, and writing with it would overwrite them (the program refuses that write).{vbCrLf}{vbCrLf}Read the newest index from the end of the data partition now (Tape > Index > Read from data partition)?",
+                                My.Resources.ResText_Warning, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button1))
+                            readDataPartitionNext = (answer = DialogResult.Yes)
+                        End If
+                    End If
                 Catch ex As Exception
                     PrintMsg(My.Resources.ResText_IRFailed)
                     PrintMsg($"{ex.ToString}", LogOnly:=True, IsWarn:=True)
@@ -10946,6 +11037,14 @@ Public Class LTFSWriter
                     Catch cleanupEx As Exception
                         Log.Error(cleanupEx, "LTFS index load GUI unlock failed.")
                     End Try
+                    ' Queued only now, after the unlock above, so the data-partition read keeps the GUI locked itself.
+                    If readDataPartitionNext Then
+                        Try
+                            BeginInvoke(Sub() 读取数据区索引ToolStripMenuItem_Click(读取数据区索引ToolStripMenuItem, EventArgs.Empty))
+                        Catch ex As Exception
+                            Log.Error(ex, "Data partition index read could not be started.")
+                        End Try
+                    End If
                 End Try
             End Sub)
         LockGUI()
