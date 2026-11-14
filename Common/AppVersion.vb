@@ -7,7 +7,7 @@ Imports System.Reflection
 <Assembly: AssemblyInformationalVersion(AppVersion.Number)>
 
 Friend Module AppVersion
-    Public Const Number As String = "1.003"
+    Public Const Number As String = "1.004"
     ''' <summary>The application's name (window titles, the LTFS index creator, the tape's MAM application name).
     ''' The exe stays LTFSCopyGUI.exe.</summary>
     Public Const CopyGuiName As String = "LTFSCopyGui2"

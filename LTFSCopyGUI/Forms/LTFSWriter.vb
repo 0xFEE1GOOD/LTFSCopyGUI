@@ -6124,6 +6124,8 @@ Public Class LTFSWriter
     Private _extractPlan As List(Of ExtractionExtentWork)
     Private _extractReader As ExtractionReadAhead
     Private _extractRecord As ExtractionReadAhead.Record ' last record taken: packed small files share one
+    Private _extractIgnoredPartition As Byte              ' record the user chose to Ignore after a read error
+    Private _extractIgnoredBlock As Long = -1
 
     Private Sub RestartExtractionReader(planIndex As Integer, block As Long)
         _extractRecord = Nothing
@@ -6279,11 +6281,37 @@ Public Class LTFSWriter
 
         ' A record can hold several packed small files; they all come from the same record.
         If extent.byteoffset + extent.bytecount <= blockSize Then
-            Dim record As ExtractionReadAhead.Record = TakeExtractionRecord(planIndex, part, extent.startblock)
-            If record Is Nothing Then Return
-            If record.ReadError IsNot Nothing Then Throw New IO.IOException(record.ReadError.Message, record.ReadError)
-            If record.Sense IsNot Nothing AndAlso record.Sense.Length > 2 AndAlso (record.Sense(2) And &HF) > 1 Then Throw New IO.IOException(TapeUtils.ParseSenseData(record.Sense))
-            Dim data As Byte() = If(record.Data, {})
+            ' A read error asks Abort/Retry/Ignore, as for larger files (it used to end the whole restore).
+            ' Ignore skips every file of that record, asking once: a record can hold hundreds of them.
+            If part = _extractIgnoredPartition AndAlso extent.startblock = _extractIgnoredBlock Then
+                Throw New IO.InvalidDataException($"record P{part} B{extent.startblock} was skipped after a read error")
+            End If
+            Dim data As Byte() = Nothing
+            Do
+                Dim record As ExtractionReadAhead.Record = TakeExtractionRecord(planIndex, part, extent.startblock)
+                If record Is Nothing Then Return
+                Dim problem As String = Nothing
+                If record.ReadError IsNot Nothing Then
+                    problem = $"{My.Resources.ResText_RErrSCSI}{vbCrLf}{record.ReadError.Message}"
+                ElseIf record.Sense IsNot Nothing AndAlso record.Sense.Length > 2 AndAlso (record.Sense(2) And &HF) > 1 Then
+                    problem = $"{My.Resources.ResText_RestoreErr}{vbCrLf}{TapeUtils.ParseSenseData(record.Sense)}{vbCrLf}{vbCrLf}sense{vbCrLf}{TapeUtils.Byte2Hex(record.Sense, True)}"
+                Else
+                    data = If(record.Data, {})
+                    Exit Do
+                End If
+                PrintMsg($"Read error at P{part} B{extent.startblock}: {problem}", IsWarn:=True, LogOnly:=True)
+                Select Case AskExtractionRetry(problem)
+                    Case DialogResult.Retry
+                        RestartExtractionReader(planIndex, extent.startblock) ' read this record again
+                    Case DialogResult.Ignore
+                        _extractIgnoredPartition = part
+                        _extractIgnoredBlock = extent.startblock
+                        Throw New IO.InvalidDataException($"record P{part} B{extent.startblock} was skipped after a read error")
+                    Case Else
+                        StopFlag = True
+                        Throw New IO.IOException(problem)
+                End Select
+            Loop
             If data.Length < extent.byteoffset + extent.bytecount Then
                 Throw New IO.InvalidDataException($"{work.FileWork.Request.FileIndex.name}: record P{part} B{extent.startblock} has {data.Length} bytes, extent needs {extent.byteoffset + extent.bytecount}")
             End If
@@ -6521,17 +6549,65 @@ Public Class LTFSWriter
         Return plan
     End Function
 
-    Private Sub RestoreFilesInTapeOrder(requests As List(Of ExtractionFileRequest),
-                                        outputRoot As String,
-                                        Optional directoryRequests As List(Of ExtractionDirectoryRequest) = Nothing)
-        If StopFlag Then Return
+    ''' <summary>Errors that concern one restored file only: its data on tape is bad or was skipped, or its
+    ''' target cannot be written (open in another program, access denied). Anything else (the drive gone,
+    ''' the disk full) stops the restore.</summary>
+    Private Shared Function IsPerFileRestoreError(ex As Exception) As Boolean
+        If TypeOf ex Is IO.InvalidDataException OrElse TypeOf ex Is IO.EndOfStreamException Then Return True
+        If TypeOf ex Is UnauthorizedAccessException Then Return True
+        If TypeOf ex Is IO.IOException Then
+            Dim code As Integer = ex.HResult And &HFFFF
+            Return code = 32 OrElse code = 33 ' ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+        End If
+        Return False
+    End Function
+
+    Private Sub MarkExtractionFileFailed(fileWork As ExtractionFileWork, ex As Exception, ByRef failedFiles As Integer)
+        fileWork.Failed = True
+        failedFiles += 1
+        PrintMsg($"{My.Resources.ResText_RestoreErr} {fileWork.Request.FileName}: {ex.Message}", IsWarn:=True)
+        Try : IO.File.Delete(fileWork.TempPath) : Catch : End Try
+    End Sub
+
+    ''' <summary>End of a tape-order restore: Succ only when every file came back. Returns True for that case.
+    ''' With failed files the status line keeps RestoreFilesInTapeOrder's "N file(s) not restored".</summary>
+    Private Function ReportRestoreOutcome(failedFiles As Integer) As Boolean
+        If StopFlag Then
+            PrintMsg(My.Resources.ResText_OpCancelled)
+            SetStatusLight(LWStatus.Idle)
+            Return False
+        End If
+        If failedFiles > 0 Then
+            SetStatusLight(LWStatus.Err)
+            Return False
+        End If
+        PrintMsg(My.Resources.ResText_RestFin)
+        SetStatusLight(LWStatus.Succ)
+        Return True
+    End Function
+
+    Private Sub ShowRestoreFailedFiles(failedFiles As Integer, Optional caption As String = Nothing)
+        Try
+            Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True},
+                                         $"{My.Resources.ResText_RestoreErr}: {failedFiles:N0} file(s) could not be restored. The log lists them; the other files were restored.",
+                                         If(caption, My.Resources.ResText_Warning), MessageBoxButtons.OK, MessageBoxIcon.Warning))
+        Catch
+        End Try
+    End Sub
+
+    ''' <summary>Restores the files in tape order and returns how many could not be restored (each is logged).
+    ''' The caller must report a count above 0 as a failed restore.</summary>
+    Private Function RestoreFilesInTapeOrder(requests As List(Of ExtractionFileRequest),
+                                             outputRoot As String,
+                                             Optional directoryRequests As List(Of ExtractionDirectoryRequest) = Nothing) As Integer
+        If StopFlag Then Return 0
         ValidateExtractionPaths(requests, outputRoot, directoryRequests)
-        If StopFlag Then Return
+        If StopFlag Then Return 0
         PrepareExtractionDirectories(directoryRequests)
         Dim fileWorks As List(Of ExtractionFileWork) = Nothing
         Dim plan As List(Of ExtractionExtentWork) = BuildExtractionPlan(requests, fileWorks)
         PrintMsg($"Extraction schedule: files={If(requests Is Nothing, 0, requests.Count)}, physical extents={plan.Count}", LogOnly:=True)
-        If StopFlag Then Return
+        If StopFlag Then Return 0
         Dim extractionFileTotal As Long = If(requests Is Nothing, 0L, requests.Count)
         Dim nextExtractionFileNumber As Long = Math.Max(0L, CurrentFilesProcessed)
         Dim extractionFileNumbers As New Dictionary(Of ExtractionFileWork, Long)
@@ -6545,6 +6621,7 @@ Public Class LTFSWriter
         Dim logEachFile As Boolean = Log.IsEnabled(Serilog.Events.LogEventLevel.Debug) ' else status line only: thousands of files per second
         _extractPlan = plan
         _extractRecord = Nothing
+        _extractIgnoredBlock = -1
         RestorePosition = Nothing ' the read-ahead thread moves the tape
         If plan.Count > 0 Then _extractReader = New ExtractionReadAhead(Me, plan, 0, 0)
         Try
@@ -6572,19 +6649,15 @@ Public Class LTFSWriter
                 If extentWork.FileWork.Failed Then Continue For
                 Try
                     RestoreExtractionExtent(extentWork, blockSize, planIndex)
-                Catch ex As Exception When Not StopFlag AndAlso (TypeOf ex Is IO.InvalidDataException OrElse TypeOf ex Is IO.EndOfStreamException)
+                    Dim lastExtentIndex As Integer = -1
+                    If lastExtentByFile.TryGetValue(extentWork.FileWork, lastExtentIndex) AndAlso
+                       lastExtentIndex = planIndex Then
+                        CommitExtractionFile(extentWork.FileWork)
+                    End If
+                Catch ex As Exception When Not StopFlag AndAlso IsPerFileRestoreError(ex)
                     ' One bad file must not abort the rest: drop its temp copy, skip its other extents.
-                    extentWork.FileWork.Failed = True
-                    failedFiles += 1
-                    PrintMsg($"{My.Resources.ResText_RestoreErr} {extentWork.FileWork.Request.FileName}: {ex.Message}", IsWarn:=True)
-                    Try : IO.File.Delete(extentWork.FileWork.TempPath) : Catch : End Try
-                    Continue For
+                    MarkExtractionFileFailed(extentWork.FileWork, ex, failedFiles)
                 End Try
-                Dim lastExtentIndex As Integer = -1
-                If lastExtentByFile.TryGetValue(extentWork.FileWork, lastExtentIndex) AndAlso
-                   lastExtentIndex = planIndex Then
-                    CommitExtractionFile(extentWork.FileWork)
-                End If
             Next
         Finally
             If _extractReader IsNot Nothing Then
@@ -6595,15 +6668,27 @@ Public Class LTFSWriter
             _extractRecord = Nothing
             _extractPlan = Nothing
         End Try
+        If Not StopFlag Then
+            For Each fileWork As ExtractionFileWork In fileWorks
+                If StopFlag Then Exit For
+                Try
+                    CommitExtractionFile(fileWork)
+                Catch ex As Exception When Not StopFlag AndAlso IsPerFileRestoreError(ex)
+                    MarkExtractionFileFailed(fileWork, ex, failedFiles)
+                End Try
+            Next
+            If Not StopFlag Then FinalizeExtractionDirectories(directoryRequests)
+        End If
         If failedFiles > 0 Then PrintMsg($"{My.Resources.ResText_RestoreErr} {failedFiles} file(s) not restored - see the log", IsWarn:=True, ShowOnWarningLabel:=True)
-        If StopFlag Then Return
-        For Each fileWork As ExtractionFileWork In fileWorks
-            If StopFlag Then Exit For
-            CommitExtractionFile(fileWork)
-        Next
-        If StopFlag Then Return
-        FinalizeExtractionDirectories(directoryRequests)
-    End Sub
+        Return failedFiles
+    End Function
+
+    ''' <summary>RestoreFile to a temporary file; True only when the copy is complete. RestoreFile reports a
+    ''' failure or a cancel only by deleting its copy, so a caller that goes on must check this.</summary>
+    Private Function RestoreFileComplete(tmpf As String, f As ltfsindex.file) As Boolean
+        RestoreFile(tmpf, f)
+        Return Not StopFlag AndAlso IO.File.Exists(tmpf) AndAlso New IO.FileInfo(tmpf).Length = f.length
+    End Function
 
     Public Sub RestoreFile(FileName As String, FileIndex As ltfsindex.file)
         If TapeEjectedReadOnly Then Exit Sub
@@ -7223,6 +7308,7 @@ Public Class LTFSWriter
                     Dim reserved As Boolean = False
                     Dim succeeded As Boolean = False
                     Dim cancelled As Boolean = False
+                    Dim failedFiles As Integer = 0
                     Try
                         CurrentFilesProcessed = 0
                         CurrentBytesProcessed = 0
@@ -7246,16 +7332,9 @@ Public Class LTFSWriter
                                              .FileName = IO.Path.Combine(BasePath, RestoreName(fileIndex.name)),
                                              .FileIndex = fileIndex})
                         Next
-                        RestoreFilesInTapeOrder(requests, BasePath)
-                        If StopFlag Then
-                            cancelled = True
-                            PrintMsg(My.Resources.ResText_OpCancelled)
-                            SetStatusLight(LWStatus.Idle)
-                        Else
-                            succeeded = True
-                            PrintMsg(My.Resources.ResText_RestFin)
-                            SetStatusLight(LWStatus.Succ)
-                        End If
+                        failedFiles = RestoreFilesInTapeOrder(requests, BasePath)
+                        cancelled = StopFlag
+                        succeeded = ReportRestoreOutcome(failedFiles)
                     Catch ex As Exception
                         PrintMsg($"{My.Resources.ResText_RestoreErr}{ex.ToString}", IsWarn:=True)
                         SetStatusLight(LWStatus.Err)
@@ -7281,6 +7360,8 @@ Public Class LTFSWriter
                             Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_RestFin))
                         Catch
                         End Try
+                    ElseIf failedFiles > 0 AndAlso Not cancelled Then
+                        ShowRestoreFailedFiles(failedFiles)
                     End If
                 End Sub)
         th.Start()
@@ -7307,6 +7388,7 @@ Public Class LTFSWriter
         Dim th As New Threading.Thread(
                 Sub()
                     Dim succeeded As Boolean = False
+                    Dim failedFiles As Integer = 0
                     PrintMsg(My.Resources.ResText_Restoring)
                     SetStatusLight(LWStatus.Busy)
                     Try
@@ -7354,18 +7436,11 @@ Public Class LTFSWriter
                                     UnwrittenSizeOverrideValue = CULng(UnwrittenSizeOverrideValue + Math.Max(0L, request.FileIndex.length))
                                 End If
                             Next
-                            RestoreFilesInTapeOrder(requests,
-                                                    selectedPath,
-                                                    directoryRequests)
+                            failedFiles = RestoreFilesInTapeOrder(requests,
+                                                                  selectedPath,
+                                                                  directoryRequests)
                         End If
-                        If StopFlag Then
-                            PrintMsg(My.Resources.ResText_OpCancelled)
-                            SetStatusLight(LWStatus.Idle)
-                        Else
-                            succeeded = True
-                            PrintMsg(My.Resources.ResText_RestFin)
-                            SetStatusLight(LWStatus.Succ)
-                        End If
+                        succeeded = ReportRestoreOutcome(failedFiles)
                     Catch ex As Exception
                         Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"{ex.ToString}"))
                         PrintMsg($"{My.Resources.ResText_RestoreErr}{ex.ToString}", IsWarn:=True)
@@ -7382,6 +7457,7 @@ Public Class LTFSWriter
                     UnwrittenCountOverrideValue = 0
                     LockGUI(False)
                     If Not succeeded AndAlso Not StopFlag Then SetStatusLight(LWStatus.Err)
+                    If failedFiles > 0 AndAlso Not StopFlag Then ShowRestoreFailedFiles(failedFiles)
                 End Sub)
         LockGUI()
         th.Start()
@@ -14252,8 +14328,11 @@ Public Class LTFSWriter
                              Try
                                  Dim tmpf As String = LazySchemaStore.CreateTempFilePath("index-decompress")
                                  RestorePosition = New TapeUtils.PositionData(driveHandle)
-                                 RestoreFile(tmpf, f)
+                                 ' Never remove the archive entry unless its folder tree was read back whole:
+                                 ' that would drop the tree from the index (and from tape at the next index write).
+                                 If Not RestoreFileComplete(tmpf, f) Then Throw New IO.IOException($"{f.name} could not be read from tape; the index is unchanged")
                                  Dim dindex As ltfsindex.directory = ltfsindex.directory.FromFile(tmpf)
+                                 If dindex Is Nothing Then Throw New IO.InvalidDataException($"{f.name} does not hold a folder index; the index is unchanged")
                                  d.RemoveFile(f)
                                  d.AddDirectory(dindex)
                                  IO.File.Delete(tmpf)
@@ -14302,6 +14381,8 @@ Public Class LTFSWriter
             Next
             Dim th As New Threading.Thread(
                     Sub()
+                        Dim failed As Integer = 0
+                        Dim moved As New HashSet(Of ltfsindex.file) ' read back whole: only these are moved
                         Try
                             SetStatusLight(LWStatus.Busy)
                             CurrentFilesProcessed = 0
@@ -14318,42 +14399,57 @@ Public Class LTFSWriter
                             RestorePosition = New TapeUtils.PositionData(driveHandle)
 
                             For Each FileIndex As ltfsindex.file In flist
+                                If StopFlag Then Exit For
                                 Dim tmpf As String = LazySchemaStore.CreateTempFilePath("file-transfer")
                                 If DirectCast(ListView1.Tag, ltfsindex.directory).UnwrittenFiles.Contains(FileIndex) Then
                                     FileIndex.extentinfo.Clear()
                                     FileIndex.extentinfo.Add(New ltfsindex.file.extent With {.partition = CType(IndexPartition, ltfsindex.PartitionLabel)})
                                     FileIndex.MarkLazyRecordDirty()
-                                Else
-                                    RestoreFile(tmpf, FileIndex)
+                                ElseIf RestoreFileComplete(tmpf, FileIndex) Then
                                     FileIndex.TempObj = tmpf
+                                    moved.Add(FileIndex)
+                                ElseIf Not StopFlag Then
+                                    ' Not read back whole: it stays where it is (and is not read a second time below).
+                                    failed += 1
+                                    FileIndex.TempObj = Nothing
+                                    PrintMsg($"{My.Resources.ResText_RestoreErr}: {FileIndex.name} - not moved to the index partition", IsWarn:=True)
                                 End If
                             Next
                             For Each FileIndex As ltfsindex.file In flist
-                                If Not DirectCast(ListView1.Tag, ltfsindex.directory).UnwrittenFiles.Contains(FileIndex) Then
-                                    MoveToIndexPartition(FileIndex, CStr(FileIndex.TempObj))
-                                End If
-                                If StopFlag Then
-                                    PrintMsg(My.Resources.ResText_OpCancelled)
-                                    SetStatusLight(LWStatus.Idle)
-                                    Exit Sub
-                                End If
+                                If StopFlag Then Exit For
+                                If moved.Contains(FileIndex) Then MoveToIndexPartition(FileIndex, CStr(FileIndex.TempObj))
                             Next
                         Catch ex As Exception
-                            SetStatusLight(LWStatus.Err)
-                            PrintMsg(My.Resources.ResText_RestoreErr, IsWarn:=True)
+                            failed += 1
+                            PrintMsg($"{My.Resources.ResText_RestoreErr}: {ex}", IsWarn:=True)
                         End Try
-                        TapeUtils.AllowMediumRemoval(driveHandle)
-                        TapeUtils.ReleaseUnit(driveHandle)
+                        ' Always release the drive and the window, also after Cancel (it used to return before this).
+                        Dim cancelled As Boolean = StopFlag
+                        Try
+                            TapeUtils.AllowMediumRemoval(driveHandle)
+                            TapeUtils.ReleaseUnit(driveHandle)
+                        Catch
+                        End Try
                         StopFlag = False
                         UnwrittenSizeOverrideValue = 0
                         UnwrittenCountOverrideValue = 0
                         LockGUI(False)
-                        PrintMsg(My.Resources.ResText_AddFin)
-                        SetStatusLight(LWStatus.Succ)
-                        Invoke(Sub()
-                                   RefreshDisplay()
-                                   MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_AddFin)
-                               End Sub)
+                        If cancelled Then
+                            PrintMsg(My.Resources.ResText_OpCancelled)
+                            SetStatusLight(LWStatus.Idle)
+                            Invoke(Sub() RefreshDisplay())
+                        ElseIf failed > 0 Then
+                            PrintMsg($"{My.Resources.ResText_RestoreErr} {failed} file(s) not moved to the index partition - see the log", IsWarn:=True, ShowOnWarningLabel:=True)
+                            SetStatusLight(LWStatus.Err)
+                            Invoke(Sub() RefreshDisplay())
+                        Else
+                            PrintMsg(My.Resources.ResText_AddFin)
+                            SetStatusLight(LWStatus.Succ)
+                            Invoke(Sub()
+                                       RefreshDisplay()
+                                       MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_AddFin)
+                                   End Sub)
+                        End If
                     End Sub)
             th.Start()
         End If

@@ -288,6 +288,7 @@ Partial Class LTFSWriter
             Sub()
                 Dim succeeded As Boolean = False
                 Dim reserved As Boolean = False
+                Dim failedFiles As Integer = 0
                 Try
                     StopFlag = False
                     CurrentFilesProcessed = 0
@@ -342,16 +343,9 @@ Partial Class LTFSWriter
                         reserved = True
                         TapeUtils.PreventMediaRemoval(driveHandle)
                         RestorePosition = New TapeUtils.PositionData(driveHandle)
-                        RestoreFilesInTapeOrder(requests, outputRoot, directoryRequests)
+                        failedFiles = RestoreFilesInTapeOrder(requests, outputRoot, directoryRequests)
                     End If
-                    If StopFlag Then
-                        PrintMsg(My.Resources.ResText_OpCancelled)
-                        SetStatusLight(LWStatus.Idle)
-                    Else
-                        succeeded = True
-                        PrintMsg(My.Resources.ResText_RestFin)
-                        SetStatusLight(LWStatus.Succ)
-                    End If
+                    succeeded = ReportRestoreOutcome(failedFiles)
                 Catch ex As Exception
                     PrintMsg($"{My.Resources.ResText_RestoreErr}{ex}", IsWarn:=True)
                     SetStatusLight(LWStatus.Err)
@@ -379,6 +373,10 @@ Partial Class LTFSWriter
                         Dim note As String = If(skipped > 0, $"{vbCrLf}{skipped:N0} requested item(s) were not on this tape and were skipped.", "")
                         If succeeded AndAlso Not cancelled Then
                             Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"{My.Resources.ResText_RestFin}{vbCrLf}{outputRoot}{note}", "LTFSCatalog restore"))
+                        ElseIf failedFiles > 0 AndAlso Not cancelled Then
+                            Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True},
+                                                         $"{My.Resources.ResText_RestoreErr}: {failedFiles:N0} file(s) could not be restored. The log lists them; the other files were restored to{vbCrLf}{outputRoot}{note}",
+                                                         "LTFSCatalog restore", MessageBoxButtons.OK, MessageBoxIcon.Warning))
                         ElseIf Not cancelled Then
                             Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"{My.Resources.ResText_RestoreErr}{vbCrLf}See the log for details.", "LTFSCatalog restore", MessageBoxButtons.OK, MessageBoxIcon.Error))
                         End If
