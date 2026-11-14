@@ -64,6 +64,16 @@ Partial Class LTFSWriter
         Dim help As New ToolStripMenuItem("&Help") With {.Alignment = ToolStripItemAlignment.Right}
         help.DropDownItems.Add(keysItem)
         MenuStrip1.Items.Add(help)
+
+        ' Force Eject before Safe Eject: the safe one ends the command bar (owner's order). The bar places its
+        ' buttons in Controls order; the designer file stays as upstream has it.
+        Dim safeIndex As Integer = CommandBar.Controls.GetChildIndex(SafeEjectButton)
+        If CommandBar.Controls.GetChildIndex(ForceEjectButton) > safeIndex Then
+            CommandBar.Controls.SetChildIndex(ForceEjectButton, safeIndex)
+            Dim tabIndex As Integer = SafeEjectButton.TabIndex
+            SafeEjectButton.TabIndex = ForceEjectButton.TabIndex
+            ForceEjectButton.TabIndex = tabIndex
+        End If
     End Sub
 
 End Class

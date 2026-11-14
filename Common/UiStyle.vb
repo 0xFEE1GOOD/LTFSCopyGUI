@@ -231,8 +231,47 @@ Friend NotInheritable Class UiStyle
                 Return
             End If
         Next
+        If PushRowRight(c, grow) Then
+            c.Width = need
+            Return
+        End If
         StepDown(c, Function(f) NeededWidth(c, f) <= c.Width)
     End Sub
+
+    ''' <summary>
+    ''' A control in a row that has free space at its end (a row of buttons in a group box): the controls to its
+    ''' right move right by the missing width, so it grows instead of getting a smaller font than its neighbours.
+    ''' Only when everything moved stays inside the container (with a small margin) and clear of other controls.
+    ''' </summary>
+    Private Shared Function PushRowRight(c As Control, grow As Integer) As Boolean
+        Dim parent As Control = c.Parent
+        Dim moving As New List(Of Control)
+        For Each s As Control In parent.Controls
+            If s Is c OrElse s.Bottom <= c.Top OrElse s.Top >= c.Bottom OrElse s.Right <= c.Right Then Continue For
+            If s.Bounds.Contains(c.Bounds) Then Continue For ' a panel behind the row
+            If s.Left < c.Right OrElse s.Dock <> DockStyle.None Then Return False ' not a simple row
+            moving.Add(s)
+        Next
+        Dim margin As Integer = 6 * c.DeviceDpi \ 96
+        Dim room As Rectangle = parent.ClientRectangle
+        Dim clear As Func(Of Rectangle, Boolean) =
+            Function(r As Rectangle) As Boolean
+                For Each o As Control In parent.Controls
+                    If o Is c OrElse moving.Contains(o) Then Continue For
+                    If o.Bounds.IntersectsWith(r) AndAlso Not o.Bounds.Contains(r) Then Return False
+                Next
+                Return True
+            End Function
+        For Each s As Control In moving
+            Dim r As New Rectangle(s.Left + grow, s.Top, s.Width, s.Height)
+            If r.Right > room.Right - margin OrElse Not clear(r) Then Return False
+        Next
+        If Not clear(New Rectangle(c.Left, c.Top, c.Width + grow, c.Height)) Then Return False
+        For Each s As Control In moving
+            s.Left += grow
+        Next
+        Return True
+    End Function
 
     ''' <summary>Steps the control's font down by half points until it fits, stopping at the old 9 pt size.</summary>
     Private Shared Sub StepDown(c As Control, fits As Func(Of Font, Boolean))
