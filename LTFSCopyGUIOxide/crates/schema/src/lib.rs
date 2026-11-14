@@ -587,8 +587,8 @@ fn decode_general_ref(value: &str) -> Result<String, String> {
 /// plain "%25" in a name is four characters (LTFSCopyGUI used to turn every "%25" into "%" on load).
 fn is_percent_encoded(start: &BytesStart) -> bool {
     start.attributes().flatten().any(|attribute| {
-        attribute.key.local_name().as_ref() == b"percentencoded"
-            && attribute.value.as_ref().eq_ignore_ascii_case(b"true")
+        attribute.key.local_name().as_ref() == "percentencoded"
+            && attribute.value.as_ref().eq_ignore_ascii_case("true")
     })
 }
 
