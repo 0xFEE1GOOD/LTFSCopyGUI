@@ -50,8 +50,9 @@ Public Class FileDataProvider
     Private ReadOnly _smallCacheCapacity As Integer
     Private ReadOnly _requireSignal As Boolean
 
-    Private ReadOnly _smallCacheQueue As New ConcurrentQueue(Of Tuple(Of LTFSWriter.FileRecord, Byte()))
     Private ReadOnly _smallCacheMap As New ConcurrentDictionary(Of LTFSWriter.FileRecord, Byte())
+    Private _smallCacheBytes As Long = 0
+    Private Const SmallCacheByteLimit As Long = 256L * 1024 * 1024 ' with the file-count setting: at most this much held
 
     Private ReadOnly _nextFileSignal As New AutoResetEvent(False)
     Private ReadOnly _cts As New CancellationTokenSource()
@@ -327,7 +328,7 @@ Public Class FileDataProvider
                     Throw New InvalidDataException($"File data provider encountered an invalid FileRecord at index {nextIdx}.")
                 End If
 
-                Dim isSmallFile = fr.File.length < _smallThreshold AndAlso fr.FileOffset = 0 AndAlso fr.File.length = fr.SegmentLength
+                Dim isSmallFile = IsSmallRecord(fr)
                 If Log.IsEnabled(Serilog.Events.LogEventLevel.Debug) Then ' per-file trace: thousands per second
                     Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(FileDataProvider))
                         Using categoryScope As IDisposable = LogContext.PushProperty("Category", "FileProvider")
@@ -347,13 +348,11 @@ Public Class FileDataProvider
 
                 If isSmallFile Then
                     Dim data As Byte() = Nothing
-                    If Not _smallCacheMap.TryRemove(fr, data) Then
-                        data = ReadAllBytesSafe(fr)
+                    If _smallCacheMap.TryRemove(fr, data) Then
+                        Interlocked.Add(_smallCacheBytes, -data.LongLength)
+                        fr.IsOpened = True ' as ReadAllBytesSafe does: the writer waits for this before taking the data
                     Else
-                        Dim tmp As Tuple(Of LTFSWriter.FileRecord, Byte()) = Nothing
-                        While _smallCacheQueue.TryDequeue(tmp)
-                            If tmp IsNot Nothing AndAlso tmp.Item1 Is fr Then Exit While
-                        End While
+                        data = ReadAllBytesSafe(fr)
                     End If
 
                     Dim expectedLength As Long = fr.File.length
@@ -597,28 +596,52 @@ Public Class FileDataProvider
         End Using
     End Function
 
+    Private Function IsSmallRecord(fr As LTFSWriter.FileRecord) As Boolean
+        Return fr IsNot Nothing AndAlso fr.File IsNot Nothing AndAlso fr.File.length < _smallThreshold AndAlso
+               fr.FileOffset = 0 AndAlso fr.File.length = fr.SegmentLength
+    End Function
+
+    ''' <summary>
+    ''' Reads small files ahead of the producer so it hands them over from memory instead of waiting on the source
+    ''' (a NAS: one network round trip per file). Walks the list by index: the producer clears entries it has passed
+    ''' (_writeList(i) = Nothing) and a For Each threw on the first such change, so before v1.007 every preload
+    ''' stopped after a few files. Files the producer has already reached are left to it. FileRecord.IsOpened is not
+    ''' touched here (the producer sets it when it takes the file), and read failures are left to the producer, which
+    ''' retries and reports them.
+    ''' </summary>
     Private Async Function PreloadSmallFilesAsync() As Task
         Dim cachedCount As Integer = 0
         Try
-            For Each fr In _writeList
+            For i As Integer = 0 To _writeList.Count - 1
                 If _cts.IsCancellationRequested Then Exit For
-                If fr IsNot Nothing AndAlso fr.File IsNot Nothing AndAlso fr.File.length < _smallThreshold Then
-                    ' 控制小文件缓存上限
-                    While _smallCacheQueue.Count >= _smallCacheCapacity AndAlso Not _cts.IsCancellationRequested
-                        Await Task.Delay(10, _cts.Token)
-                    End While
+                If i <= Volatile.Read(_currentIndex) Then Continue For
+                Dim fr As LTFSWriter.FileRecord = _writeList(i)
+                If Not IsSmallRecord(fr) OrElse fr.Buffer IsNot Nothing Then Continue For ' a buffered record is in memory already
+                ' 控制小文件缓存上限
+                While (_smallCacheMap.Count >= _smallCacheCapacity OrElse Interlocked.Read(_smallCacheBytes) >= SmallCacheByteLimit) AndAlso
+                      Not _cts.IsCancellationRequested
+                    Await Task.Delay(10, _cts.Token)
+                End While
+                If i <= Volatile.Read(_currentIndex) Then Continue For
 
-                    Dim data As Byte() = Nothing
-                    Try
-                        data = ReadAllBytesSafe(fr)
-                    Catch
-                        data = Nothing
-                    End Try
-                    If data IsNot Nothing Then
-                        _smallCacheMap.TryAdd(fr, data)
-                        _smallCacheQueue.Enqueue(Tuple.Create(fr, data))
-                        cachedCount += 1
-                    End If
+                Dim data As Byte() = Nothing
+                Try
+                    data = fr.ReadAllBytes()
+                Catch
+                    data = Nothing
+                End Try
+                If data Is Nothing OrElse data.LongLength <> fr.File.length Then Continue For
+                Interlocked.Add(_smallCacheBytes, data.LongLength)
+                If Not _smallCacheMap.TryAdd(fr, data) Then
+                    Interlocked.Add(_smallCacheBytes, -data.LongLength)
+                    Continue For
+                End If
+                cachedCount += 1
+                ' The producer may have reached this file while it was being read: take it back so it is not held to the end.
+                Dim stale As Byte() = Nothing
+                If i <= Volatile.Read(_currentIndex) AndAlso _smallCacheMap.TryRemove(fr, stale) Then
+                    Interlocked.Add(_smallCacheBytes, -stale.LongLength)
+                    cachedCount -= 1
                 End If
             Next
             Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(FileDataProvider))
@@ -630,6 +653,8 @@ Public Class FileDataProvider
                     End Using
                 End Using
             End Using
+        Catch ex As OperationCanceledException
+            ' The write finished or was stopped while the cache was full.
         Catch ex As Exception
             Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(FileDataProvider))
                 Using categoryScope As IDisposable = LogContext.PushProperty("Category", "FileProvider")

@@ -426,7 +426,7 @@ Public Class LTFSConfigurator
                         End Using
                         result = ex.ToString()
                     End Try
-                    Invoke(Sub()
+                    InvokeIfOpen(Sub()
                                Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSConfigurator))
                                    Using categoryScope As IDisposable = LogContext.PushProperty("Category", "Configurator")
                                        Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
@@ -440,7 +440,7 @@ Public Class LTFSConfigurator
                                result &= vbCrLf
                                TextBoxMsg.AppendText(result)
                            End Sub)
-                    Invoke(Sub()
+                    InvokeIfOpen(Sub()
                                Panel1.Enabled = True
                                RefreshUI(False)
                            End Sub)
@@ -488,7 +488,7 @@ Public Class LTFSConfigurator
                         End Using
                         result = ex.ToString()
                     End Try
-                    Invoke(Sub()
+                    InvokeIfOpen(Sub()
                                Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSConfigurator))
                                    Using categoryScope As IDisposable = LogContext.PushProperty("Category", "Configurator")
                                        Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
@@ -648,7 +648,7 @@ Public Class LTFSConfigurator
                         End Using
                         result = ex.ToString()
                     End Try
-                    Invoke(Sub()
+                    InvokeIfOpen(Sub()
                                Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSConfigurator))
                                    Using categoryScope As IDisposable = LogContext.PushProperty("Category", "Configurator")
                                        Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
@@ -662,7 +662,7 @@ Public Class LTFSConfigurator
                                result &= vbCrLf
                                TextBoxMsg.AppendText(result)
                            End Sub)
-                    Invoke(Sub()
+                    InvokeIfOpen(Sub()
                                Panel1.Enabled = True
                                RefreshUI(False)
                            End Sub)
@@ -709,7 +709,7 @@ Public Class LTFSConfigurator
                         End Using
                         result = ex.ToString()
                     End Try
-                    Invoke(Sub()
+                    InvokeIfOpen(Sub()
                                Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSConfigurator))
                                    Using categoryScope As IDisposable = LogContext.PushProperty("Category", "Configurator")
                                        Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
@@ -723,7 +723,7 @@ Public Class LTFSConfigurator
                                result &= vbCrLf
                                TextBoxMsg.AppendText(result)
                            End Sub)
-                    Invoke(Sub()
+                    InvokeIfOpen(Sub()
                                Panel1.Enabled = True
                                RefreshUI(False)
                            End Sub)
@@ -2375,9 +2375,21 @@ DatasetResidue = {ts.CurrentSetResidueBytes}{vbCrLf}"
                             End Sub)
                  End Sub)
     End Sub
+    ''' <summary>
+    ''' Runs on the window's thread, unless the window was closed meanwhile: a tape command (a load takes seconds) can
+    ''' outlive it, and calling into a closed window threw - the load was then logged as failed although it worked.
+    ''' </summary>
+    Private Sub InvokeIfOpen(action As Action)
+        If IsDisposed OrElse Not IsHandleCreated Then Return
+        Try
+            Invoke(action)
+        Catch ex As Exception When IsDisposed OrElse Not IsHandleCreated
+        End Try
+    End Sub
+
     Public Sub PrintCommandResult(ByVal cdb As Byte(), ByVal param As Byte(), ByVal sense As Byte())
 
-        Invoke(Sub()
+        InvokeIfOpen(Sub()
                    TextBoxDebugOutput.Text = "CDB" & vbCrLf
                    TextBoxDebugOutput.Text &= IOManager.Byte2Hex(cdb, True)
                    TextBoxDebugOutput.Text &= vbCrLf & vbCrLf & "Param" & vbCrLf
