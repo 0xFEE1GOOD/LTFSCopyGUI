@@ -49,6 +49,23 @@ Friend Module NativeSchemaXml
     Friend Const SchemaStringCreator As UInteger = 1
     Friend Const SchemaStringVolumeUuid As UInteger = 2
     Friend Const SchemaStringUpdateTime As UInteger = 3
+    Friend Const SchemaStringPolicyXml As UInteger = 4
+    Friend Const SchemaStringUnmodelledXml As UInteger = 5
+
+    ''' <summary>The data placement policy as read (written back unchanged), or an empty element for a new one.</summary>
+    Friend Sub WritePolicy(writer As NativeSchemaWriter, index As ltfsindex)
+        If index.dataplacementpolicy Is Nothing Then Return
+        If String.IsNullOrEmpty(index.dataplacementpolicy.RawXml) Then
+            writer.EmptyElement("dataplacementpolicy")
+        Else
+            writer.WriteRaw(Encoding.UTF8.GetBytes(index.dataplacementpolicy.RawXml))
+        End If
+    End Sub
+
+    ''' <summary>XML of elements this program does not model, written back where it was read (nothing when empty).</summary>
+    Friend Sub WriteUnmodelled(writer As NativeSchemaWriter, xml As String)
+        If Not String.IsNullOrEmpty(xml) Then writer.WriteRaw(Encoding.UTF8.GetBytes(xml))
+    End Sub
 
     Friend Function BooleanText(value As Boolean) As String
         Return If(value, "true", "false")
@@ -1058,7 +1075,8 @@ Friend Module NativeSchemaXml
             .partition = CType(metadata.PreviousLocationPartition, ltfsindex.PartitionLabel),
             .startblock = metadata.PreviousLocationStartBlock}
         If (metadata.PresentMask And 64UI) <> 0UI Then result.allowpolicyupdate = metadata.AllowPolicyUpdate <> 0UI
-        If (metadata.PresentMask And 128UI) <> 0UI Then result.dataplacementpolicy = New ltfsindex.policy
+        If (metadata.PresentMask And 128UI) <> 0UI Then result.dataplacementpolicy = New ltfsindex.policy With {.RawXml = CopySchemaString(context, SchemaStringPolicyXml)}
+        result.UnmodelledXml = CopySchemaString(context, SchemaStringUnmodelledXml)
         If (metadata.PresentMask And 256UI) <> 0UI Then result.volumelockstate = CType(metadata.VolumeLockState, ltfsindex.volumelockstateValue)
         If (metadata.PresentMask And 512UI) <> 0UI Then result.highestfileuid = metadata.HighestFileUid
     End Sub
@@ -1103,9 +1121,10 @@ Friend Module NativeSchemaXml
             WriteEagerLocation(writer, "location", index.location)
             WriteEagerLocation(writer, "previousgenerationlocation", index.previousgenerationlocation)
             writer.WriteElement("allowpolicyupdate", BooleanText(index.allowpolicyupdate))
-            If index.dataplacementpolicy IsNot Nothing Then writer.EmptyElement("dataplacementpolicy")
+            WritePolicy(writer, index)
             writer.WriteElement("volumelockstate", index.volumelockstate.ToString())
             writer.WriteElement("highestfileuid", index.highestfileuid.ToString(CultureInfo.InvariantCulture))
+            WriteUnmodelled(writer, index.UnmodelledXml)
             If index._file IsNot Nothing Then
                 For Each value As ltfsindex.file In index._file
                     writer.WriteFile(value)
@@ -1139,6 +1158,7 @@ Friend Module NativeSchemaXml
         writer.WriteElement("accesstime", directory.accesstime)
         writer.WriteElement("backuptime", directory.backuptime)
         writer.WriteElement("fileuid", directory.fileuid.ToString(CultureInfo.InvariantCulture))
+        WriteUnmodelled(writer, directory.UnmodelledXml)
         writer.StartElement("contents")
         If useCollectionWrappers Then writer.StartElement("_file")
         For Each value As ltfsindex.file In directory.EnumerateLazyFiles()

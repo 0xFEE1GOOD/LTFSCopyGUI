@@ -768,3 +768,77 @@ fn fragment_entities_stay_inside_the_name() {
     let text = String::from_utf8(writer.into_inner()).expect("utf8");
     assert!(text.contains("<name>&apos;Lectric &amp;&amp; Co&apos;</name>"), "{text}");
 }
+
+#[test]
+fn percent_encoded_names_decode_only_with_the_attribute() {
+    // LTFS spec: %XX is decoded only under percentencoded="true". A plain "%25" stays four characters
+    // (it used to become "%" on every load, and folder names lost one "%25" per index generation).
+    let encoded = parse_file_bytes(
+        b"<file><name percentencoded=\"true\">a%3Ab%25c%0A</name><length>1</length></file>",
+    )
+    .expect("parse encoded");
+    assert_eq!(encoded.name, "a:b%c\n");
+    let plain = parse_file_bytes(b"<file><name>report%25.pdf</name><length>1</length></file>")
+        .expect("parse plain");
+    assert_eq!(plain.name, "report%25.pdf");
+}
+
+#[test]
+fn names_xml_cannot_carry_are_written_percent_encoded() {
+    let tricky = FileData {
+        name: "a\rb%\u{1}".to_owned(),
+        ..Default::default()
+    };
+    let text = String::from_utf8(serialize_file(&tricky).expect("serialize")).expect("utf8");
+    assert!(text.contains("<name percentencoded=\"true\">a%0Db%25%01</name>"), "{text}");
+    assert_eq!(parse_file_bytes(text.as_bytes()).expect("parse back").name, tricky.name);
+
+    let ordinary = FileData {
+        name: "50% off & more.txt".to_owned(),
+        ..Default::default()
+    };
+    let text = String::from_utf8(serialize_file(&ordinary).expect("serialize")).expect("utf8");
+    assert!(text.contains("<name>50% off &amp; more.txt</name>"), "{text}");
+}
+
+#[test]
+fn unmodelled_index_parts_are_kept_and_do_not_stop_the_load() {
+    // A placement policy and folder extended attributes holding entities used to fail the whole load
+    // ("unsafe XML construct"), and both were dropped from the next index generation.
+    let root = std::env::temp_dir().join(format!("ltfscopy_schema_keep_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&root);
+    let input = root.join("keep.schema");
+    let paths = [
+        root.join("files.bin"),
+        root.join("directories.bin"),
+        root.join("file-index.bin"),
+        root.join("directory-index.bin"),
+        root.join("selection.bin"),
+    ];
+    let text = r#"<ltfsindex version="2.4.0"><volumeuuid>00112233-4455-6677-8899-aabbccddeeff</volumeuuid><dataplacementpolicy><indexpartitioncriteria><size>1048576</size><name>*.t&amp;xt</name></indexpartitioncriteria></dataplacementpolicy><futurefield>x &lt; y</futurefield><directory><name percentencoded="true">vol%25</name><readonly>false</readonly><fileuid>1</fileuid><extendedattributes><xattr><key>k</key><value>a &amp; b</value></xattr></extendedattributes><contents><file><name>f</name><length>0</length></file></contents></directory></ltfsindex>"#;
+    std::fs::write(&input, text).expect("write test schema");
+
+    let context = schema_context_from_file(input.to_string_lossy().into_owned(), paths.clone())
+        .expect("parse schema with unmodelled parts");
+    assert!(context.metadata.policy_xml.starts_with("<dataplacementpolicy>"), "{}", context.metadata.policy_xml);
+    assert!(context.metadata.policy_xml.contains("*.t&amp;xt"), "{}", context.metadata.policy_xml);
+    assert!(context.metadata.extra_xml.contains("<futurefield>x &lt; y</futurefield>"), "{}", context.metadata.extra_xml);
+
+    let store = StoreContext {
+        file_records: Mutex::new(File::open(&paths[0]).expect("open file backing")),
+        directory_records: Mutex::new(File::open(&paths[1]).expect("open directory backing")),
+        file_index: Mutex::new(File::open(&paths[2]).expect("open file index backing")),
+        directory_index: Mutex::new(File::open(&paths[3]).expect("open directory index backing")),
+    };
+    let root_index = store_directory_index_entry(&store, context.result.root_directory_index_offset)
+        .expect("read root directory index");
+    let header = read_store_directory_header(&store, root_index.record_offset).expect("header");
+    let scalars = read_store_directory_scalars(&store, &header).expect("scalars");
+    assert_eq!(scalars.name.as_deref(), Some("vol%"));
+    let extra = scalars.extra_xml.unwrap_or_default();
+    assert!(extra.starts_with("<extendedattributes>"), "{extra}");
+    assert!(extra.contains("<value>a &amp; b</value>"), "{extra}");
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(root);
+}

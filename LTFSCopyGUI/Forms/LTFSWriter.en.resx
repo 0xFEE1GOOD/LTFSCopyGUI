@@ -2477,7 +2477,7 @@
     <value>Export pending list</value>
   </data>
   <data name="按索引删除硬盘文件ToolStripMenuItem.Text" xml:space="preserve">
-    <value>Delete disk files listed in the index</value>
+    <value>Delete disk copies of these tape files…</value>
   </data>
   <data name="自适应限速ToolStripMenuItem.Text" xml:space="preserve">
     <value>Adaptive speed limit</value>

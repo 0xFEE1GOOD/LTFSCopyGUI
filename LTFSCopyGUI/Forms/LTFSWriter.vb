@@ -5436,6 +5436,7 @@ Public Class LTFSWriter
         Public Property Committed As Boolean
         Public Property Failed As Boolean
         Public Property Direct As Boolean ' written straight to its name, no temporary file
+        Public Property CopyOf As ExtractionFileWork ' same tape data as this earlier file: copied on disk, not read again
     End Class
 
     Private Class ExtractionExtentWork
@@ -6502,12 +6503,38 @@ Public Class LTFSWriter
         Next
     End Sub
 
+    ''' <summary>Length and extents of a file: equal for files whose data is the same records on tape. Nothing without extents.</summary>
+    Private Shared Function ExtractionDataSignature(f As ltfsindex.file) As String
+        If f Is Nothing OrElse f.extentinfo Is Nothing OrElse f.extentinfo.Count = 0 Then Return Nothing
+        Dim sb As New System.Text.StringBuilder()
+        sb.Append(f.length)
+        For Each e As ltfsindex.file.extent In f.extentinfo
+            If e Is Nothing Then Return Nothing
+            sb.Append("|"c).Append(CInt(e.partition)).Append(","c).Append(e.startblock).Append(","c).Append(e.byteoffset).Append(","c).Append(e.bytecount).Append(","c).Append(e.fileoffset)
+        Next
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>Restores a file whose tape data equals an earlier file of the restore by copying that file on disk.</summary>
+    Private Sub CopyExtractionFile(work As ExtractionFileWork)
+        Dim source As ExtractionFileWork = work.CopyOf
+        If source.Failed OrElse Not (source.Committed OrElse source.AlreadyComplete) Then
+            Throw New IO.InvalidDataException($"its tape data is shared with {source.Request.FileName}, which was not restored")
+        End If
+        IO.File.Copy(NormalizeExtractionPath(source.Request.FileName), work.TempPath, True)
+        IO.File.SetAttributes(work.TempPath, IO.FileAttributes.Normal) ' the source may be read-only; the index decides
+        CommitExtractionFile(work)
+        Threading.Interlocked.Add(TotalBytesProcessed, work.Request.FileIndex.length)
+        Threading.Interlocked.Add(CurrentBytesProcessed, work.Request.FileIndex.length)
+    End Sub
+
     Private Function BuildExtractionPlan(requests As List(Of ExtractionFileRequest),
                                          ByRef fileWorks As List(Of ExtractionFileWork)) As List(Of ExtractionExtentWork)
         fileWorks = New List(Of ExtractionFileWork)
         Dim plan As New List(Of ExtractionExtentWork)
         If requests Is Nothing Then Return plan
         Dim blockSize As Long = GetValidationBlockSize()
+        Dim sameData As New Dictionary(Of String, ExtractionFileWork)(StringComparer.Ordinal)
         For Each request As ExtractionFileRequest In requests
             If StopFlag Then Exit For
             If request Is Nothing OrElse request.FileIndex Is Nothing Then Continue For
@@ -6517,7 +6544,18 @@ Public Class LTFSWriter
                                        ei(0).byteoffset + ei(0).bytecount <= blockSize
             Dim fileWork As ExtractionFileWork = PrepareExtractionFile(request, oneRecord)
             fileWorks.Add(fileWork)
-            If fileWork.AlreadyComplete OrElse request.FileIndex.length = 0 Then Continue For
+            If request.FileIndex.length = 0 Then Continue For
+            ' A deduplicated copy points at the same records as another file of this restore. Reading them again
+            ' (for files of several records, after positioning the tape back) is replaced by a copy on disk.
+            Dim signature As String = ExtractionDataSignature(request.FileIndex)
+            Dim first As ExtractionFileWork = Nothing
+            If signature IsNot Nothing AndAlso sameData.TryGetValue(signature, first) AndAlso Not fileWork.AlreadyComplete Then
+                fileWork.CopyOf = first
+                fileWork.Direct = False
+                Continue For
+            End If
+            If signature IsNot Nothing AndAlso first Is Nothing Then sameData(signature) = fileWork
+            If fileWork.AlreadyComplete Then Continue For
             Dim extents As List(Of ltfsindex.file.extent) = GetExtractionExtents(request.FileIndex)
             If extents.Count = 0 Then Throw New IO.InvalidDataException($"{request.FileIndex.name}: file has no extents")
             For i As Integer = 0 To extents.Count - 1
@@ -6669,6 +6707,15 @@ Public Class LTFSWriter
             _extractPlan = Nothing
         End Try
         If Not StopFlag Then
+            For Each fileWork As ExtractionFileWork In fileWorks
+                If StopFlag Then Exit For
+                If fileWork.CopyOf Is Nothing OrElse fileWork.Failed Then Continue For
+                Try
+                    CopyExtractionFile(fileWork)
+                Catch ex As Exception When Not StopFlag AndAlso IsPerFileRestoreError(ex)
+                    MarkExtractionFileFailed(fileWork, ex, failedFiles)
+                End Try
+            Next
             For Each fileWork As ExtractionFileWork In fileWorks
                 If StopFlag Then Exit For
                 Try
@@ -7327,9 +7374,10 @@ Public Class LTFSWriter
                         TapeUtils.PreventMediaRemoval(driveHandle)
                         RestorePosition = New TapeUtils.PositionData(driveHandle)
                         Dim requests As New List(Of ExtractionFileRequest)
+                        Dim names As New RestoreNames()
                         For Each fileIndex As ltfsindex.file In flist
                             requests.Add(New ExtractionFileRequest With {
-                                             .FileName = IO.Path.Combine(BasePath, RestoreName(fileIndex.name)),
+                                             .FileName = IO.Path.Combine(BasePath, RestoreName(fileIndex.name, names)),
                                              .FileIndex = fileIndex})
                         Next
                         failedFiles = RestoreFilesInTapeOrder(requests, BasePath)
@@ -7405,11 +7453,12 @@ Public Class LTFSWriter
                         RestorePosition = New TapeUtils.PositionData(driveHandle)
                         Dim requests As New List(Of ExtractionFileRequest)
                         Dim directoryRequests As New List(Of ExtractionDirectoryRequest)
+                        Dim topNames As New RestoreNames() ' the selected folders all go into one output folder
                         For Each node As TreeNode In Nodes
                             If StopFlag Then Exit For
                             Dim selectedDir As ltfsindex.directory = TryCast(node.Tag, ltfsindex.directory)
                             If selectedDir Is Nothing Then Continue For
-                            Dim outputPath As String = IO.Path.Combine(selectedPath, RestoreName(selectedDir.name))
+                            Dim outputPath As String = IO.Path.Combine(selectedPath, RestoreName(selectedDir.name, topNames))
                             If Not outputPath.StartsWith("\\") Then outputPath = $"\\?\{outputPath}"
                             Dim outputDirectory As New IO.DirectoryInfo(outputPath)
                             directoryRequests.Add(New ExtractionDirectoryRequest With {
@@ -7969,15 +8018,45 @@ Public Class LTFSWriter
         End If
     End Sub
 
+    ''' <summary>The Windows names given out in one output folder during one restore (or one verify / delete pass,
+    ''' which must find the same names). Two tape names that become the same Windows name would make the restore
+    ''' refuse to start, so the later one is numbered "name (2).ext"; the same tape name always gets the same name.
+    ''' Names that differ only in case and were not changed are left to the case check of the restore.</summary>
+    Private NotInheritable Class RestoreNames
+        Public ReadOnly ByWindows As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase) ' Windows name -> tape name
+        Public ReadOnly ByTape As New Dictionary(Of String, String)(StringComparer.Ordinal)               ' tape name -> Windows name
+    End Class
+
     ''' <summary>The Windows name for a tape file or folder when restoring. LTFS names can hold characters Windows rejects
     ''' (control characters and \ / : * ? " &lt; &gt; |), and indexes written by LTFSCopyGUI 3.6.0 and LTFSCopyGui2 1.001
     ''' put a line break before a name that starts with ' &amp; &lt; &gt; or " (and after one that ends with them).
-    ''' Line breaks at the ends are dropped and other such characters become _; each change is logged.</summary>
-    Private Function RestoreName(name As String) As String
-        Dim safe As String = WindowsSafeName(name)
-        If Not String.Equals(safe, If(name, String.Empty), StringComparison.Ordinal) Then
+    ''' See WindowsSafeName; with a RestoreNames of the output folder, a clash is numbered. Each change is logged.</summary>
+    Private Function RestoreName(name As String, Optional names As RestoreNames = Nothing, Optional log As Boolean = True) As String
+        Dim tapeName As String = If(name, String.Empty)
+        Dim safe As String = WindowsSafeName(tapeName)
+        If names IsNot Nothing Then
+            SyncLock names
+                Dim given As String = Nothing
+                If names.ByTape.TryGetValue(tapeName, given) Then Return given ' asked again for the same tape name: same answer
+                Dim holder As String = Nothing
+                If names.ByWindows.TryGetValue(safe, holder) AndAlso
+                   (Not String.Equals(safe, tapeName, StringComparison.Ordinal) OrElse
+                    Not String.Equals(safe, holder, StringComparison.Ordinal)) Then
+                    Dim stem As String = IO.Path.GetFileNameWithoutExtension(safe)
+                    Dim ext As String = IO.Path.GetExtension(safe)
+                    Dim n As Integer = 2
+                    Do
+                        safe = $"{stem} ({n}){ext}"
+                        n += 1
+                    Loop While names.ByWindows.ContainsKey(safe)
+                End If
+                If Not names.ByWindows.ContainsKey(safe) Then names.ByWindows(safe) = tapeName
+                names.ByTape(tapeName) = safe
+            End SyncLock
+        End If
+        If log AndAlso Not String.Equals(safe, tapeName, StringComparison.Ordinal) Then
             Dim shown As New System.Text.StringBuilder()
-            For Each c As Char In name
+            For Each c As Char In tapeName
                 If c < " "c Then shown.Append($"\x{AscW(c):X2}") Else shown.Append(c)
             Next
             PrintMsg($"Name changed for Windows: tape name ""{shown}"" -> ""{safe}""", LogOnly:=True, IsWarn:=True)
@@ -7985,14 +8064,33 @@ Public Class LTFSWriter
         Return safe
     End Function
 
+    Private Shared ReadOnly WindowsDeviceNames As New HashSet(Of String)(
+        {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
+         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "COM" & ChrW(&HB9), "COM" & ChrW(&HB2), "COM" & ChrW(&HB3),
+         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT" & ChrW(&HB9), "LPT" & ChrW(&HB2), "LPT" & ChrW(&HB3)},
+        StringComparer.OrdinalIgnoreCase)
+
+    ''' <summary>A name Windows can create and Explorer can open: line breaks at the ends are dropped; control
+    ''' characters and \ / : * ? " &lt; &gt; | become _; trailing dots and spaces (Windows drops them) become _; a device
+    ''' name (CON, NUL, COM1, LPT1 ... also with an extension, "nul.txt") gets _ after it ("NUL_.txt").
+    ''' Restore writes through \\?\ paths, which would otherwise create such names literally.</summary>
     Friend Shared Function WindowsSafeName(name As String) As String
         If String.IsNullOrEmpty(name) Then Return String.Empty
         Dim chars As Char() = name.Trim(ControlChars.Cr, ControlChars.Lf).ToCharArray()
         For i As Integer = 0 To chars.Length - 1
             If chars(i) < " "c OrElse "\/:*?""<>|".IndexOf(chars(i)) >= 0 Then chars(i) = "_"c
         Next
+        Dim last As Integer = chars.Length - 1
+        While last >= 0 AndAlso (chars(last) = "."c OrElse chars(last) = " "c)
+            chars(last) = "_"c
+            last -= 1
+        End While
         Dim safe As New String(chars)
-        Return If(safe.Length = 0 OrElse safe = "." OrElse safe = "..", "_", safe)
+        If safe.Length = 0 Then Return "_"
+        Dim dot As Integer = safe.IndexOf("."c)
+        Dim stem As String = If(dot < 0, safe, safe.Substring(0, dot)).TrimEnd(" "c)
+        If WindowsDeviceNames.Contains(stem) Then safe = safe.Insert(stem.Length, "_")
+        Return safe
     End Function
 
     Private Sub TraverseRestoreFiles(directory As ltfsindex.directory,
@@ -8002,37 +8100,44 @@ Public Class LTFSWriter
                                      Optional createDirectories As Boolean = True,
                                      Optional parallelRestore As Boolean = False)
         If directory Is Nothing OrElse outputDirectory Is Nothing OrElse onFile Is Nothing Then Return
+        ' Names are given out in index order (files, then folders) before any parallel work, so a clash is
+        ' numbered the same way by restore, verify and "delete disk copies".
+        Dim names As New RestoreNames()
         If Not parallelRestore Then
             For Each file As ltfsindex.file In directory.EnumerateLazyFiles()
                 If StopFlag Then Exit Sub
                 file.TempObj = New ltfsindex.file.refFile() With {.FileName = ""}
                 onFile(New FileRecord With {
                        .File = file,
-                       .SourcePath = IO.Path.Combine(outputDirectory.FullName, RestoreName(file.name))})
+                       .SourcePath = IO.Path.Combine(outputDirectory.FullName, RestoreName(file.name, names))})
             Next
         Else
-            Parallel.ForEach(directory.EnumerateLazyFiles(), Sub(file As ltfsindex.file)
-                                                                 If StopFlag Then Exit Sub
-                                                                 file.TempObj = New ltfsindex.file.refFile() With {.FileName = ""}
-                                                                 Dim fr As FileRecord
-                                                                 Dim name As String = RestoreName(file.name)
-                                                                 Try
-                                                                     fr = New FileRecord With {
-                                                                        .File = file,
-                                                                        .SourcePath = IO.Path.Combine(outputDirectory.FullName, name)}
-                                                                 Catch ex As Exception
-                                                                     fr = New FileRecord With {
-                                                                        .File = file,
-                                                                        .SourcePath = outputDirectory.FullName & "\" & name}
-                                                                     PrintMsg($"Path error for {fr.SourcePath} - {ex.ToString}", LogOnly:=True, IsWarn:=True)
-                                                                 End Try
-                                                                 onFile(fr)
-                                                             End Sub)
+            Dim named As New List(Of KeyValuePair(Of ltfsindex.file, String))
+            For Each file As ltfsindex.file In directory.EnumerateLazyFiles()
+                named.Add(New KeyValuePair(Of ltfsindex.file, String)(file, RestoreName(file.name, names)))
+            Next
+            Parallel.ForEach(named, Sub(entry As KeyValuePair(Of ltfsindex.file, String))
+                                        If StopFlag Then Exit Sub
+                                        Dim file As ltfsindex.file = entry.Key
+                                        file.TempObj = New ltfsindex.file.refFile() With {.FileName = ""}
+                                        Dim fr As FileRecord
+                                        Try
+                                            fr = New FileRecord With {
+                                               .File = file,
+                                               .SourcePath = IO.Path.Combine(outputDirectory.FullName, entry.Value)}
+                                        Catch ex As Exception
+                                            fr = New FileRecord With {
+                                               .File = file,
+                                               .SourcePath = outputDirectory.FullName & "\" & entry.Value}
+                                            PrintMsg($"Path error for {fr.SourcePath} - {ex.ToString}", LogOnly:=True, IsWarn:=True)
+                                        End Try
+                                        onFile(fr)
+                                    End Sub)
             If StopFlag Then Exit Sub
         End If
         For Each childDirectory As ltfsindex.directory In directory.EnumerateLazyDirectories()
             If StopFlag Then Exit Sub
-            Dim childPath As String = IO.Path.Combine(outputDirectory.FullName, RestoreName(childDirectory.name))
+            Dim childPath As String = IO.Path.Combine(outputDirectory.FullName, RestoreName(childDirectory.name, names))
             If onDirectory IsNot Nothing Then onDirectory(childPath, childDirectory)
             Dim restoreTimeStamp As Boolean = createDirectories AndAlso Not IO.Directory.Exists(childPath)
             If createDirectories AndAlso Not IO.Directory.Exists(childPath) Then IO.Directory.CreateDirectory(childPath)
@@ -9257,6 +9362,7 @@ Public Class LTFSWriter
                                 ' A file of one record or less, packed or not: its four per-file log events are written
                                 ' only at Debug level (they cost more than the file at thousands of files/s).
                                 Dim quietFile As Boolean = Not logEachFile AndAlso fr.File.length <= plabel.blocksize
+                                Dim packedThisFile As Boolean = False ' in packPending (a flag: a List scan per file was O(n) per record)
                                 If Not quietFile Then
                                     Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSWriter))
                                         Using categoryScope As IDisposable = LogContext.PushProperty("Category", "Writer")
@@ -9493,6 +9599,7 @@ Public Class LTFSWriter
                                                 Buffer.BlockCopy(FileData, 0, packBuf, packFill, FileData.Length)
                                                 packFill += FileData.Length
                                                 packPending.Add(fr)
+                                                packedThisFile = True
                                                 succ = True
                                             End If
                                             While ((Not succ) AndAlso (Not IsIndexPartition))
@@ -10041,7 +10148,7 @@ Public Class LTFSWriter
                                             CurrentHeight = CLng(p.BlockNumber)
                                         End If
                                         If p.EOP Then PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
-                                        If Not quietFile AndAlso Not packPending.Contains(fr) Then PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
+                                        If Not quietFile AndAlso Not packedThisFile Then PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
                                     End If
                                 Else
                                     fr.File.SetXattr(ltfsindex.file.xattr.HashType.CRC32, "00000000")
@@ -10083,7 +10190,7 @@ Public Class LTFSWriter
                                 'Commit several completed files together.  The
                                 'lazy schema store can then update one mutation
                                 'and propagate one aggregate count per parent.
-                                Dim packedPending As Boolean = packPending.Contains(fr) ' committed by flushPack instead
+                                Dim packedPending As Boolean = packedThisFile ' committed by flushPack instead
                                 If Not packedPending Then MarkWriteFileCompleted(fr.File)
                                 Threading.Interlocked.Increment(TotalFilesProcessed)
                                 Threading.Interlocked.Increment(CurrentFilesProcessed)
@@ -13137,14 +13244,15 @@ Public Class LTFSWriter
         While pending.Count > 0
             Dim current As Tuple(Of ltfsindex.directory, String) = pending.Pop()
             Dim currentPath As String = current.Item2
+            Dim names As New RestoreNames() ' same names as the restore gave (TraverseRestoreFiles order)
             For Each file As ltfsindex.file In current.Item1.EnumerateLazyFiles()
                 Yield New FileRecord With {
                     .File = file,
-                    .SourcePath = IO.Path.Combine(currentPath, WindowsSafeName(file.name))}
+                    .SourcePath = IO.Path.Combine(currentPath, RestoreName(file.name, names, log:=False))}
             Next
             For Each childDirectory As ltfsindex.directory In current.Item1.EnumerateLazyDirectories()
                 For Each nestedRecord As FileRecord In EnumerateDirectoryFileRecords(childDirectory,
-                                                                                      IO.Path.Combine(currentPath, WindowsSafeName(childDirectory.name)))
+                                                                                      IO.Path.Combine(currentPath, RestoreName(childDirectory.name, names, log:=False)))
                     Yield nestedRecord
                 Next
             Next
@@ -17274,11 +17382,12 @@ Public Class LTFSWriter
                         TapeUtils.ReserveUnit(driveHandle)
                         TapeUtils.PreventMediaRemoval(driveHandle)
                         RestorePosition = New TapeUtils.PositionData(driveHandle)
+                        Dim topNames As New RestoreNames() ' the selected folders all go into one output folder
                         For Each node As TreeNode In Nodes
                             If StopFlag Then Exit For
                             Dim selectedDir As ltfsindex.directory = TryCast(node.Tag, ltfsindex.directory)
                             If selectedDir Is Nothing Then Continue For
-                            Dim outputPath As String = IO.Path.Combine(outputDirectory, RestoreName(selectedDir.name))
+                            Dim outputPath As String = IO.Path.Combine(outputDirectory, RestoreName(selectedDir.name, topNames))
 
                             If Not outputPath.StartsWith("\\") Then outputPath = $"\\?\{outputPath}"
                             If Not IO.Directory.Exists(outputPath) Then IO.Directory.CreateDirectory(outputPath)
@@ -17321,6 +17430,9 @@ Public Class LTFSWriter
         th.Start()
     End Sub
 
+    ' "Delete disk copies of these tape files": frees disk space after archiving. A disk file is deleted only when
+    ' its path (as a restore would name it), size and modified time all match the tape file, so a different file
+    ' that only shares a name and size is kept. It never touches the drive (it used to reserve it for nothing).
     Private Sub 按索引删除硬盘文件ToolStripMenuItem_Click(sender As Object, e As EventArgs) Handles 按索引删除硬盘文件ToolStripMenuItem.Click
         Dim Nodes As List(Of TreeNode) = SelectedNodes
         If Nodes.Count = 0 Then Exit Sub
@@ -17331,52 +17443,65 @@ Public Class LTFSWriter
             Dim selectedDir As ltfsindex.directory = TryCast(node.Tag, ltfsindex.directory)
             If selectedDir IsNot Nothing Then totalFiles += selectedDir.TotalFiles
         Next
+        If MessageBox.Show(New Form With {.TopMost = True},
+                           $"Delete the disk copies of {totalFiles:N0} tape file(s) under{vbCrLf}{outputDirectory}?{vbCrLf}{vbCrLf}" &
+                           "A disk file is deleted only when its path, size and modified time match the tape file. Deleted files do not go to the Recycle Bin.",
+                           My.Resources.ResText_Warning, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then Exit Sub
         Dim th As New Threading.Thread(
                 Sub()
                     Dim succeeded As Boolean = False
+                    Dim deleted As Long = 0, kept As Long = 0, failed As Long = 0
                     PrintMsg(My.Resources.ResText_Deleting)
                     SetStatusLight(LWStatus.Busy)
                     Try
                         StopFlag = False
-                        PrintMsg(My.Resources.ResText_PrepFile)
                         CurrentFilesProcessed = 0
                         CurrentBytesProcessed = 0
                         UnwrittenSizeOverrideValue = 0
                         UnwrittenCountOverrideValue = CULng(Math.Max(0, totalFiles))
                         StartTime = Now
-                        PrintMsg(My.Resources.ResText_Deleting)
                         Dim c As Long = 0
-                        TapeUtils.ReserveUnit(driveHandle)
-                        TapeUtils.PreventMediaRemoval(driveHandle)
-                        RestorePosition = New TapeUtils.PositionData(driveHandle)
+                        Dim topNames As New RestoreNames() ' the selected folders all go into one output folder
                         For Each node As TreeNode In Nodes
                             If StopFlag Then Exit For
                             Dim selectedDir As ltfsindex.directory = TryCast(node.Tag, ltfsindex.directory)
                             If selectedDir Is Nothing Then Continue For
-                            Dim outputPath As String = IO.Path.Combine(outputDirectory, RestoreName(selectedDir.name))
+                            Dim outputPath As String = IO.Path.Combine(outputDirectory, RestoreName(selectedDir.name, topNames, log:=False))
                             If Not outputPath.StartsWith("\\") Then outputPath = $"\\?\{outputPath}"
-                            If Not IO.Directory.Exists(outputPath) Then IO.Directory.CreateDirectory(outputPath)
+                            If Not IO.Directory.Exists(outputPath) Then Continue For ' nothing of this folder on disk
                             TraverseRestoreFiles(selectedDir, New IO.DirectoryInfo(outputPath),
                                 Sub(fr As FileRecord)
                                     If StopFlag Then Return
                                     Dim c2 = Threading.Interlocked.Increment(c)
-                                    PrintMsg($"{My.Resources.ResText_Deleting} [{c2}/{totalFiles}] {fr.File.name}", False, $"{My.Resources.ResText_Deleting} [{c2}/{totalFiles}] {fr.SourcePath}")
+                                    PrintMsg($"{My.Resources.ResText_Deleting} [{c2}/{totalFiles}] {fr.File.name}", False, $"{My.Resources.ResText_Deleting} [{c2}/{totalFiles}] {fr.SourcePath}", UiOnly:=True)
                                     Try
-                                        If IO.File.Exists(fr.SourcePath) AndAlso
-                                           (New IO.FileInfo(fr.SourcePath)).Length = fr.File.length Then
-                                            IO.File.Delete(fr.SourcePath)
+                                        Dim info As New IO.FileInfo(fr.SourcePath)
+                                        If Not info.Exists Then Return
+                                        If info.Length <> fr.File.length OrElse
+                                           info.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z") <> fr.File.modifytime Then
+                                            Threading.Interlocked.Increment(kept)
+                                            PrintMsg($"Kept (size or modified time differs from the tape file): {fr.SourcePath}", LogOnly:=True)
+                                            Return
                                         End If
+                                        IO.File.Delete(fr.SourcePath)
+                                        Threading.Interlocked.Increment(deleted)
+                                        PrintMsg($"Deleted disk copy: {fr.SourcePath}", LogOnly:=True)
                                     Catch ex As Exception
-                                        PrintMsg($"[ERROR]{fr.SourcePath}>{ex.ToString()}", LogOnly:=True, IsWarn:=True)
+                                        Threading.Interlocked.Increment(failed)
+                                        PrintMsg($"Cannot delete {fr.SourcePath}: {ex.Message}", LogOnly:=True, IsWarn:=True)
                                     End Try
-                                End Sub, parallelRestore:=True)
+                                End Sub, createDirectories:=False, parallelRestore:=True)
                         Next
+                        Dim summary As String = $"{deleted:N0} disk copies deleted, {kept:N0} kept (differ from the tape), {failed:N0} could not be deleted"
                         If StopFlag Then
-                            PrintMsg(My.Resources.ResText_OpCancelled)
+                            PrintMsg($"{My.Resources.ResText_OpCancelled} - {summary}")
                             SetStatusLight(LWStatus.Idle)
+                        ElseIf failed > 0 Then
+                            PrintMsg($"{My.Resources.ResText_DeleteFin}: {summary} - see the log", IsWarn:=True, ShowOnWarningLabel:=True)
+                            SetStatusLight(LWStatus.Err)
                         Else
                             succeeded = True
-                            PrintMsg(My.Resources.ResText_DeleteFin)
+                            PrintMsg($"{My.Resources.ResText_DeleteFin}: {summary}")
                             SetStatusLight(LWStatus.Succ)
                         End If
                     Catch ex As Exception
@@ -17384,18 +17509,11 @@ Public Class LTFSWriter
                         PrintMsg($"{My.Resources.ResText_Error}{ex.ToString}", IsWarn:=True)
                         SetStatusLight(LWStatus.Err)
                     End Try
-                    SyncLock OperationLock
-                        SyncLock TapeUtils.GetSCSIOperationLock(driveHandle)
-                            TapeUtils.AllowMediumRemoval(driveHandle)
-                            TapeUtils.ReleaseUnit(driveHandle)
-                        End SyncLock
-                    End SyncLock
-
                     UnwrittenSizeOverrideValue = 0
                     UnwrittenCountOverrideValue = 0
                     StopFlag = False
                     LockGUI(False)
-                    If Not succeeded Then SetStatusLight(LWStatus.Err)
+                    If Not succeeded AndAlso failed = 0 Then SetStatusLight(LWStatus.Err)
                 End Sub)
         LockGUI()
         th.Start()

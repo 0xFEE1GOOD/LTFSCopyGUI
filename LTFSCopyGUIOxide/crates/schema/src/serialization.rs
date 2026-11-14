@@ -13,7 +13,8 @@ use std::slice;
 use std::str;
 
 use super::{
-    FileData, LscExtent, LscFileInput, LscUtf16Slice, decode_general_ref, invalid, utf16_string,
+    FileData, LscExtent, LscFileInput, LscUtf16Slice, decode_general_ref, invalid, percent_encode,
+    utf16_string,
 };
 
 // HPLTFS consumes the index as a line-oriented XML document.  Keep the
@@ -89,10 +90,20 @@ pub(super) fn write_xml_element<W: Write>(
     name: &str,
     value: Option<&str>,
 ) -> Result<(), String> {
+    // A name with characters XML cannot carry (control characters; CR would come back as LF) is written
+    // percent-encoded with percentencoded="true", as the LTFS format specifies. Other names stay as they are.
+    let encoded = match value {
+        Some(text) if name == "name" => percent_encode(text),
+        _ => None,
+    };
+    let mut start = BytesStart::new(name);
+    if encoded.is_some() {
+        start.push_attribute(("percentencoded", "true"));
+    }
     writer
-        .write_event(Event::Start(BytesStart::new(name)))
+        .write_event(Event::Start(start))
         .map_err(|error| error.to_string())?;
-    if let Some(value) = value {
+    if let Some(value) = encoded.as_deref().or(value) {
         write_xml_text(writer, value)?;
     }
     writer

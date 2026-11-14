@@ -3651,7 +3651,7 @@
     <value>System.Windows.Forms.ToolStripMenuItem, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
   </data>
   <data name="按索引删除硬盘文件ToolStripMenuItem.Text" xml:space="preserve">
-    <value>按索引删除硬盘文件</value>
+    <value>删除这些磁带文件的硬盘副本…</value>
   </data>
   <data name="按索引删除硬盘文件ToolStripMenuItem.Size" type="System.Drawing.Size, System.Drawing">
     <value>232, 22</value>

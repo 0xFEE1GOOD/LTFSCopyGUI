@@ -507,6 +507,9 @@ struct SchemaMetadata {
     creator: String,
     volume_uuid: String,
     update_time: String,
+    // Raw XML of parts this program does not model, written back unchanged in the next index generation.
+    policy_xml: String,
+    extra_xml: String,
 }
 
 pub struct SchemaContext {
@@ -579,8 +582,58 @@ fn decode_general_ref(value: &str) -> Result<String, String> {
     }
 }
 
-fn decode_schema_value(value: String) -> String {
-    value.replace("%25", "%")
+/// LTFS percent-encoding (format spec, attribute `percentencoded="true"`): a name holding characters that XML
+/// cannot carry is written as %XX bytes of its UTF-8 form. A value is decoded only when the attribute says so; a
+/// plain "%25" in a name is four characters (LTFSCopyGUI used to turn every "%25" into "%" on load).
+fn is_percent_encoded(start: &BytesStart) -> bool {
+    start.attributes().flatten().any(|attribute| {
+        attribute.key.local_name().as_ref() == b"percentencoded"
+            && attribute.value.as_ref().eq_ignore_ascii_case(b"true")
+    })
+}
+
+fn percent_decode(value: &str) -> String {
+    let hex = |byte: u8| (byte as char).to_digit(16).map(|digit| digit as u8);
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) = (hex(bytes[index + 1]), hex(bytes[index + 2])) {
+                decoded.push(high * 16 + low);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(decoded).unwrap_or_else(|_| value.to_owned())
+}
+
+/// Characters a name cannot carry as XML text: most control characters are not allowed in XML 1.0, and a reader
+/// turns CR (and CR LF) into LF. Such a name is written percent-encoded.
+fn needs_percent_encoding(character: char) -> bool {
+    (character as u32) < 0x20 || matches!(character, '\u{7f}' | '\u{fffe}' | '\u{ffff}')
+}
+
+/// The percent-encoded form of a name, or None when it can be written as it is.
+fn percent_encode(value: &str) -> Option<String> {
+    if !value.chars().any(needs_percent_encoding) {
+        return None;
+    }
+    let mut encoded = String::with_capacity(value.len() + 16);
+    for character in value.chars() {
+        if character == '%' || needs_percent_encoding(character) {
+            let mut utf8 = [0u8; 4];
+            for byte in character.encode_utf8(&mut utf8).bytes() {
+                encoded.push_str(&format!("%{byte:02X}"));
+            }
+        } else {
+            encoded.push(character);
+        }
+    }
+    Some(encoded)
 }
 
 fn parse_bool(value: &str) -> Option<bool> {
@@ -1459,6 +1512,10 @@ impl StoreOutput {
         write_nullable_string(&mut scalar, values.access_time.as_deref())?;
         write_nullable_string(&mut scalar, values.backup_time.as_deref())?;
         write_i64(&mut scalar, values.file_uid)?;
+        write_nullable_string(
+            &mut scalar,
+            (!values.extra_xml.is_empty()).then_some(values.extra_xml.as_str()),
+        )?;
         let scalar_length = i32::try_from(scalar.len())
             .map_err(|_| invalid("directory scalar record is too long"))?;
         self.directory_records
@@ -2365,6 +2422,7 @@ struct StoreDirectoryScalars {
     access_time: Option<String>,
     backup_time: Option<String>,
     file_uid: i64,
+    extra_xml: Option<String>,
 }
 
 fn read_store_at(
@@ -2468,6 +2526,11 @@ fn read_store_directory_scalars(
         access_time: cursor.nullable_string()?,
         backup_time: cursor.nullable_string()?,
         file_uid: cursor.i64()?,
+        extra_xml: if cursor.position < cursor.bytes.len() {
+            cursor.nullable_string()?
+        } else {
+            None
+        },
     };
     Ok(result)
 }
@@ -4286,6 +4349,8 @@ struct StoreSearchComputation {
 
 #[derive(Default)]
 struct DirectoryValues {
+    // Raw XML of child elements this program does not model (LTFS allows extended attributes on folders).
+    extra_xml: String,
     name: Option<String>,
     read_only: bool,
     creation_time: Option<String>,
@@ -4585,11 +4650,11 @@ impl<R: BufRead> SchemaParser<R> {
         let name = event_name_start(&value);
         match name.as_str() {
             "creator" => {
-                self.metadata.creator = decode_schema_value(self.read_text(value)?);
+                self.metadata.creator = self.read_text(value)?;
                 self.metadata.public.present_mask |= PRESENT_CREATOR;
             }
             "volumeuuid" => {
-                self.metadata.volume_uuid = decode_schema_value(self.read_text(value)?);
+                self.metadata.volume_uuid = self.read_text(value)?;
                 self.metadata.public.present_mask |= PRESENT_VOLUME_UUID;
             }
             "generationnumber" => {
@@ -4600,7 +4665,7 @@ impl<R: BufRead> SchemaParser<R> {
                 }
             }
             "updatetime" => {
-                self.metadata.update_time = decode_schema_value(self.read_text(value)?);
+                self.metadata.update_time = self.read_text(value)?;
                 self.metadata.public.present_mask |= PRESENT_UPDATE_TIME;
             }
             "location" => {
@@ -4624,7 +4689,7 @@ impl<R: BufRead> SchemaParser<R> {
             "dataplacementpolicy" => {
                 self.metadata.public.data_placement_policy = 1;
                 self.metadata.public.present_mask |= PRESENT_DATA_PLACEMENT_POLICY;
-                self.skip_element(value)?;
+                self.metadata.policy_xml = self.capture_element(value)?;
             }
             "volumelockstate" => {
                 let text = self.read_text(value)?.trim().to_ascii_lowercase();
@@ -4657,7 +4722,10 @@ impl<R: BufRead> SchemaParser<R> {
             "_file" | "_directory" | "contents" => {
                 self.parse_root_container(value, files, directories)?;
             }
-            _ => self.skip_element(value)?,
+            _ => {
+                let xml = self.capture_element(value)?;
+                self.metadata.extra_xml.push_str(&xml);
+            }
         }
         Ok(())
     }
@@ -4764,7 +4832,7 @@ impl<R: BufRead> SchemaParser<R> {
                         let name = event_name_start(&value);
                         match name.as_str() {
                             "name" => {
-                                values.name = Some(decode_schema_value(self.read_text(value)?))
+                                values.name = Some(self.read_text(value)?)
                             }
                             "readonly" => {
                                 values.read_only =
@@ -4772,23 +4840,23 @@ impl<R: BufRead> SchemaParser<R> {
                             }
                             "creationtime" => {
                                 values.creation_time =
-                                    Some(decode_schema_value(self.read_text(value)?))
+                                    Some(self.read_text(value)?)
                             }
                             "changetime" => {
                                 values.change_time =
-                                    Some(decode_schema_value(self.read_text(value)?))
+                                    Some(self.read_text(value)?)
                             }
                             "modifytime" => {
                                 values.modify_time =
-                                    Some(decode_schema_value(self.read_text(value)?))
+                                    Some(self.read_text(value)?)
                             }
                             "accesstime" => {
                                 values.access_time =
-                                    Some(decode_schema_value(self.read_text(value)?))
+                                    Some(self.read_text(value)?)
                             }
                             "backuptime" => {
                                 values.backup_time =
-                                    Some(decode_schema_value(self.read_text(value)?))
+                                    Some(self.read_text(value)?)
                             }
                             "fileuid" => {
                                 values.file_uid = self.read_text(value)?.trim().parse().unwrap_or(0)
@@ -4798,7 +4866,10 @@ impl<R: BufRead> SchemaParser<R> {
                             }
                             "file" => self.append_child_file(value, &mut state)?,
                             "directory" => self.append_child_directory(value, &mut state)?,
-                            _ => self.skip_element(value)?,
+                            _ => {
+                                let xml = self.capture_element(value)?;
+                                values.extra_xml.push_str(&xml);
+                            }
                         }
                     }
                     Event::Empty(value) => match event_name_start(&value).as_str() {
@@ -4972,6 +5043,7 @@ impl<R: BufRead> SchemaParser<R> {
         if start.is_empty() {
             return Ok(String::new());
         }
+        let percent_encoded = is_percent_encoded(&start);
         let expected = event_name_start(&start);
         let mut result = String::new();
         let mut buffer = Vec::new();
@@ -4989,7 +5061,54 @@ impl<R: BufRead> SchemaParser<R> {
                 Event::Eof => return Err(invalid("unexpected end of XML text")),
             }
         }
-        Ok(result)
+        Ok(if percent_encoded {
+            percent_decode(&result)
+        } else {
+            result
+        })
+    }
+
+    /// The element as XML text, to be written back unchanged: parts of the index this program does not model
+    /// (a data placement policy, extended attributes of a folder) must survive the next index generation.
+    fn capture_element(&mut self, start: BytesStart<'static>) -> Result<String, String> {
+        if start.is_empty() {
+            return Ok(String::new());
+        }
+        let mut writer = Writer::new(Vec::new());
+        writer
+            .write_event(Event::Start(start))
+            .map_err(|error| error.to_string())?;
+        let mut depth = 1i32;
+        let mut buffer = Vec::new();
+        while depth > 0 {
+            let event = self.next_event(&mut buffer)?;
+            buffer.clear();
+            match event {
+                Event::Start(value) => {
+                    depth += 1;
+                    writer.write_event(Event::Start(value))
+                }
+                Event::End(value) => {
+                    depth -= 1;
+                    writer.write_event(Event::End(value))
+                }
+                Event::Empty(value) => writer.write_event(Event::Empty(value)),
+                Event::Text(value) => writer.write_event(Event::Text(value)),
+                Event::CData(value) => writer.write_event(Event::CData(value)),
+                Event::GeneralRef(value) => {
+                    decode_general_ref(value.as_ref())?;
+                    writer.write_event(Event::GeneralRef(value))
+                }
+                Event::Comment(_) | Event::PI(_) => Ok(()),
+                Event::Decl(_) => {
+                    return Err(invalid("XML declaration is not valid inside an element"));
+                }
+                Event::DocType(_) => return Err(invalid("unsafe XML construct in schema")),
+                Event::Eof => return Err(invalid("unexpected end of XML element")),
+            }
+            .map_err(|error| error.to_string())?;
+        }
+        String::from_utf8(writer.into_inner()).map_err(|_| invalid("XML element is not valid UTF-8"))
     }
 
     fn skip_element(&mut self, start: BytesStart<'static>) -> Result<(), String> {
@@ -5010,9 +5129,12 @@ impl<R: BufRead> SchemaParser<R> {
                 Event::Decl(_) => {
                     return Err(invalid("XML declaration is not valid inside an element"));
                 }
-                Event::DocType(_) | Event::GeneralRef(_) => {
-                    return Err(invalid("unsafe XML construct in schema"));
+                // An entity reference is text (&amp; in a policy name pattern, a folder xattr value): fine,
+                // as long as it is one of XML's own. Only a DTD could define others, and it is refused.
+                Event::GeneralRef(value) => {
+                    decode_general_ref(value.as_ref())?;
                 }
+                Event::DocType(_) => return Err(invalid("unsafe XML construct in schema")),
                 Event::Eof => return Err(invalid("unexpected end of XML element")),
             }
         }
@@ -5293,6 +5415,8 @@ fn get_schema_string(context: &SchemaContext, field: u32) -> Option<&str> {
         1 => Some(context.metadata.creator.as_str()),
         2 => Some(context.metadata.volume_uuid.as_str()),
         3 => Some(context.metadata.update_time.as_str()),
+        4 => Some(context.metadata.policy_xml.as_str()),
+        5 => Some(context.metadata.extra_xml.as_str()),
         _ => None,
     }
 }

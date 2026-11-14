@@ -38,6 +38,8 @@ Public Class ltfsindex
         Public Structure indexpartitioncriteria
             Public Property size As Long
         End Structure
+        ''' <summary>The policy element as read from the index, written back unchanged (this program does not use it).</summary>
+        Friend Property RawXml As String
     End Class
     <Category("LTFSIndex")>
     Public Property dataplacementpolicy As policy
@@ -48,6 +50,9 @@ Public Class ltfsindex
     End Enum
     <Category("LTFSIndex")>
     Public Property volumelockstate As volumelockstateValue = volumelockstateValue.unlocked
+    ''' <summary>Index elements this program does not model (from another LTFS writer or a later format),
+    ''' kept as XML and written back in the next index generation.</summary>
+    Friend Property UnmodelledXml As String
     <Category("LTFSIndex")>
     Public Property highestfileuid As Long
     <Serializable>
@@ -591,6 +596,7 @@ Public Class ltfsindex
         Private _accesstime As String
         Private _backuptime As String
         Private _fileuid As Long
+        Private _unmodelledXml As String ' child elements this program does not model (e.g. LTFS folder xattrs), kept as XML
         Private _contents As contentsDef = New contentsDef
         Private _lazyStore As LazySchemaStore
         Private _lazyRecordOffset As Long
@@ -630,6 +636,7 @@ Public Class ltfsindex
             _accesstime = values.AccessTime
             _backuptime = values.BackupTime
             _fileuid = values.FileUid
+            _unmodelledXml = values.UnmodelledXml
             _lazyMetadataLoaded = True
         End Sub
 
@@ -1267,8 +1274,17 @@ Public Class ltfsindex
                 .ModifyTime = _modifytime,
                 .AccessTime = _accesstime,
                 .BackupTime = _backuptime,
-                .FileUid = _fileuid}
+                .FileUid = _fileuid,
+                .UnmodelledXml = _unmodelledXml}
         End Function
+
+        ''' <summary>Child elements of this folder that this program does not model, as XML (written back unchanged).</summary>
+        Friend ReadOnly Property UnmodelledXml As String
+            Get
+                EnsureLazyMetadata()
+                Return _unmodelledXml
+            End Get
+        End Property
         '<Xml.Serialization.XmlIgnore>
         '<Category("Internal")>
         'Public ReadOnly Property Files As List(Of file)
@@ -1732,6 +1748,7 @@ Friend NotInheritable Class LazyDirectoryScalarData
     Public Property AccessTime As String
     Public Property BackupTime As String
     Public Property FileUid As Long
+    Public Property UnmodelledXml As String
 End Class
 
 Friend NotInheritable Class LazyFileScalarData
@@ -2890,6 +2907,7 @@ Friend NotInheritable Class LazySchemaStore
         result.ModifyTime = CopyStoreDirectoryString(handle, recordOffset, 4UI)
         result.AccessTime = CopyStoreDirectoryString(handle, recordOffset, 5UI)
         result.BackupTime = CopyStoreDirectoryString(handle, recordOffset, 6UI)
+        result.UnmodelledXml = CopyStoreDirectoryString(handle, recordOffset, 7UI)
         result.FileUid = info.FileUid
         Return result
     End Function
@@ -3539,9 +3557,10 @@ Friend NotInheritable Class LazySchemaStore
             WriteNativeLocation(writer, "location", index.location)
             WriteNativeLocation(writer, "previousgenerationlocation", index.previousgenerationlocation)
             writer.WriteElement("allowpolicyupdate", NativeSchemaXml.BooleanText(index.allowpolicyupdate))
-            If index.dataplacementpolicy IsNot Nothing Then writer.EmptyElement("dataplacementpolicy")
+            NativeSchemaXml.WritePolicy(writer, index)
             writer.WriteElement("volumelockstate", index.volumelockstate.ToString())
             writer.WriteElement("highestfileuid", index.highestfileuid.ToString(CultureInfo.InvariantCulture))
+            NativeSchemaXml.WriteUnmodelled(writer, index.UnmodelledXml)
             If index._file IsNot Nothing Then
                 For Each rootFile As ltfsindex.file In index._file
                     WriteNativeFile(writer, rootFile, nativeStore)
@@ -3687,6 +3706,7 @@ Friend NotInheritable Class LazySchemaStore
         writer.WriteElement("accesstime", values.AccessTime)
         writer.WriteElement("backuptime", values.BackupTime)
         writer.WriteElement("fileuid", values.FileUid.ToString(CultureInfo.InvariantCulture))
+        NativeSchemaXml.WriteUnmodelled(writer, values.UnmodelledXml)
     End Sub
 
     Private Shared Sub WriteNativeLocation(writer As NativeSchemaWriter, elementName As String, value As ltfsindex.LocationDef)

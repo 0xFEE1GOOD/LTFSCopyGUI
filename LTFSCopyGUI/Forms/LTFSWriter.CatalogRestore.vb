@@ -190,8 +190,8 @@ Partial Class LTFSWriter
         End Try
     End Sub
 
-    ' Name -> child map of one folder. LTFS names are case-sensitive. LTFSCopyGUI keeps percent-encoded names as
-    ' written while the catalog stores them decoded, so a name containing "%" is also filed under its decoded form.
+    ' Name -> child map of one folder. LTFS names are case-sensitive. Both sides decode percent-encoded names
+    ' (percentencoded="true", LTFS spec) the same way since 1.005, so names match as they are.
     Private Shared Function CatalogNameMap(Of T As Class)(children As IEnumerable(Of T), getName As Func(Of T, String)) As Dictionary(Of String, T)
         Dim map As New Dictionary(Of String, T)(StringComparer.Ordinal)
         For Each child As T In children
@@ -199,13 +199,6 @@ Partial Class LTFSWriter
             Dim name As String = getName(child)
             If name Is Nothing Then Continue For
             If Not map.ContainsKey(name) Then map(name) = child
-            If name.IndexOf("%"c) >= 0 Then
-                Try
-                    Dim decoded As String = Uri.UnescapeDataString(name)
-                    If Not map.ContainsKey(decoded) Then map(decoded) = child
-                Catch
-                End Try
-            End If
         Next
         Return map
     End Function
@@ -308,16 +301,28 @@ Partial Class LTFSWriter
                         Sub(dirPath As String, dir As ltfsindex.directory)
                             If knownDirs.Add(dirPath) Then directoryRequests.Add(New ExtractionDirectoryRequest With {.DirectoryPath = dirPath, .Directory = dir})
                         End Sub
+                    ' Windows names given out per output folder: a clash after cleaning is numbered, and a folder
+                    ' named again for the next item keeps the name it got.
+                    Dim folderNames As New Dictionary(Of String, RestoreNames)(StringComparer.OrdinalIgnoreCase)
+                    Dim namesIn As Func(Of String, RestoreNames) =
+                        Function(dirPath As String) As RestoreNames
+                            Dim n As RestoreNames = Nothing
+                            If Not folderNames.TryGetValue(dirPath, n) Then
+                                n = New RestoreNames()
+                                folderNames(dirPath) = n
+                            End If
+                            Return n
+                        End Function
                     For Each it As CatalogItem In items
                         If StopFlag Then Exit For
                         Dim parentDir As String = baseDir
                         If req.KeepPaths Then
                             For i As Integer = 0 To it.Parts.Length - 2
-                                parentDir = IO.Path.Combine(parentDir, RestoreName(it.Parts(i)))
+                                parentDir = IO.Path.Combine(parentDir, RestoreName(it.Parts(i), namesIn(parentDir)))
                                 addDir(parentDir, it.Ancestors(i))
                             Next
                         End If
-                        Dim target As String = IO.Path.Combine(parentDir, RestoreName(it.Parts(it.Parts.Length - 1)))
+                        Dim target As String = IO.Path.Combine(parentDir, RestoreName(it.Parts(it.Parts.Length - 1), namesIn(parentDir)))
                         If it.Directory IsNot Nothing Then
                             addDir(target, it.Directory)
                             TraverseRestoreFiles(it.Directory, New IO.DirectoryInfo(target),

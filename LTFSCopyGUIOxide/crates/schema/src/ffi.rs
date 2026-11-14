@@ -27,7 +27,7 @@ use super::{
     read_store_directory_scalars, schema_context_from_file, schema_context_from_files,
     search_store, serialize_file, set_last_error, sort_directory_children, sort_tape_files,
     store_directory_file_bytes, store_directory_index_entry, store_file_index_entry, utf16_string,
-    write_fragment, write_xml_text, writer_mut, writer_name,
+    write_fragment, write_xml_element, writer_mut, writer_name,
 };
 
 #[unsafe(no_mangle)]
@@ -260,6 +260,7 @@ pub unsafe extern "system" fn lsc_store_copy_directory_string(
                 4 => scalars.modify_time,
                 5 => scalars.access_time,
                 6 => scalars.backup_time,
+                7 => scalars.extra_xml,
                 _ => return Err(invalid("unknown schema store directory string field")),
             };
             Ok(value.unwrap_or_default())
@@ -984,14 +985,7 @@ pub unsafe extern "system" fn lsc_writer_element(
         let name = writer_name(name, name_len)?;
         let value = writer_name(value, value_len)?;
         // SAFETY: writer was checked for null and is owned by the caller.
-        let writer = writer_mut(unsafe { &mut *writer })?;
-        writer
-            .write_event(Event::Start(BytesStart::new(name.as_str())))
-            .map_err(|error| error.to_string())?;
-        write_xml_text(writer, &value)?;
-        writer
-            .write_event(Event::End(BytesEnd::new(name)))
-            .map_err(|error| error.to_string())
+        write_xml_element(writer_mut(unsafe { &mut *writer })?, &name, Some(value.as_str()))
     })
 }
 

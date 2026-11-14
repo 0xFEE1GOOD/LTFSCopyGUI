@@ -7,9 +7,9 @@ use std::io::BufRead;
 use std::io::Cursor;
 
 use super::{
-    FileData, LscExtent, LscStoreFileSummary, decode_cdata, decode_general_ref,
-    decode_schema_value, decode_text, event_name_end, event_name_start, invalid, is_name,
-    parse_bool, parse_partition,
+    FileData, LscExtent, LscStoreFileSummary, decode_cdata, decode_general_ref, decode_text,
+    event_name_end, event_name_start, invalid, is_name, is_percent_encoded, parse_bool,
+    parse_partition, percent_decode,
 };
 
 pub(super) struct FileParser<R: BufRead> {
@@ -121,7 +121,7 @@ impl<R: BufRead> FileParser<R> {
         loop {
             match self.next_event(&mut buffer)? {
                 Event::Start(value) if is_name(&value, "name") => {
-                    return Ok(decode_schema_value(self.read_text(value)?));
+                    return Ok(self.read_text(value)?);
                 }
                 Event::Start(value) => self.skip_element(value)?,
                 Event::Empty(value) if is_name(&value, "name") => return Ok(String::new()),
@@ -235,7 +235,7 @@ impl<R: BufRead> FileParser<R> {
         loop {
             match self.next_event(&mut buffer)? {
                 Event::Start(value) if is_name(&value, "name") => {
-                    result.name = decode_schema_value(self.read_text(value)?);
+                    result.name = self.read_text(value)?;
                 }
                 Event::Start(value) if is_name(&value, "length") => {
                     result.info.length = self.read_text(value)?.trim().parse().unwrap_or(0);
@@ -323,7 +323,7 @@ impl<R: BufRead> FileParser<R> {
         result: &mut FileData,
     ) -> Result<(), String> {
         match event_name_start(&value).as_str() {
-            "name" => result.name = decode_schema_value(self.read_text(value)?),
+            "name" => result.name = self.read_text(value)?,
             "length" => result.length = self.read_text(value)?.trim().parse().unwrap_or(0),
             "readonly" => {
                 result.read_only = parse_bool(self.read_text(value)?.as_str()).unwrap_or(false)
@@ -332,14 +332,14 @@ impl<R: BufRead> FileParser<R> {
                 result.open_for_write = parse_bool(self.read_text(value)?.as_str()).unwrap_or(true)
             }
             "creationtime" => {
-                result.creation_time = Some(decode_schema_value(self.read_text(value)?))
+                result.creation_time = Some(self.read_text(value)?)
             }
-            "changetime" => result.change_time = Some(decode_schema_value(self.read_text(value)?)),
-            "modifytime" => result.modify_time = Some(decode_schema_value(self.read_text(value)?)),
-            "accesstime" => result.access_time = Some(decode_schema_value(self.read_text(value)?)),
-            "backuptime" => result.backup_time = Some(decode_schema_value(self.read_text(value)?)),
+            "changetime" => result.change_time = Some(self.read_text(value)?),
+            "modifytime" => result.modify_time = Some(self.read_text(value)?),
+            "accesstime" => result.access_time = Some(self.read_text(value)?),
+            "backuptime" => result.backup_time = Some(self.read_text(value)?),
             "fileuid" => result.file_uid = self.read_text(value)?.trim().parse().unwrap_or(0),
-            "symlink" => result.symlink = Some(decode_schema_value(self.read_text(value)?)),
+            "symlink" => result.symlink = Some(self.read_text(value)?),
             "extendedattributes" => self.parse_xattrs(value, result)?,
             "extentinfo" => self.parse_extents(value, result)?,
             _ => self.skip_element(value)?,
@@ -408,10 +408,10 @@ impl<R: BufRead> FileParser<R> {
         loop {
             match self.next_event(&mut buffer)? {
                 Event::Start(child) if is_name(&child, "key") => {
-                    key = decode_schema_value(self.read_text(child)?)
+                    key = self.read_text(child)?
                 }
                 Event::Start(child) if is_name(&child, "value") => {
-                    value = decode_schema_value(self.read_text(child)?)
+                    value = self.read_text(child)?
                 }
                 Event::Start(child) => self.skip_element(child)?,
                 Event::Empty(_) => {}
@@ -514,6 +514,7 @@ impl<R: BufRead> FileParser<R> {
         if start.is_empty() {
             return Ok(String::new());
         }
+        let percent_encoded = is_percent_encoded(&start);
         let expected = event_name_start(&start);
         let mut result = String::new();
         let mut buffer = Vec::new();
@@ -531,7 +532,11 @@ impl<R: BufRead> FileParser<R> {
                 Event::Eof => return Err(invalid("unexpected end of XML text")),
             }
         }
-        Ok(result)
+        Ok(if percent_encoded {
+            percent_decode(&result)
+        } else {
+            result
+        })
     }
 
     fn skip_element(&mut self, start: BytesStart<'static>) -> Result<(), String> {
