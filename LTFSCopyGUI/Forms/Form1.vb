@@ -869,7 +869,7 @@ Public Class Form1
         TextBox3.Text = My.Settings.IndexAnalyzer_Src
         TextBox4.Text = My.Settings.IndexAnalyzer_Dest
         CheckBox1.Checked = My.Settings.IndexAnalyzer_GenCMD
-        Text = $"{FormTitle.Text} - {ApplicationWheels.ApplicationInfo}"
+        Text = ApplicationWheels.ApplicationInfo ' "LTFSCopyGui2 v1.001" (FormTitle still holds the old name)
     End Sub
     Private Async Sub Form1_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(Form1))
