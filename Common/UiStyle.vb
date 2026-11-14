@@ -192,6 +192,7 @@ Friend NotInheritable Class UiStyle
     End Sub
 
     Private Shared Sub FitTexts(parent As Control)
+        FitButtonRows(parent) ' before FitOne: a row that fits after this is left alone there
         For Each c As Control In parent.Controls
             If TypeOf c Is ToolStrip OrElse TypeOf c Is TextBoxBase OrElse TypeOf c Is ListControl Then Continue For
             If TypeOf c Is ButtonBase OrElse TypeOf c Is Label Then FitOne(c)
@@ -231,47 +232,74 @@ Friend NotInheritable Class UiStyle
                 Return
             End If
         Next
-        If PushRowRight(c, grow) Then
-            c.Width = need
-            Return
-        End If
         StepDown(c, Function(f) NeededWidth(c, f) <= c.Width)
     End Sub
 
     ''' <summary>
-    ''' A control in a row that has free space at its end (a row of buttons in a group box): the controls to its
-    ''' right move right by the missing width, so it grows instead of getting a smaller font than its neighbours.
-    ''' Only when everything moved stays inside the container (with a small margin) and clear of other controls.
+    ''' Buttons side by side share one look. When a caption in such a row does not fit, the row is laid out again
+    ''' left to right, each button as wide as its caption needs (gaps between 3 px and the row's own, all at 96 dpi);
+    ''' when the row is too short for that, every button of the row steps down together by half points (to 9 pt at
+    ''' most). One button alone with a smaller font looked wrong (LTFSConfigurator in the main window). Rows of
+    ''' right-anchored buttons, and rows sharing their stretch with other controls, are left to FitOne.
     ''' </summary>
-    Private Shared Function PushRowRight(c As Control, grow As Integer) As Boolean
-        Dim parent As Control = c.Parent
-        Dim moving As New List(Of Control)
-        For Each s As Control In parent.Controls
-            If s Is c OrElse s.Bottom <= c.Top OrElse s.Top >= c.Bottom OrElse s.Right <= c.Right Then Continue For
-            If s.Bounds.Contains(c.Bounds) Then Continue For ' a panel behind the row
-            If s.Left < c.Right OrElse s.Dock <> DockStyle.None Then Return False ' not a simple row
-            moving.Add(s)
+    Private Shared Sub FitButtonRows(parent As Control)
+        If TypeOf parent Is TableLayoutPanel OrElse TypeOf parent Is FlowLayoutPanel Then Return
+        Dim candidates As New List(Of Button)
+        For Each c As Control In parent.Controls
+            Dim b As Button = TryCast(c, Button)
+            If b Is Nothing OrElse b.AutoSize OrElse b.Dock <> DockStyle.None OrElse b.Image IsNot Nothing Then Continue For
+            If String.IsNullOrEmpty(b.Text) OrElse b.Text.IndexOf(ControlChars.Lf) >= 0 Then Continue For
+            If (b.Anchor And AnchorStyles.Right) <> 0 AndAlso (b.Anchor And AnchorStyles.Left) = 0 Then Continue For
+            candidates.Add(b)
         Next
-        Dim margin As Integer = 6 * c.DeviceDpi \ 96
-        Dim room As Rectangle = parent.ClientRectangle
-        Dim clear As Func(Of Rectangle, Boolean) =
-            Function(r As Rectangle) As Boolean
-                For Each o As Control In parent.Controls
-                    If o Is c OrElse moving.Contains(o) Then Continue For
-                    If o.Bounds.IntersectsWith(r) AndAlso Not o.Bounds.Contains(r) Then Return False
+        While candidates.Count > 1
+            Dim seed As Button = candidates(0)
+            Dim tolerance As Integer = 2 * seed.DeviceDpi \ 96
+            Dim row As List(Of Button) = candidates.Where(Function(b) Math.Abs(b.Top - seed.Top) <= tolerance AndAlso
+                                                                      Math.Abs(b.Height - seed.Height) <= tolerance).
+                                                    OrderBy(Function(b) b.Left).ToList()
+            candidates.RemoveAll(Function(b) row.Contains(b))
+            If row.Count > 1 Then FitRow(parent, row)
+        End While
+    End Sub
+
+    Private Shared Sub FitRow(parent As Control, row As List(Of Button))
+        If row.All(Function(b) NeededWidth(b, b.Font) <= b.Width) Then Return
+        Dim n As Integer = row.Count
+        Dim dpi As Integer = row(0).DeviceDpi
+        Dim minGap As Integer = 3 * dpi \ 96
+        Dim margin As Integer = 6 * dpi \ 96
+        Dim first As Button = row(0)
+        Dim last As Button = row(n - 1)
+        Dim span As Integer = Math.Max(parent.ClientRectangle.Right - margin - first.Left, last.Right - first.Left)
+        Dim top As Integer = row.Min(Function(b) b.Top)
+        Dim band As New Rectangle(first.Left, top, span, row.Max(Function(b) b.Bottom) - top)
+        For Each o As Control In parent.Controls
+            Dim ob As Button = TryCast(o, Button)
+            If ob IsNot Nothing AndAlso row.Contains(ob) Then Continue For
+            If o.Bounds.IntersectsWith(band) AndAlso Not o.Bounds.Contains(band) Then Return ' not the row's own stretch
+        Next
+        Dim ownGap As Integer = Math.Max(minGap, (last.Right - first.Left - row.Sum(Function(b) b.Width)) \ (n - 1))
+        Dim size As Single = row.Max(Function(b) b.Font.SizeInPoints)
+        While size >= LegacySize - 0.01F
+            Dim fonts As Font() = row.Select(Function(b) If(Math.Abs(b.Font.SizeInPoints - size) < 0.01F, b.Font, Sized(b.Font, size))).ToArray()
+            Dim needs As Integer() = Enumerable.Range(0, n).Select(Function(i) NeededWidth(row(i), fonts(i))).ToArray()
+            For Each keepWidth As Boolean In {True, False} ' designer widths first; then buttons as narrow as their captions
+                Dim widths As Integer() = Enumerable.Range(0, n).Select(Function(i) If(keepWidth, Math.Max(row(i).Width, needs(i)), needs(i))).ToArray()
+                Dim free As Integer = span - widths.Sum()
+                If free < minGap * (n - 1) Then Continue For
+                Dim gap As Integer = Math.Min(ownGap, free \ (n - 1))
+                Dim x As Integer = first.Left
+                For i As Integer = 0 To n - 1
+                    row(i).Font = fonts(i)
+                    row(i).SetBounds(x, row(i).Top, widths(i), row(i).Height)
+                    x += widths(i) + gap
                 Next
-                Return True
-            End Function
-        For Each s As Control In moving
-            Dim r As New Rectangle(s.Left + grow, s.Top, s.Width, s.Height)
-            If r.Right > room.Right - margin OrElse Not clear(r) Then Return False
-        Next
-        If Not clear(New Rectangle(c.Left, c.Top, c.Width + grow, c.Height)) Then Return False
-        For Each s As Control In moving
-            s.Left += grow
-        Next
-        Return True
-    End Function
+                Return
+            Next
+            size -= 0.5F
+        End While
+    End Sub
 
     ''' <summary>Steps the control's font down by half points until it fits, stopping at the old 9 pt size.</summary>
     Private Shared Sub StepDown(c As Control, fits As Func(Of Font, Boolean))
