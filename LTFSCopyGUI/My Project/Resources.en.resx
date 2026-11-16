@@ -801,7 +801,7 @@ Valid only if HashOnWriting=True</value>
     <value>Overwrite when adding files</value>
   </data>
   <data name="PropertyDescription_LTFSWriter_PreLoadBytes" xml:space="preserve">
-    <value>Pre read bytes</value>
+    <value>Read-ahead buffer for writing (and restoring). Entered in GiB: 4, 0.5 or 512 MiB.</value>
   </data>
   <data name="PropertyDescription_LTFSWriter_PreLoadFileCount" xml:space="preserve">
     <value>Pre read file count</value>
@@ -955,7 +955,7 @@ Enable only when memory usage is abnormally high</value>
     <value>Ring buffered mode</value>
   </data>
   <data name="PropertyDescription_LTFSWriter_WaitOnBufferEmpty" xml:space="preserve">
-    <value>Pause when buffer is empty, and resume until buffer is filled by 75%, or unchanged for 10 seconds. Unsupported under ring-buffered mode.</value>
+    <value>Wait for the buffer to fill: the tape starts writing only when the read-ahead buffer is full, and when the buffer runs empty it waits until it is full again, or until it holds all the remaining data, or the source has added nothing for 30 seconds.</value>
   </data>
   <data name="PropertyDescription_LTFSWriter_IndexWriteIntervalSeconds" xml:space="preserve">
     <value>Index update intervel (seconds)</value>

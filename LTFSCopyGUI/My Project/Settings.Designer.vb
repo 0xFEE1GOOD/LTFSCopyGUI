@@ -546,7 +546,8 @@ Namespace My
          Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
          Global.System.Configuration.DefaultSettingValueAttribute("268435456"),
          Category("LTFSWriter"),
-         LocalizedDescription("PropertyDescription_LTFSWriter_PreLoadBytes")>
+         LocalizedDescription("PropertyDescription_LTFSWriter_PreLoadBytes"),
+         Global.System.ComponentModel.TypeConverter(GetType(Global.LTFSCopyGUI.GiBSizeConverter))>
         Public Property LTFSWriter_PreLoadBytes() As Long
             Get
                 Return CType(Me("LTFSWriter_PreLoadBytes"), Long)

@@ -409,7 +409,7 @@ Public Class LTFSWriter
         计算校验ToolStripMenuItem.Checked = My.Settings.LTFSWriter_HashOnWriting
         异步校验CPU占用高ToolStripMenuItem.Checked = My.Settings.LTFSWriter_HashAsync
         预读文件数5ToolStripMenuItem.Text = $"{My.Resources.ResText_PFC}{My.Settings.LTFSWriter_PreLoadFileCount}"
-        文件缓存32MiBToolStripMenuItem.Text = $"{My.Resources.ResText_FB}{IOManager.FormatSize(My.Settings.LTFSWriter_PreLoadBytes)}"
+        文件缓存32MiBToolStripMenuItem.Text = $"{My.Resources.ResText_FB}{GiBSizeConverter.FormatGiB(My.Settings.LTFSWriter_PreLoadBytes)}"
         禁用分区ToolStripMenuItem.Checked = DisablePartition
         速度下限ToolStripMenuItem.Text = $"{My.Resources.ResText_SMin}{My.Settings.LTFSWriter_AutoCleanDownLim} MiB/s"
         速度上限ToolStripMenuItem.Text = $"{My.Resources.ResText_SMax}{My.Settings.LTFSWriter_AutoCleanUpperLim} MiB/s"
@@ -7722,7 +7722,7 @@ Public Class LTFSWriter
         End Set
     End Property
     Public Property PipePause As Boolean = False
-    Private Function PipeGetLength(reader As System.IO.Pipelines.PipeReader) As Long
+    Private Function PipeGetLength(reader As System.IO.Pipelines.PipeReader, Optional flagEmpty As Boolean = True) As Long
         Dim result As ReadResult
         If Threading.Monitor.TryEnter(PipeLock, 0) Then
             Try
@@ -7738,7 +7738,7 @@ Public Class LTFSWriter
                 ' 不推进读取位置，保留数据以便后续读取
                 reader.AdvanceTo(result.Buffer.Start, result.Buffer.Start)
                 Threading.Monitor.Exit(PipeLock)
-                If CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_WaitOnBufferEmpty)) AndAlso length <= CachedSetting(Of Integer)(NameOf(My.Settings.LTFSWriter_MinimumSegmentSize)) * 2 Then PipePause = True
+                If flagEmpty AndAlso CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_WaitOnBufferEmpty)) AndAlso length <= CachedSetting(Of Integer)(NameOf(My.Settings.LTFSWriter_MinimumSegmentSize)) * 2 Then PipePause = True
                 Return length
             Catch ex As Exception
                 PrintMsg(ex.ToString, LogOnly:=True, IsWarn:=True)
@@ -8634,6 +8634,96 @@ Public Class LTFSWriter
         End Try
     End Sub
 
+    ' ---- v1.009: the tape waits for a full buffer ----
+    ' Writing from a buffer that holds only a few files stops and restarts the tape whenever the source (a NAS) is
+    ' slower than the drive. So the tape starts only when the buffer is full, and after the buffer has run empty it
+    ' waits until it is full again. The wait also ends when the buffer holds everything still to be written, when the
+    ' source has added nothing for BufferStallSeconds (stalled: write what is there), on Stop, and on
+    ' Test > Stop waiting for buffer. Switched by LTFSWriter_WaitOnBufferEmpty.
+    Private Const BufferStallSeconds As Integer = 30
+
+    ''' <summary>The level that counts as full: 95 % of the buffer, and at least 2 MiB below it (the ring buffer's
+    ''' source needs a free 1 MiB chunk to write, so its last bytes never fill).</summary>
+    Private Shared Function BufferFullMark(capacity As Long) As Long
+        Return Math.Max(1L, Math.Min(capacity - capacity \ 20, capacity - (2L << 20)))
+    End Function
+
+    ''' <summary>Waits until <paramref name="measure"/> reaches <paramref name="target"/> (or one of the other ends
+    ''' above) and returns why it stopped waiting, for the log. Shows the level in the status bar once a second.</summary>
+    Private Function WaitForBufferLevel(measure As Func(Of Long), target As Long, producerCompleted As Func(Of Boolean),
+                                        statusText As String) As String
+        PipePause = True ' Test > Stop waiting for buffer clears it
+        Dim sw As Stopwatch = Stopwatch.StartNew()
+        Dim level As Long = 0
+        Dim lastGrowthMs As Long = 0
+        Dim lastStatusMs As Long = -1000
+        Try
+            While True
+                If StopFlag Then Return "stopped"
+                If Not PipePause Then Return "waiting stopped by hand"
+                Dim n As Long = measure()
+                If n >= 0 Then
+                    PipeBufferLength = n
+                    If n >= target Then Return "full"
+                    If n > level Then
+                        level = n
+                        lastGrowthMs = sw.ElapsedMilliseconds
+                    End If
+                End If
+                If producerCompleted IsNot Nothing AndAlso producerCompleted() Then Return "it holds all the rest"
+                If sw.ElapsedMilliseconds - lastGrowthMs >= BufferStallSeconds * 1000L Then Return $"source added nothing for {BufferStallSeconds} s"
+                If sw.ElapsedMilliseconds - lastStatusMs >= 1000 Then
+                    lastStatusMs = sw.ElapsedMilliseconds
+                    PrintMsg($"{statusText}: {IOManager.FormatSize(level)} / {IOManager.FormatSize(target)}", UiOnly:=True)
+                End If
+                Threading.Thread.Sleep(50)
+            End While
+        Finally
+            PipePause = False
+        End Try
+        Return Nothing
+    End Function
+
+    ''' <summary>Before the first block goes to tape. The buffer has been filling while the tape was positioned.</summary>
+    Private Sub WaitForInitialBufferFill(provider As FileDataProvider)
+        If provider Is Nothing OrElse StopFlag Then Return
+        If Not CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_WaitOnBufferEmpty)) Then Return
+        Dim capacity As Long
+        Dim measure As Func(Of Long)
+        If RingBufferEnabled Then
+            Dim rb As SpscRingBuffer = provider.RingBuffer
+            If rb Is Nothing Then Return
+            capacity = rb.Capacity
+            measure = Function() CLng(rb.AvailableToRead())
+        Else
+            Dim reader As System.IO.Pipelines.PipeReader = provider.Reader
+            If reader Is Nothing Then Return
+            capacity = My.Settings.LTFSWriter_PreLoadBytes
+            measure = Function() PipeGetLength(reader, flagEmpty:=False)
+        End If
+        Dim target As Long = BufferFullMark(capacity)
+        Dim sw As Stopwatch = Stopwatch.StartNew()
+        Dim reason As String = WaitForBufferLevel(measure, target, Function() provider.ProducerCompleted, "Filling the buffer before writing")
+        PrintMsg($"Buffer before writing: {IOManager.FormatSize(PipeBufferLength)} of {IOManager.FormatSize(target)} after {sw.Elapsed.TotalSeconds:0} s ({reason})", LogOnly:=True)
+    End Sub
+
+    ''' <summary>Before each file and each block of a large file: once the buffer has run empty (PipeReadExactly and
+    ''' PipeGetLength raise PipePause), wait until it is full again. Until v1.008 only blocks of files larger than one
+    ''' tape block waited, so runs of small files went to tape one file at a time.</summary>
+    Private Sub WaitForBufferRefill(provider As FileDataProvider)
+        If provider Is Nothing OrElse StopFlag Then Return
+        If RingBufferEnabled Then
+            WaitForRingRefill(provider.RingBuffer, Function() provider.ProducerCompleted)
+            Return
+        End If
+        If Not PipePause Then Return
+        Dim reader As System.IO.Pipelines.PipeReader = provider.Reader
+        Dim target As Long = BufferFullMark(My.Settings.LTFSWriter_PreLoadBytes)
+        Dim sw As Stopwatch = Stopwatch.StartNew()
+        Dim reason As String = WaitForBufferLevel(Function() PipeGetLength(reader, flagEmpty:=False), target, Function() provider.ProducerCompleted, "Buffer ran empty, refilling")
+        PrintMsg($"Buffer refilled: {IOManager.FormatSize(PipeBufferLength)} of {IOManager.FormatSize(target)} after {sw.Elapsed.TotalSeconds:0} s ({reason})", LogOnly:=True)
+    End Sub
+
     Private Sub WaitForFastReaderRefill(fastProvider As IFastReaderConsumer)
         If Not CachedSetting(Of Boolean)(NameOf(My.Settings.LTFSWriter_WaitOnBufferEmpty)) OrElse
            StopFlag OrElse
@@ -9348,6 +9438,8 @@ Public Class LTFSWriter
                         End If
                         If useFastReader Then
                             WaitForInitialFastReaderFill(fastProvider)
+                        Else
+                            WaitForInitialBufferFill(provider) ' v1.009: the tape starts only with a full buffer
                         End If
                         IndexLastUpdateTime = Now
                         Dim p As New TapeUtils.PositionData(driveHandle)
@@ -9639,6 +9731,7 @@ Public Class LTFSWriter
                                                     'FileData = fr.ReadAllBytes()
                                                     Dim PipeReader As System.IO.Pipelines.PipeReader
                                                     Dim RingBufferReader As SpscRingBuffer
+                                                    WaitForBufferRefill(provider) ' v1.009: small files wait for a refilled buffer too
                                                     If RingBufferEnabled Then
                                                         RingBufferReader = provider.RingBuffer
                                                         PipeReadExactly(RingBufferReader, FileData, CInt(fr.File.length))
@@ -9836,47 +9929,8 @@ Public Class LTFSWriter
 
                                                 ' 从 Pipe 读取当前文件需要的字节
                                                 Try
-                                                    ' 防磨带门控：下面的 While PipePause 原先只在 Else 分支内，而 RingBufferEnabled 默认为 True，
-                                                    ' 所以环形缓冲路径上它从未执行——每读满一个块就立刻发出 SCSI WRITE，驱动器无法积累缓冲余量而持续回绕。
-                                                    ' 现在两条路径在取数之前各有一个等水位的环节：环形缓冲走 WaitForRingRefill，Pipe 仍走原来的 While PipePause。
-                                                    If RingBufferEnabled Then
-                                                        ' 环形缓冲的容量与完成标志不在 PipeBufferLength 里，交由专用例程判水位；委托是因为两种 Provider 没有公共接口
-                                                        WaitForRingRefill(RingBufferReader, Function() provider.ProducerCompleted)
-                                                    Else
-                                                        Dim pCounter1 As Integer = 0
-                                                        Dim pCounter2 As Integer = 0
-                                                        Dim lastlen As Long = PipeBufferLength
-                                                        While PipePause AndAlso Not StopFlag
-                                                            Threading.Thread.Sleep(10)
-                                                            Threading.Interlocked.Increment(pCounter1)
-                                                            pCounter1 += 1
-                                                            pCounter2 += 1
-                                                            ' 生产端已结束时缓冲区不可能再回填，立即放行，否则要空等下面那条 10 秒的 lastlen 逃生分支
-                                                            If provider.ProducerCompleted Then
-                                                                PipePause = False
-                                                                Exit While
-                                                            End If
-                                                            If pCounter1 >= 100 Then
-                                                                pCounter1 = 0
-                                                                If RingBufferEnabled Then
-                                                                    PipeBufferLength = PipeGetLength(provider.RingBuffer)
-                                                                Else
-                                                                    PipeBufferLength = PipeGetLength(provider.Reader)
-                                                                End If
-                                                                If pCounter2 >= 1000 Then
-                                                                    If PipeBufferLength = lastlen OrElse PipeBufferLength >= My.Settings.LTFSWriter_PreLoadBytes * 0.75 Then
-                                                                        PipePause = False
-                                                                    End If
-                                                                    lastlen = PipeBufferLength
-                                                                    pCounter2 = 0
-                                                                Else
-                                                                    If PipeBufferLength >= My.Settings.LTFSWriter_PreLoadBytes * 0.75 Then
-                                                                        PipePause = False
-                                                                    End If
-                                                                End If
-                                                            End If
-                                                        End While
-                                                    End If
+                                                    ' Anti-shoe-shining gate (v1.009: one helper, also used before small files)
+                                                    WaitForBufferRefill(provider)
                                                     If StopFlag Then
                                                         IOManager.PublicArrayPool.Return(buffer)
                                                         ExitWhileFlag = True
@@ -13531,9 +13585,17 @@ Public Class LTFSWriter
     End Sub
 
     Private Sub 文件缓存32MiBToolStripMenuItem_Click(sender As Object, e As EventArgs) Handles 文件缓存32MiBToolStripMenuItem.Click
-        If DisplayHelper.ShowInputDialog("Set file cache", My.Resources.ResText_Setting, My.Settings.LTFSWriter_PreLoadBytes) <> DialogResult.OK Then Exit Sub
-        If My.Settings.LTFSWriter_PreLoadBytes <= (16 << 20) Then My.Settings.LTFSWriter_PreLoadBytes = (16 << 20)
-        文件缓存32MiBToolStripMenuItem.Text = $"File cache: {IOManager.FormatSize(My.Settings.LTFSWriter_PreLoadBytes)}"
+        ' v1.009: entered in GiB ("4", "0.5", "512 MiB"), not bytes; still stored in bytes, so config files stay as they are.
+        Dim text As String = GiBSizeConverter.FormatGiB(My.Settings.LTFSWriter_PreLoadBytes)
+        If DisplayHelper.ShowInputDialog("Buffer size in GiB:", My.Resources.ResText_Setting, text) <> DialogResult.OK Then Exit Sub
+        Dim bytes As Long
+        Dim problem As String = Nothing
+        If Not GiBSizeConverter.TryParseGiB(text, bytes, problem) Then
+            MessageBox.Show(Me, problem, My.Resources.ResText_Setting, MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Exit Sub
+        End If
+        My.Settings.LTFSWriter_PreLoadBytes = bytes
+        文件缓存32MiBToolStripMenuItem.Text = $"{My.Resources.ResText_FB}{GiBSizeConverter.FormatGiB(bytes)}"
     End Sub
 
     Private Shared Sub ApplyFileDetailsEdit(target As ltfsindex.file, edited As ltfsindex.file)

@@ -1595,3 +1595,66 @@ Public Class TrieMatcher
         Return False
     End Function
 End Class
+
+''' <summary>
+''' v1.009: a byte count (the write buffer) shown as "4 GiB" or "512 MiB" in the settings window and read back from
+''' "4", "4 GiB", "0.5", "512 MiB" or "512M" (a plain number is GiB). The setting stays in bytes, so config files
+''' are unchanged.
+''' </summary>
+Public Class GiBSizeConverter
+    Inherits Int64Converter
+
+    Public Const MinBufferBytes As Long = 16L << 20
+
+    Public Overrides Function ConvertTo(context As ITypeDescriptorContext, culture As Globalization.CultureInfo, value As Object, destinationType As Type) As Object
+        If destinationType Is GetType(String) AndAlso TypeOf value Is Long Then Return FormatGiB(CLng(value))
+        Return MyBase.ConvertTo(context, culture, value, destinationType)
+    End Function
+
+    Public Overrides Function ConvertFrom(context As ITypeDescriptorContext, culture As Globalization.CultureInfo, value As Object) As Object
+        Dim s As String = TryCast(value, String)
+        If s Is Nothing Then Return MyBase.ConvertFrom(context, culture, value)
+        Dim bytes As Long
+        Dim problem As String = Nothing
+        If Not TryParseGiB(s, bytes, problem) Then Throw New FormatException(problem)
+        Return bytes
+    End Function
+
+    Public Shared Function FormatGiB(bytes As Long) As String
+        Dim inv As Globalization.CultureInfo = Globalization.CultureInfo.InvariantCulture
+        If bytes >= (1L << 30) Then Return (bytes / 1073741824.0).ToString("0.##", inv) & " GiB"
+        Return (bytes / 1048576.0).ToString("0.##", inv) & " MiB"
+    End Function
+
+    ''' <summary>Half of this computer's memory (at most 1 TiB): a larger buffer could take all of it.</summary>
+    Public Shared Function MaxBufferBytes() As Long
+        Try
+            Return CLng(Math.Min(1099511627776.0, My.Computer.Info.TotalPhysicalMemory / 2.0))
+        Catch
+            Return 64L << 30
+        End Try
+    End Function
+
+    ''' <summary>"4", "4 GiB", "4G", "0.5", "512 MiB", "512M"; a plain number is GiB, comma or point as the decimal mark.
+    ''' Rounded to whole MiB; allowed from 16 MiB to <see cref="MaxBufferBytes"/>.</summary>
+    Public Shared Function TryParseGiB(s As String, ByRef bytes As Long, Optional ByRef problem As String = Nothing) As Boolean
+        bytes = 0
+        problem = Nothing
+        Dim m As System.Text.RegularExpressions.Match = System.Text.RegularExpressions.Regex.Match(If(s, "").Trim().Replace(","c, "."c),
+            "^(\d+(?:\.\d+)?)\s*(g|gb|gib|m|mb|mib)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+        If Not m.Success Then
+            problem = "Enter a size such as 4, 4 GiB, 0.5 or 512 MiB (a plain number is GiB)."
+            Return False
+        End If
+        Dim number As Double = Double.Parse(m.Groups(1).Value, Globalization.CultureInfo.InvariantCulture)
+        Dim unit As Double = If(m.Groups(2).Value.StartsWith("m", StringComparison.OrdinalIgnoreCase), 1048576.0, 1073741824.0)
+        Dim value As Double = number * unit
+        Dim maxBytes As Long = MaxBufferBytes()
+        If value < MinBufferBytes OrElse value > maxBytes Then
+            problem = $"The buffer must be from {FormatGiB(MinBufferBytes)} to {FormatGiB(maxBytes)} (half of this computer's memory)."
+            Return False
+        End If
+        bytes = CLng(Math.Round(value / 1048576.0)) * 1048576L
+        Return True
+    End Function
+End Class
