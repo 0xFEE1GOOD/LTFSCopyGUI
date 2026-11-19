@@ -14,7 +14,7 @@ permissions:
 
 jobs:
     build:
-        name: Build LTFSCopyGui2 installer
+        name: Build LTFSCopyGui2NAS installer
         runs-on: windows-latest
 
         steps:
@@ -120,7 +120,7 @@ jobs:
             - name: Build portable archive
               shell: pwsh
               run: |
-                  $installers = @(Get-ChildItem -Path "Installer/LTFSCopyGui2-*.exe" -File)
+                  $installers = @(Get-ChildItem -Path "Installer/LTFSCopyGui2NAS-*.exe" -File)
                   if ($installers.Count -ne 1) {
                     throw "Expected exactly one installer before building the portable archive, found $($installers.Count)."
                   }
@@ -131,12 +131,12 @@ jobs:
             - name: Verify installer output
               shell: pwsh
               run: |
-                  $installers = @(Get-ChildItem -Path "Installer/LTFSCopyGui2-*.exe" -File)
+                  $installers = @(Get-ChildItem -Path "Installer/LTFSCopyGui2NAS-*.exe" -File)
                   if ($installers.Count -ne 1) {
                     throw "Expected exactly one installer, found $($installers.Count)."
                   }
 
-                  $portableArchives = @(Get-ChildItem -Path "Installer/LTFSCopyGui2-*-portable.zip" -File)
+                  $portableArchives = @(Get-ChildItem -Path "Installer/LTFSCopyGui2NAS-*-portable.zip" -File)
                   if ($portableArchives.Count -ne 1) {
                     throw "Expected exactly one portable archive, found $($portableArchives.Count)."
                   }
@@ -144,15 +144,15 @@ jobs:
             - name: Upload installer artifact
               uses: actions/upload-artifact@v4
               with:
-                  name: LTFSCopyGui2-installer-${{ github.sha }}
-                  path: Installer/LTFSCopyGui2-*.exe
+                  name: LTFSCopyGui2NAS-installer-${{ github.sha }}
+                  path: Installer/LTFSCopyGui2NAS-*.exe
                   if-no-files-found: error
 
             - name: Upload portable artifact
               uses: actions/upload-artifact@v4
               with:
-                  name: LTFSCopyGui2-portable-${{ github.sha }}
-                  path: Installer/LTFSCopyGui2-*-portable.zip
+                  name: LTFSCopyGui2NAS-portable-${{ github.sha }}
+                  path: Installer/LTFSCopyGui2NAS-*-portable.zip
                   if-no-files-found: error
 
             # Debug uses the same portable payload, without an Inno Setup invocation.
@@ -161,11 +161,11 @@ jobs:
 
             - name: Build Debug portable archive
               shell: pwsh
-              run: .\Installer\Build-Portable.ps1 -Configuration Debug -OutputPath Installer/LTFSCopyGui2-debug.zip
+              run: .\Installer\Build-Portable.ps1 -Configuration Debug -OutputPath Installer/LTFSCopyGui2NAS-debug.zip
 
             - name: Upload Debug portable artifact
               uses: actions/upload-artifact@v4
               with:
-                  name: LTFSCopyGui2-debug-${{ github.sha }}
-                  path: Installer/LTFSCopyGui2-debug.zip
+                  name: LTFSCopyGui2NAS-debug-${{ github.sha }}
+                  path: Installer/LTFSCopyGui2NAS-debug.zip
                   if-no-files-found: error

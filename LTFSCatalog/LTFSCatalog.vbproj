@@ -23,17 +23,17 @@
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
     <!-- App.config carries the same binding redirects as LTFSCopyGUI.exe.config (shared DLLs). -->
     <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
-    <!-- The version is LTFSCopyGui2's, from ..\Common\AppVersion.vb (linked below), not generated here. -->
+    <!-- The version is LTFSCopyGui2NAS's, from ..\Common\AppVersion.vb (linked below), not generated here. -->
     <GenerateAssemblyVersionAttribute>false</GenerateAssemblyVersionAttribute>
     <GenerateAssemblyFileVersionAttribute>false</GenerateAssemblyFileVersionAttribute>
     <GenerateAssemblyInformationalVersionAttribute>false</GenerateAssemblyInformationalVersionAttribute>
     <Product>LTFSCatalog</Product>
-    <Description>Offline catalog of LTFS tapes for LTFSCopyGui2</Description>
+    <Description>Offline catalog of LTFS tapes for LTFSCopyGui2NAS</Description>
     <Deterministic>true</Deterministic>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- The look and the version shared with LTFSCopyGui2 (one source file each). -->
+    <!-- The look and the version shared with LTFSCopyGui2NAS (one source file each). -->
     <Compile Include="..\Common\UiStyle.vb" Link="UiStyle.vb" />
     <Compile Include="..\Common\AppVersion.vb" Link="AppVersion.vb" />
   </ItemGroup>

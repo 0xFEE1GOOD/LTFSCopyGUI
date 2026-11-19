@@ -1,4 +1,4 @@
-#define MyAppName "LTFSCopyGui2"
+#define MyAppName "LTFSCopyGui2NAS"
 #define MyAppPublisher "Nullpinter"
 #define MyAppExeName "LTFSCopyGUI.exe"
 
@@ -19,8 +19,8 @@
 #define MyAppVersion Copy(VersionLine, Pos(VersionMarker, VersionLine) + Len(VersionMarker), Len(VersionLine) - Pos(VersionMarker, VersionLine) - Len(VersionMarker))
 
 [Setup]
-; Own AppId: installs beside upstream LTFSCopyGUI instead of upgrading it.
-AppId={{587A2853-343C-4D13-A421-B0AF3BE58CDA}
+; Own AppId: installs beside upstream LTFSCopyGUI and LTFSCopyGui2 instead of upgrading them.
+AppId={{2EB2E35B-9C74-4FDC-AACD-A8EA5280ECE3}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
