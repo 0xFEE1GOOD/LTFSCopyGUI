@@ -634,6 +634,37 @@ Namespace My
         End Property
 
         <Global.System.Configuration.UserScopedSettingAttribute(),
+         Global.System.Configuration.SettingsDescriptionAttribute("LTFS NAS Reader host[:port]"),
+         Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
+         Global.System.Configuration.DefaultSettingValueAttribute(""),
+         Category("LTFSWriter"),
+         LocalizedDescription("PropertyDescription_LTFSWriter_NasReader")>
+        Public Property LTFSWriter_NasReader() As String
+            Get
+                Return CType(Me("LTFSWriter_NasReader"), String)
+            End Get
+            Set(Value As String)
+                Me("LTFSWriter_NasReader") = Value
+            End Set
+        End Property
+
+        <Global.System.Configuration.UserScopedSettingAttribute(),
+         Global.System.Configuration.SettingsDescriptionAttribute("LTFS NAS Reader key"),
+         Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
+         Global.System.Configuration.DefaultSettingValueAttribute(""),
+         Category("LTFSWriter"),
+         Global.System.ComponentModel.PasswordPropertyText(True),
+         LocalizedDescription("PropertyDescription_LTFSWriter_NasReaderKey")>
+        Public Property LTFSWriter_NasReaderKey() As String
+            Get
+                Return CType(Me("LTFSWriter_NasReaderKey"), String)
+            End Get
+            Set(Value As String)
+                Me("LTFSWriter_NasReaderKey") = Value
+            End Set
+        End Property
+
+        <Global.System.Configuration.UserScopedSettingAttribute(),
          Global.System.Configuration.SettingsDescriptionAttribute("Ring buffer模式"),
          Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
          Global.System.Configuration.DefaultSettingValueAttribute("True"),

@@ -1,0 +1,13 @@
+{
+    ".url": {
+        "com.ltfscopygui2nas.nasreader": {
+            "type": "url",
+            "title": "LTFS NAS Reader",
+            "desc": "Status of the reader that LTFSCopyGui2NAS tape writes use",
+            "icon": "images/icon_{0}.png",
+            "url": "/webman/3rdparty/LtfsNasReader/index.html",
+            "urlTarget": "_ltfsnasreader",
+            "allUsers": false
+        }
+    }
+}

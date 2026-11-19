@@ -155,6 +155,18 @@ jobs:
                   path: Installer/LTFSCopyGui2NAS-*-portable.zip
                   if-no-files-found: error
 
+            # The DSM package for the NAS (pure Python, same version as the app).
+            - name: Build LTFS NAS Reader package
+              shell: pwsh
+              run: python NasReader/build_spk.py --out Installer/spk
+
+            - name: Upload LTFS NAS Reader package
+              uses: actions/upload-artifact@v4
+              with:
+                  name: LtfsNasReader-spk-${{ github.sha }}
+                  path: Installer/spk/LtfsNasReader-*.spk
+                  if-no-files-found: error
+
             # Debug uses the same portable payload, without an Inno Setup invocation.
             - name: Build Debug application and native crates
               run: msbuild LTFSCopyGUI.sln /m /t:Build /p:Configuration=Debug /p:Platform=x64

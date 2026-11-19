@@ -1235,7 +1235,7 @@ Public Class LTFSWriter
                 .changetime = .modifytime
                 .backuptime = Now.ToUniversalTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
                 Try
-                    If xattrPath IsNot Nothing Then
+                    If Not String.IsNullOrEmpty(xattrPath) Then
                         If Not fromListing Then xattrPath = FileSystemPathResolver.ResolveExistingFilePath(xattrPath)
                         xattrPath = ExtendedPath(xattrPath)
                         Dim x As String = IO.File.ReadAllText(xattrPath)

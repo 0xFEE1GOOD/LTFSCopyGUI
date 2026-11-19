@@ -1,0 +1,55 @@
+#!/bin/sh
+# LTFS NAS Reader: start, stop and status for Package Center. Runs as the package's own user (conf/privilege).
+PKG=LtfsNasReader
+TARGET="/var/packages/$PKG/target"
+VAR="${SYNOPKG_PKGVAR:-/var/packages/$PKG/var}"
+PID="$VAR/lcg-nasreader.pid"
+
+PY=""
+for p in /usr/bin/python3 /var/packages/python312/target/bin/python3 /var/packages/python311/target/bin/python3 \
+         /var/packages/python310/target/bin/python3; do
+    if [ -x "$p" ]; then PY="$p"; break; fi
+done
+
+say() {   # shown in Package Center when an action fails
+    [ -n "$SYNOPKG_TEMP_LOGFILE" ] && echo "$1" > "$SYNOPKG_TEMP_LOGFILE"
+    echo "$1"
+}
+
+running() {
+    [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null
+}
+
+case "$1" in
+    start)
+        running && exit 0
+        if [ -z "$PY" ]; then say "Python 3 was not found on this NAS."; exit 1; fi
+        mkdir -p "$VAR"
+        nohup "$PY" "$TARGET/bin/lcg-nasreader.py" serve --var "$VAR" >> "$VAR/console.log" 2>&1 &
+        echo $! > "$PID"
+        sleep 2
+        if ! running; then
+            say "LTFS NAS Reader did not start: $(tail -n 3 "$VAR/console.log" 2>/dev/null)"
+            rm -f "$PID"
+            exit 1
+        fi
+        exit 0
+        ;;
+    stop)
+        if running; then
+            kill "$(cat "$PID")"
+            i=0
+            while running && [ $i -lt 10 ]; do sleep 1; i=$((i + 1)); done
+            running && kill -9 "$(cat "$PID")"
+        fi
+        rm -f "$PID"
+        exit 0
+        ;;
+    status)
+        if running; then exit 0; fi
+        exit 3
+        ;;
+    *)
+        exit 0
+        ;;
+esac

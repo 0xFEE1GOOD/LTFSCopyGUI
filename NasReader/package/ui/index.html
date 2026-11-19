@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LTFS NAS Reader</title>
+<link rel="icon" href="images/icon_32.png">
+<style>
+:root {
+  --bg: #f4f6f9; --card: #ffffff; --text: #1d2430; --muted: #687384; --line: #e3e7ee;
+  --accent: #2563eb; --ok: #15803d; --warn: #b45309; --warn-bg: #fff4e5; --bad: #b91c1c; --bad-bg: #fdecec;
+  --bar: #e7ecf4; --fill: #3b82f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12161c; --card: #1b2028; --text: #e4e8ee; --muted: #98a2b1; --line: #2a313c;
+    --accent: #6b9cf5; --ok: #4ade80; --warn: #fbbf24; --warn-bg: #3a2d12; --bad: #f87171; --bad-bg: #3b1d1d;
+    --bar: #28303b; --fill: #5b8def;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+header { padding: 20px 16px 8px; max-width: 1100px; margin: 0 auto; }
+h1 { font-size: 22px; margin: 0; font-weight: 600; }
+h2 { font-size: 15px; margin: 0 0 10px; font-weight: 600; }
+main { max-width: 1100px; margin: 0 auto; padding: 8px 16px 32px; display: grid; gap: 14px;
+       grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+.wide { grid-column: 1 / -1; }
+.muted { color: var(--muted); }
+.small { font-size: 12.5px; }
+.banner { grid-column: 1 / -1; border-radius: 10px; padding: 10px 14px; }
+.banner.warn { background: var(--warn-bg); color: var(--warn); }
+.banner.bad { background: var(--bad-bg); color: var(--bad); }
+.bar { height: 8px; background: var(--bar); border-radius: 4px; overflow: hidden; margin: 6px 0; }
+.bar > i { display: block; height: 100%; background: var(--fill); border-radius: 4px; }
+.job + .job { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.stats { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 4px; }
+.stats b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.path { font-family: ui-monospace, Consolas, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap; color: var(--muted); }
+.disks { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 14px; }
+.disk { font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.disk .bar { height: 6px; margin: 3px 0 0; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 5px 8px 5px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: 12.5px; }
+td.num, th.num { text-align: right; }
+.scroll { overflow-x: auto; }
+.yes { color: var(--ok); } .no { color: var(--bad); }
+form.settings { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; max-width: 420px; }
+input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+        padding: 5px 8px; width: 100%; min-width: 0; }
+button { font: inherit; border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 6px;
+         padding: 5px 12px; cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.keybox { font-family: ui-monospace, Consolas, monospace; font-size: 12px; flex: 1 1 260px; }
+#msg { min-height: 1.4em; }
+ul.events { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; }
+ul.events li { padding: 3px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+ul.events time { color: var(--muted); margin-right: 8px; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<header>
+  <h1>LTFS NAS Reader</h1>
+  <div id="sub" class="muted">Loading…</div>
+</header>
+<main>
+  <div id="banners" style="display:contents"></div>
+  <section class="card wide"><h2>Writing now</h2><div id="jobs" class="muted">—</div></section>
+  <section class="card"><h2>Disks</h2><div id="disks" class="muted">—</div></section>
+  <section class="card"><h2>Shares</h2><div id="shares" class="muted">—</div></section>
+  <section class="card wide"><h2>Recent writes</h2><div id="history" class="muted scroll">—</div></section>
+  <section class="card">
+    <h2>Settings</h2>
+    <form class="settings" id="settings" autocomplete="off">
+      <label for="port">Port</label><input id="port" type="number" min="1024" max="65535">
+      <label for="threads">Readers</label><input id="threads" type="number" min="1" max="64">
+      <label for="window">Read-ahead (MiB)</label><input id="window" type="number" min="64" max="8192">
+    </form>
+    <div class="row"><button class="primary" id="save" type="button">Save</button>
+      <span class="muted small">Readers and read-ahead apply to the next write; a new port after Stop and Run in Package Center.</span></div>
+    <h2 style="margin-top:16px">Key</h2>
+    <div class="muted small">LTFSCopyGui2NAS needs it: settings LTFSWriter_NasReader = this NAS's address, LTFSWriter_NasReaderKey = the key.</div>
+    <div class="row">
+      <input id="key" class="keybox" type="password" readonly value="••••••••••••••••" aria-label="Key">
+      <button id="show" type="button">Show</button><button id="copy" type="button">Copy</button>
+      <button id="newkey" type="button">New key</button>
+    </div>
+    <div id="msg" class="small muted"></div>
+  </section>
+  <section class="card"><h2>Events</h2><ul id="events" class="events"><li class="muted">—</li></ul></section>
+</main>
+<script>
+'use strict';
+let token = new URLSearchParams(location.search).get('SynoToken') || '';
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const gb = b => (b / 1e9).toFixed(b >= 1e11 ? 0 : 1) + ' GB';
+const n0 = x => Math.round(x || 0).toLocaleString('en-US');
+const pct = (a, b) => b > 0 ? Math.min(100, 100 * a / b) : 0;
+let settingsLoaded = false;
+
+async function api(path, body, retried) {
+  const url = path + (token ? '?SynoToken=' + encodeURIComponent(token) : '');
+  const opt = { credentials: 'same-origin', cache: 'no-store',
+                headers: { 'X-SYNO-TOKEN': token, 'X-Requested-With': 'LtfsNasReader' } };
+  if (body) { opt.method = 'POST'; opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+  const r = await fetch(url, opt);
+  if (r.status === 401 && !retried) {          // DSM may want its CSRF token: ask DSM for it once, then retry
+    try { const l = await fetch('/webman/login.cgi', { credentials: 'same-origin', cache: 'no-store' });
+          const j = await l.json(); if (j && j.SynoToken) { token = j.SynoToken; return api(path, body, true); } } catch (e) { }
+  }
+  let data = {};
+  try { data = await r.json(); } catch (e) { data = { error: 'The page got an unreadable answer (HTTP ' + r.status + ').' }; }
+  if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+  return data;
+}
+
+function banner(cls, html) { const d = document.createElement('div'); d.className = 'banner ' + cls; d.innerHTML = html; $('banners').appendChild(d); }
+
+function render(s) {
+  $('banners').innerHTML = '';
+  if (s.stale_s == null) {
+    $('sub').textContent = 'Not started yet';
+    banner('bad', 'The service has not run yet. Run <b>LTFS NAS Reader</b> in Package Center.');
+    return;
+  }
+  const st = s.settings || {};
+  $('sub').innerHTML = 'Version ' + esc(s.version) + ' · running since ' + esc(s.started) + ' · port ' + esc(s.port) +
+    ' · ' + esc(st.threads) + ' readers · ' + esc(st.window_mib) + ' MiB read-ahead';
+  if (s.stale_s > 10) banner('bad', 'The service is not running (last update ' + n0(s.stale_s) + ' s ago). Run it in Package Center.');
+  const arrays = (s.disks && s.disks.arrays) || [];
+  arrays.filter(a => a.sync).forEach(a => banner('warn', 'RAID ' + esc(a.name) + ': ' + esc(a.sync) +
+    '. Reads are slower until it finishes; a tape write may not keep the tape streaming.'));
+  const unreadable = (s.shares || []).filter(x => !x.readable);
+
+  // Writing now
+  const jobs = s.jobs || [];
+  $('jobs').className = jobs.length ? '' : 'muted';
+  $('jobs').innerHTML = jobs.length ? jobs.map(j => {
+    const p = pct(j.bytes_done, j.bytes_total);
+    return '<div class="job"><div><b>' + esc(j.name) + '</b> <span class="muted">(' + esc(j.client) + ') · since ' + esc(j.started) + '</span></div>' +
+      '<div class="bar"><i style="width:' + p.toFixed(1) + '%"></i></div>' +
+      '<div class="stats"><span><b>' + n0(j.files_done) + '</b> of ' + n0(j.files_total) + ' files</span>' +
+      '<span><b>' + gb(j.bytes_done) + '</b> of ' + gb(j.bytes_total) + '</span>' +
+      '<span><b>' + n0(j.mbps_now) + '</b> MB/s now</span><span><b>' + n0(j.files_now) + '</b> files/s</span>' +
+      '<span>average <b>' + n0(j.mbps_avg) + '</b> MB/s</span>' +
+      '<span>read ahead <b>' + n0(j.readahead_mib) + '</b> MiB</span><span>' + esc(j.readers) + ' readers</span></div>' +
+      '<div class="path" title="' + esc(j.current) + '">' + esc(j.current) + '</div>' +
+      (j.not_served ? '<div class="small" style="color:var(--warn)">' + n0(j.not_served) + ' file(s) read over the share instead: ' +
+        esc((j.problems || []).map(x => x[0] + ' (' + x[1] + ')').join('; ')) + '</div>' : '') + '</div>';
+  }).join('') : 'No write in progress.';
+
+  // Disks
+  $('disks').className = '';
+  $('disks').innerHTML = arrays.length ? arrays.map(a => '<div class="small muted" style="margin-bottom:6px">' + esc(a.name) + ' · ' +
+      esc(a.level) + ' · ' + (a.members || []).length + ' disks</div><div class="disks">' + (a.members || []).map(m =>
+      '<div class="disk">' + esc(m.disk) + ' <span class="muted">' + (m.busy == null ? '' : n0(m.busy) + '% busy · ' + n0(m.read_mbps) + ' MB/s') +
+      '</span><div class="bar"><i style="width:' + (m.busy || 0).toFixed(0) + '%"></i></div></div>').join('') + '</div>').join('')
+    : '<span class="muted">No RAID information.</span>';
+
+  // Shares
+  $('shares').className = '';
+  $('shares').innerHTML = (unreadable.length ? '<div class="small" style="color:var(--warn);margin-bottom:6px">To read a share, give ' +
+      '<b>sc-ltfsnasreader</b> Read only: Control Panel › Shared Folder › the share › Edit › Permissions › System internal user.</div>' : '') +
+    '<table><tbody>' + (s.shares || []).map(x => '<tr><td>' + esc(x.name) + '</td><td class="small muted">' + esc(x.path) +
+      '</td><td class="' + (x.readable ? 'yes">readable' : 'no">no access') + '</td></tr>').join('') + '</tbody></table>';
+
+  // Recent writes
+  const h = s.history || [];
+  $('history').className = h.length ? 'scroll' : 'muted';
+  $('history').innerHTML = h.length ? '<table><thead><tr><th>Started</th><th>Computer</th><th class="num">Files</th><th class="num">GB</th>' +
+      '<th class="num">MB/s</th><th class="num">Over share</th><th>Result</th></tr></thead><tbody>' + h.map(r =>
+      '<tr><td>' + esc(r.started) + '</td><td>' + esc(r.name) + ' <span class="muted small">' + esc(r.client) + '</span></td>' +
+      '<td class="num">' + n0(r.files) + (r.files !== r.files_total ? ' / ' + n0(r.files_total) : '') + '</td><td class="num">' +
+      esc(r.gb) + '</td><td class="num">' + n0(r.mbps) + '</td><td class="num"' + ((r.problems || []).length ? ' title="' +
+      esc(r.problems.map(x => x[0] + ' (' + x[1] + ')').join('\n')) + '"' : '') + '>' + n0(r.not_served) + '</td><td>' + esc(r.result) +
+      '</td></tr>').join('') + '</tbody></table>' : 'None since the service started.';
+
+  // Events
+  const ev = s.events || [];
+  $('events').innerHTML = ev.length ? ev.map(e => '<li><time>' + esc(e.time) + '</time>' + esc(e.text) + '</li>').join('') : '<li class="muted">None.</li>';
+
+  if (!settingsLoaded && st.port) {
+    $('port').value = st.port; $('threads').value = st.threads; $('window').value = st.window_mib; settingsLoaded = true;
+  }
+}
+
+async function refresh() {
+  try {
+    const s = await api('cgi/status.cgi');
+    if (!s.busy) render(s);
+  } catch (e) {
+    $('banners').innerHTML = ''; banner('bad', esc(e.message));
+  }
+  setTimeout(refresh, document.hidden ? 10000 : 2000);
+}
+
+function say(text, bad) { $('msg').textContent = text; $('msg').style.color = bad ? 'var(--bad)' : ''; }
+
+$('save').onclick = async () => {
+  try {
+    const r = await api('cgi/settings.cgi', { action: 'save', port: $('port').value, threads: $('threads').value, window_mib: $('window').value });
+    say(r.restart ? 'Saved. Stop and Run the package in Package Center to use the new port (also change LTFSWriter_NasReader).' : 'Saved.');
+  } catch (e) { say(e.message, true); }
+};
+async function loadKey() { const r = await api('cgi/settings.cgi', { action: 'key' }); $('key').value = r.key; return r.key; }
+$('show').onclick = async () => {
+  try {
+    if ($('key').type === 'password') { await loadKey(); $('key').type = 'text'; $('show').textContent = 'Hide'; }
+    else { $('key').type = 'password'; $('key').value = '••••••••••••••••'; $('show').textContent = 'Show'; }
+  } catch (e) { say(e.message, true); }
+};
+$('copy').onclick = async () => {
+  try {
+    const key = $('key').type === 'text' ? $('key').value : await loadKey();
+    if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(key);
+    else { const t = document.createElement('textarea'); t.value = key; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); }
+    say('Key copied.');
+  } catch (e) { say(e.message, true); }
+};
+$('newkey').onclick = async () => {
+  if (!confirm('Make a new key? LTFSCopyGui2NAS keeps reading over the share until it gets the new key.')) return;
+  try { const r = await api('cgi/settings.cgi', { action: 'newkey' }); $('key').type = 'text'; $('key').value = r.key; $('show').textContent = 'Hide';
+        say('New key made. Paste it into LTFSWriter_NasReaderKey.'); } catch (e) { say(e.message, true); }
+};
+refresh();
+</script>
+</body>
+</html>

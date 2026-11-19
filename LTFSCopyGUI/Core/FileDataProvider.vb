@@ -70,6 +70,8 @@ Public Class FileDataProvider
     ' One set of lane buffers for the whole job: the producer streams one file at a time and every read of a file has
     ' finished before the next file starts, so they are reused instead of putting 8 MiB arrays on the LOH per file.
     Private _laneBuffers As Byte()() = Nothing
+    ' LTFSWriter_NasReader: files on that NAS come from its reader service, in list order (see NasSource); Nothing = off.
+    Private _nas As NasSource
 
     Private ReadOnly _nextFileSignal As New AutoResetEvent(False)
     Private ReadOnly _cts As New CancellationTokenSource()
@@ -175,6 +177,8 @@ Public Class FileDataProvider
                 End Using
             End Using
         End Using
+        ' Before the read-ahead starts: it leaves the files the NAS reader sends to it.
+        _nas = NasSource.TryOpen(My.Settings.LTFSWriter_NasReader, My.Settings.LTFSWriter_NasReaderKey, _writeList, _routes, AddressOf IsSmallRecord)
         _preloadTask = Task.Run(AddressOf PreloadSmallFilesAsync)
         _producerTask = Task.Run(AddressOf ProducerLoopAsync)
         ' 积极模式下，立即允许开始
@@ -212,6 +216,7 @@ Public Class FileDataProvider
             _cts.Cancel()
         Catch ex As ObjectDisposedException
         End Try
+        If _nas IsNot Nothing Then _nas.Dispose() ' unblocks a producer waiting on the NAS
         Try
             _nextFileSignal.Set()
         Catch ex As ObjectDisposedException
@@ -249,6 +254,7 @@ Public Class FileDataProvider
         CompleteOutput()
         Await AwaitBackgroundTaskAsync(_producerTask, "producer").ConfigureAwait(False)
         Await AwaitBackgroundTaskAsync(_preloadTask, "preloader").ConfigureAwait(False)
+        If _nas IsNot Nothing Then _nas.Dispose() ' logs how many files the NAS sent
         CompleteReader()
 
         Try
@@ -370,7 +376,11 @@ Public Class FileDataProvider
                 If isSmallFile Then
                     Dim data As Byte() = Nothing
                     Dim preloaded As Task(Of Byte()) = Nothing
-                    If _smallCacheMap.TryRemove(fr, preloaded) Then
+                    If _nas IsNot Nothing AndAlso _nas.Covers(nextIdx) Then
+                        data = _nas.TryReadAll(nextIdx, fr.File.length) ' Nothing: the NAS did not send it, read it below
+                        If data IsNot Nothing Then fr.IsOpened = True
+                    End If
+                    If data Is Nothing AndAlso _smallCacheMap.TryRemove(fr, preloaded) Then
                         data = Await preloaded.ConfigureAwait(False) ' read, or still being read by a worker
                         If data IsNot Nothing Then
                             Interlocked.Add(_smallCacheBytes, -data.LongLength)
@@ -394,7 +404,7 @@ Public Class FileDataProvider
                     End If
                 Else
                     ' 大文件：流式拷贝到 Pipe（积极缓存，受 Pipe 背压调节）
-                    Await StreamFileToPipeAsync(fr, _cts.Token)
+                    Await StreamFileToPipeAsync(fr, nextIdx, _cts.Token)
                 End If
                 If Log.IsEnabled(Serilog.Events.LogEventLevel.Debug) Then ' per-file trace: thousands per second
                     Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(FileDataProvider))
@@ -508,7 +518,33 @@ Public Class FileDataProvider
         End Try
         Return Array.Empty(Of Byte)()
     End Function
-    Private Async Function StreamFileToPipeAsync(fr As LTFSWriter.FileRecord, ct As CancellationToken) As Task
+    ''' <summary>Hands bytes from the NAS reader to the output; False when the output was closed.</summary>
+    Private Async Function NasSinkAsync(buffer As Byte(), count As Integer) As Task(Of Boolean)
+        If _ringBufferEnabled Then
+            WriteAllToRing(buffer, count, _cts.Token)
+            Return True
+        End If
+        _writer.Write(buffer.AsSpan(0, count))
+        Dim res = Await _writer.FlushAsync(_cts.Token).ConfigureAwait(False)
+        Return Not (res.IsCanceled OrElse res.IsCompleted)
+    End Function
+
+    Private Async Function StreamFileToPipeAsync(fr As LTFSWriter.FileRecord, index As Integer, ct As CancellationToken) As Task
+        ' From the NAS reader when it covers the file; whatever it did not send is read over the share below, from the
+        ' first byte it did not send.
+        Dim resumeAt As Long = 0
+        If _nas IsNot Nothing AndAlso _nas.Covers(index) Then
+            fr.IsOpened = True
+            Dim r As NasSource.Outcome = Await _nas.ReadAsync(index, AddressOf NasSinkAsync).ConfigureAwait(False)
+            If r.Status = -2 OrElse ct.IsCancellationRequested Then Return ' output closed or stopped
+            If r.Status = 0 Then
+                If r.Sent <> fr.SegmentLength Then
+                    Throw New EndOfStreamException($"Source stream ended before the expected length was read: {fr.SourcePath}; expected {fr.SegmentLength}, got {r.Sent}.")
+                End If
+                Return
+            End If
+            resumeAt = r.Sent
+        End If
         Dim fs As FileStream = Nothing
         Dim sourcePath As String = fr.EnsureSourcePathResolved()
         Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(FileDataProvider))
@@ -523,7 +559,7 @@ Public Class FileDataProvider
                 End Using
             End Using
         End Using
-        Dim lanes As Integer = LaneCountFor(fr)
+        Dim lanes As Integer = If(resumeAt > 0, 1, LaneCountFor(fr))
         Try
             If lanes > 1 Then
                 ' Lane 0; StreamFileInLanesAsync opens the others the same way.
@@ -574,12 +610,12 @@ Public Class FileDataProvider
             End Try
         End Try
 
-        Dim totalReadLen As Long = 0
+        Dim totalReadLen As Long = resumeAt
         Using fs
             If lanes > 1 Then
                 totalReadLen = Await StreamFileInLanesAsync(fr, sourcePath, fs, lanes, ct).ConfigureAwait(False)
             ElseIf _ringBufferEnabled Then
-                If fr.FileOffset > 0 Then fs.Seek(fr.FileOffset, SeekOrigin.Begin)
+                If fr.FileOffset + resumeAt > 0 Then fs.Seek(fr.FileOffset + resumeAt, SeekOrigin.Begin)
                 Dim minChunk As Integer = 1024 * 1024
                 While Not ct.IsCancellationRequested
                     If totalReadLen >= fr.SegmentLength Then Exit While
@@ -597,7 +633,7 @@ Public Class FileDataProvider
                     totalReadLen += n
                 End While
             Else
-                If fr.FileOffset > 0 Then fs.Seek(fr.FileOffset, SeekOrigin.Begin)
+                If fr.FileOffset + resumeAt > 0 Then fs.Seek(fr.FileOffset + resumeAt, SeekOrigin.Begin)
                 Dim minSize As Integer = 64 * 1024
                 While Not ct.IsCancellationRequested
                     If totalReadLen >= fr.SegmentLength Then Exit While
@@ -781,6 +817,7 @@ Public Class FileDataProvider
             If i <= Volatile.Read(_currentIndex) Then Continue While
             Dim fr As LTFSWriter.FileRecord = _writeList(i)
             If Not IsSmallRecord(fr) OrElse fr.Buffer IsNot Nothing Then Continue While ' a buffered record is in memory already
+            If _nas IsNot Nothing AndAlso _nas.Covers(i) Then Continue While ' the NAS reader sends it
             ' 控制小文件缓存上限
             While (_smallCacheMap.Count >= _smallCacheCapacity OrElse Interlocked.Read(_smallCacheBytes) >= SmallCacheByteLimit) AndAlso
                   Not _cts.IsCancellationRequested
@@ -873,7 +910,7 @@ Friend NotInheritable Class SourceRoutes
     End Function
 
     ''' <summary>Splits \\?\UNC\, \\server\ and mapped-drive paths into server, share and the rest ("\dir\file").</summary>
-    Private Function SplitNetworkPath(path As String, ByRef server As String, ByRef share As String, ByRef rest As String) As Boolean
+    Friend Function SplitNetworkPath(path As String, ByRef server As String, ByRef share As String, ByRef rest As String) As Boolean
         If String.IsNullOrEmpty(path) Then Return False
         Dim unc As String
         If path.StartsWith("\\?\UNC\", StringComparison.OrdinalIgnoreCase) Then

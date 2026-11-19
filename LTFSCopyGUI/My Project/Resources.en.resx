@@ -987,6 +987,12 @@ Enable only when memory usage is abnormally high</value>
   <data name="PropertyDescription_LTFSWriter_SourceServerAliases" xml:space="preserve">
     <value>Other names for the server of a network source (a NAS), comma-separated, so source files are read over several network connections at once. Windows opens one connection per server name, and a Samba NAS reads one file at a time per connection: three names read small files about 2.3 times faster. auto = the server's own names (e.g. 192.168.3.5 -&gt; LinkBigNas.local, LinkBigNas); empty = one connection. More names can be added in the Windows hosts file. Used when parallel source reads is above 1.</value>
   </data>
+  <data name="PropertyDescription_LTFSWriter_NasReader" xml:space="preserve">
+    <value>Read source files through the LTFS NAS Reader package on the NAS (host or host:port, port 7171 by default), e.g. 192.168.3.5. The app still lists the files over the network share as before; the NAS then sends their contents in write order, reading ahead with many reads at once on its own disks (an office folder on a Synology: 159 files/s over SMB, about 1,000 files/s from the NAS reader). Files on other servers, and any file the NAS cannot send, are read over the share as before. Empty = off.</value>
+  </data>
+  <data name="PropertyDescription_LTFSWriter_NasReaderKey" xml:space="preserve">
+    <value>The key shown on the LTFS NAS Reader page in DSM (Show key / Copy). Without the right key the NAS refuses the connection and the files are read over the share.</value>
+  </data>
   <data name="PropertyDescription_LTFSWriter_PackSmallFiles" xml:space="preserve">
     <value>Pack small files into shared tape blocks (many small files per 512 KiB write; much faster for small files). Readable by any LTFS reader.</value>
   </data>
