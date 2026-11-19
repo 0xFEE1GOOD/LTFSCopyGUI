@@ -1,0 +1,3 @@
+# Everything here runs on the NAS (Linux): keep LF line endings in the working copy too.
+* text=auto eol=lf
+*.png binary
