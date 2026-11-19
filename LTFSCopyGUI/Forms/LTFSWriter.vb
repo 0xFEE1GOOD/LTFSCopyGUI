@@ -9357,10 +9357,14 @@ Public Class LTFSWriter
                             End Try
                         End If
                         If Not useFastReader Then
+                            ' Several reads in flight: files under 1 MiB go to the read-ahead workers (one network
+                            ' round trip each, so N at once), 16 MiB and up are read over N handles. 1 = as v1.009.
+                            Dim sourceReads As Integer = Math.Max(1, Math.Min(8, My.Settings.LTFSWriter_ParallelSourceReads))
                             provider = New FileDataProvider(WriteList,
-                                                                 smallThresholdBytes:=16 * 1024,
+                                                                 smallThresholdBytes:=If(sourceReads > 1, 1024 * 1024, 16 * 1024),
                                                                  smallCacheCapacity:=My.Settings.LTFSWriter_PreLoadFileCount,
-                                                                 pipeBufferBytes:=My.Settings.LTFSWriter_PreLoadBytes)
+                                                                 pipeBufferBytes:=My.Settings.LTFSWriter_PreLoadBytes,
+                                                                 parallelReads:=sourceReads)
                             provider.Start()
                         End If
 

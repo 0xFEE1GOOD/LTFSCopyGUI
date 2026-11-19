@@ -54,6 +54,19 @@ Public Class FileDataProvider
     Private _smallCacheBytes As Long = 0
     Private Const SmallCacheByteLimit As Long = 256L * 1024 * 1024 ' with the file-count setting: at most this much held
 
+    ' Reads kept in flight (LTFSWriter_ParallelSourceReads): preload workers for small files, and handles ("lanes") per
+    ' large file. From a NAS over 10G (DS3615xs, cold files, 2026-11-19) the single-read path below gave 276 MB/s, four
+    ' lanes of 8 MiB 470-495 MB/s, and four preload workers 34 % more small files per second. RandomAccess turns off
+    ' Windows read-ahead on each lane: with SequentialScan the read-ahead fights the stride (175 MB/s in a test).
+    Private ReadOnly _parallelReads As Integer
+    Private Const LaneChunkBytes As Integer = 8 << 20
+    Private Const LaneMinBytes As Long = 2L * LaneChunkBytes
+    Private _preloadNext As Integer = -1
+    Private _preloadCached As Integer = 0
+    ' One set of lane buffers for the whole job: the producer streams one file at a time and every read of a file has
+    ' finished before the next file starts, so they are reused instead of putting 8 MiB arrays on the LOH per file.
+    Private _laneBuffers As Byte()() = Nothing
+
     Private ReadOnly _nextFileSignal As New AutoResetEvent(False)
     Private ReadOnly _cts As New CancellationTokenSource()
     Private ReadOnly _completionLock As New Object()
@@ -98,9 +111,11 @@ Public Class FileDataProvider
                    Optional pipeBufferBytes As Long = 256 << 20,
                    Optional smallThresholdBytes As Long = 16 * 1024,
                    Optional smallCacheCapacity As Integer = 1000,
-                   Optional requireSignal As Boolean = False)
+                   Optional requireSignal As Boolean = False,
+                   Optional parallelReads As Integer = 1)
 
         If writeList Is Nothing Then Throw New ArgumentNullException(NameOf(writeList))
+        _parallelReads = Math.Max(1, Math.Min(8, parallelReads))
 
         'Keep a private shallow copy.  The provider may release slots as it
         'advances, while the writer must keep its indexed plan stable until
@@ -143,13 +158,14 @@ Public Class FileDataProvider
             Using categoryScope As IDisposable = LogContext.PushProperty("Category", "FileProvider")
                 Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
                     Using eventTypeScope As IDisposable = LogContext.PushProperty("EventType", "Lifecycle")
-                        Log.Information("File data provider started. FileCount={FileCount} RingBufferEnabled={RingBufferEnabled} PipeBufferBytes={PipeBufferBytes} SmallThresholdBytes={SmallThresholdBytes} SmallCacheCapacity={SmallCacheCapacity} RequireSignal={RequireSignal}.",
+                        Log.Information("File data provider started. FileCount={FileCount} RingBufferEnabled={RingBufferEnabled} PipeBufferBytes={PipeBufferBytes} SmallThresholdBytes={SmallThresholdBytes} SmallCacheCapacity={SmallCacheCapacity} RequireSignal={RequireSignal} ParallelReads={ParallelReads}.",
                                         _writeList.Count,
                                         _ringBufferEnabled,
                                         If(_ringBufferEnabled, RingBuffer.Capacity, 0L),
                                         _smallThreshold,
                                         _smallCacheCapacity,
-                                        _requireSignal)
+                                        _requireSignal,
+                                        _parallelReads)
                     End Using
                 End Using
             End Using
@@ -423,11 +439,15 @@ Public Class FileDataProvider
     End Function
 
     Private Sub WriteAllToRing(data As Byte(), ct As CancellationToken)
+        WriteAllToRing(data, data.Length, ct)
+    End Sub
+
+    Private Sub WriteAllToRing(data As Byte(), count As Integer, ct As CancellationToken)
         Dim offset As Integer = 0
-        While offset < data.Length
+        While offset < count
             Dim seg = RingBuffer.GetWriteSegment(1, ct)
             If seg.Count = 0 Then Throw New EndOfStreamException("Ring buffer completed before all data was written.")
-            Dim n As Integer = Math.Min(seg.Count, data.Length - offset)
+            Dim n As Integer = Math.Min(seg.Count, count - offset)
             Buffer.BlockCopy(data, offset, seg.Array, seg.Offset, n)
             RingBuffer.AdvanceWrite(n)
             offset += n
@@ -495,10 +515,16 @@ Public Class FileDataProvider
                 End Using
             End Using
         End Using
+        Dim lanes As Integer = LaneCountFor(fr)
         Try
-            ' Cached setting (My.Settings takes a lock), and never a buffer larger than the file itself.
-            Dim bufferSize As Integer = CInt(Math.Max(4096L, Math.Min(CLng(CachedSetting(Of Integer)(NameOf(My.Settings.LTFSWriter_FileStreamBufferSize))), fr.File.length)))
-            fs = New FileStream(sourcePath, FileMode.Open, FileAccess.Read, LTFSWriter.FileRecord.SourceShare, bufferSize, FileOptions.Asynchronous Or FileOptions.SequentialScan)
+            If lanes > 1 Then
+                ' Lane 0; StreamFileInLanesAsync opens the others the same way.
+                fs = New FileStream(sourcePath, FileMode.Open, FileAccess.Read, LTFSWriter.FileRecord.SourceShare, 4096, FileOptions.Asynchronous Or FileOptions.RandomAccess)
+            Else
+                ' Cached setting (My.Settings takes a lock), and never a buffer larger than the file itself.
+                Dim bufferSize As Integer = CInt(Math.Max(4096L, Math.Min(CLng(CachedSetting(Of Integer)(NameOf(My.Settings.LTFSWriter_FileStreamBufferSize))), fr.File.length)))
+                fs = New FileStream(sourcePath, FileMode.Open, FileAccess.Read, LTFSWriter.FileRecord.SourceShare, bufferSize, FileOptions.Asynchronous Or FileOptions.SequentialScan)
+            End If
             If fr.File.length = 0 Then
                 fr.File.length = fs.Length
                 fr.FileOffset = 0
@@ -516,6 +542,7 @@ Public Class FileDataProvider
                 End Using
             End Using
             ' 备用：尝试使用现有 FileRecord 打开
+            lanes = 1
             Try
                 Select Case fr.Open(BufferSize:=64 * 1024)
                     Case DialogResult.Ignore
@@ -541,8 +568,10 @@ Public Class FileDataProvider
 
         Dim totalReadLen As Long = 0
         Using fs
-            If fr.FileOffset > 0 Then fs.Seek(fr.FileOffset, SeekOrigin.Begin)
-            If _ringBufferEnabled Then
+            If lanes > 1 Then
+                totalReadLen = Await StreamFileInLanesAsync(fr, sourcePath, fs, lanes, ct).ConfigureAwait(False)
+            ElseIf _ringBufferEnabled Then
+                If fr.FileOffset > 0 Then fs.Seek(fr.FileOffset, SeekOrigin.Begin)
                 Dim minChunk As Integer = 1024 * 1024
                 While Not ct.IsCancellationRequested
                     If totalReadLen >= fr.SegmentLength Then Exit While
@@ -560,6 +589,7 @@ Public Class FileDataProvider
                     totalReadLen += n
                 End While
             Else
+                If fr.FileOffset > 0 Then fs.Seek(fr.FileOffset, SeekOrigin.Begin)
                 Dim minSize As Integer = 64 * 1024
                 While Not ct.IsCancellationRequested
                     If totalReadLen >= fr.SegmentLength Then Exit While
@@ -596,6 +626,95 @@ Public Class FileDataProvider
         End Using
     End Function
 
+    ''' <summary>Handles to read this file over: 1 (one read at a time) unless it spans at least two 8 MiB chunks.</summary>
+    Private Function LaneCountFor(fr As LTFSWriter.FileRecord) As Integer
+        If _parallelReads < 2 OrElse fr.File.length = 0 OrElse fr.SegmentLength < LaneMinBytes Then Return 1
+        Return CInt(Math.Min(CLng(_parallelReads), (fr.SegmentLength + LaneChunkBytes - 1) \ LaneChunkBytes))
+    End Function
+
+    ''' <summary>
+    ''' Reads [FileOffset, FileOffset + SegmentLength) in 8 MiB chunks: chunk c on lane c Mod lanes, one read in flight
+    ''' per lane, chunks passed on in order. Each lane has its own buffer, reused for its next chunk once the current one
+    ''' is in the pipe, so at most lanes x 8 MiB is held. A lane that cannot be opened only lowers the count.
+    ''' </summary>
+    Private Async Function StreamFileInLanesAsync(fr As LTFSWriter.FileRecord, sourcePath As String, first As FileStream,
+                                                  lanes As Integer, ct As CancellationToken) As Task(Of Long)
+        Dim streams As New List(Of FileStream) From {first}
+        Dim pending As New Queue(Of KeyValuePair(Of Long, Task(Of Integer)))
+        Try
+            For i As Integer = 1 To lanes - 1
+                Try
+                    streams.Add(New FileStream(sourcePath, FileMode.Open, FileAccess.Read, LTFSWriter.FileRecord.SourceShare, 4096, FileOptions.Asynchronous Or FileOptions.RandomAccess))
+                Catch ex As Exception
+                    Log.Warning(ex, "File data provider opened {Lanes} of {Wanted} read lanes. SourcePath={SourcePath}.", streams.Count, lanes, fr.SourcePath)
+                    Exit For
+                End Try
+            Next
+            Dim laneCount As Integer = streams.Count
+            If _laneBuffers Is Nothing Then _laneBuffers = New Byte(_parallelReads - 1)() {}
+            Dim buffers As Byte()() = _laneBuffers
+            For i As Integer = 0 To laneCount - 1
+                If buffers(i) Is Nothing Then buffers(i) = New Byte(LaneChunkBytes - 1) {}
+            Next
+            Dim length As Long = fr.SegmentLength
+            Dim chunkCount As Long = (length + LaneChunkBytes - 1) \ LaneChunkBytes
+            Dim startChunk = Sub(c As Long)
+                                 Dim lane As Integer = CInt(c Mod laneCount)
+                                 Dim want As Integer = CInt(Math.Min(CLng(LaneChunkBytes), length - c * LaneChunkBytes))
+                                 pending.Enqueue(New KeyValuePair(Of Long, Task(Of Integer))(c, ReadChunkAsync(streams(lane), fr.FileOffset + c * LaneChunkBytes, buffers(lane), want, ct)))
+                             End Sub
+            For c As Long = 0 To Math.Min(CLng(laneCount), chunkCount) - 1
+                startChunk(c)
+            Next
+            Dim total As Long = 0
+            While pending.Count > 0
+                Dim head = pending.Peek()
+                Dim n As Integer = Await head.Value.ConfigureAwait(False)
+                pending.Dequeue()
+                Dim want As Integer = CInt(Math.Min(CLng(LaneChunkBytes), length - head.Key * LaneChunkBytes))
+                If n <> want Then
+                    Throw New EndOfStreamException($"Source stream ended before the expected length was read: {fr.SourcePath}; expected {length}, got {total + n}.")
+                End If
+                Dim buf As Byte() = buffers(CInt(head.Key Mod laneCount))
+                Dim outputClosed As Boolean = False
+                If _ringBufferEnabled Then
+                    WriteAllToRing(buf, n, ct)
+                Else
+                    _writer.Write(buf.AsSpan(0, n))
+                    Dim result = Await _writer.FlushAsync(ct).ConfigureAwait(False)
+                    outputClosed = result.IsCanceled OrElse result.IsCompleted
+                End If
+                total += n
+                If outputClosed Then Exit While
+                If head.Key + laneCount < chunkCount Then startChunk(head.Key + laneCount) ' this lane's buffer is free again
+            End While
+            Return total
+        Finally
+            ' Reads still in flight (cancel, error, pipe closed) finish before their handles and buffers go.
+            For Each p In pending
+                Try
+                    p.Value.Wait()
+                Catch
+                End Try
+            Next
+            For i As Integer = 1 To streams.Count - 1 ' lane 0 belongs to the caller's Using
+                streams(i).Dispose()
+            Next
+        End Try
+    End Function
+
+    Private Shared Async Function ReadChunkAsync(fs As FileStream, position As Long, buffer As Byte(), count As Integer,
+                                                 ct As CancellationToken) As Task(Of Integer)
+        fs.Seek(position, SeekOrigin.Begin)
+        Dim got As Integer = 0
+        While got < count
+            Dim n As Integer = Await fs.ReadAsync(buffer, got, count - got, ct).ConfigureAwait(False)
+            If n = 0 Then Exit While
+            got += n
+        End While
+        Return got
+    End Function
+
     Private Function IsSmallRecord(fr As LTFSWriter.FileRecord) As Boolean
         Return fr IsNot Nothing AndAlso fr.File IsNot Nothing AndAlso fr.File.length < _smallThreshold AndAlso
                fr.FileOffset = 0 AndAlso fr.File.length = fr.SegmentLength
@@ -610,45 +729,18 @@ Public Class FileDataProvider
     ''' retries and reports them.
     ''' </summary>
     Private Async Function PreloadSmallFilesAsync() As Task
-        Dim cachedCount As Integer = 0
         Try
-            For i As Integer = 0 To _writeList.Count - 1
-                If _cts.IsCancellationRequested Then Exit For
-                If i <= Volatile.Read(_currentIndex) Then Continue For
-                Dim fr As LTFSWriter.FileRecord = _writeList(i)
-                If Not IsSmallRecord(fr) OrElse fr.Buffer IsNot Nothing Then Continue For ' a buffered record is in memory already
-                ' 控制小文件缓存上限
-                While (_smallCacheMap.Count >= _smallCacheCapacity OrElse Interlocked.Read(_smallCacheBytes) >= SmallCacheByteLimit) AndAlso
-                      Not _cts.IsCancellationRequested
-                    Await Task.Delay(10, _cts.Token)
-                End While
-                If i <= Volatile.Read(_currentIndex) Then Continue For
-
-                Dim data As Byte() = Nothing
-                Try
-                    data = fr.ReadAllBytes()
-                Catch
-                    data = Nothing
-                End Try
-                If data Is Nothing OrElse data.LongLength <> fr.File.length Then Continue For
-                Interlocked.Add(_smallCacheBytes, data.LongLength)
-                If Not _smallCacheMap.TryAdd(fr, data) Then
-                    Interlocked.Add(_smallCacheBytes, -data.LongLength)
-                    Continue For
-                End If
-                cachedCount += 1
-                ' The producer may have reached this file while it was being read: take it back so it is not held to the end.
-                Dim stale As Byte() = Nothing
-                If i <= Volatile.Read(_currentIndex) AndAlso _smallCacheMap.TryRemove(fr, stale) Then
-                    Interlocked.Add(_smallCacheBytes, -stale.LongLength)
-                    cachedCount -= 1
-                End If
+            ' Workers take the next index from one counter, so the files nearest the producer are fetched first.
+            Dim workers(_parallelReads - 1) As Task
+            For w As Integer = 0 To _parallelReads - 1
+                workers(w) = Task.Run(AddressOf PreloadWorkerAsync)
             Next
+            Await Task.WhenAll(workers).ConfigureAwait(False)
             Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(FileDataProvider))
                 Using categoryScope As IDisposable = LogContext.PushProperty("Category", "FileProvider")
                     Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
                         Using eventTypeScope As IDisposable = LogContext.PushProperty("EventType", "Cache")
-                            Log.Information("File data provider small-file preload completed. CachedFiles={CachedFiles} CacheEntries={CacheEntries}.", cachedCount, _smallCacheMap.Count)
+                            Log.Information("File data provider small-file preload completed. CachedFiles={CachedFiles} CacheEntries={CacheEntries} Workers={Workers}.", Volatile.Read(_preloadCached), _smallCacheMap.Count, _parallelReads)
                         End Using
                     End Using
                 End Using
@@ -660,12 +752,48 @@ Public Class FileDataProvider
                 Using categoryScope As IDisposable = LogContext.PushProperty("Category", "FileProvider")
                     Using sessionScope As IDisposable = LogContext.PushProperty("SessionId", _logSessionId)
                         Using eventTypeScope As IDisposable = LogContext.PushProperty("EventType", "Error")
-                            Log.Error(ex, "File data provider small-file preload failed. CachedFiles={CachedFiles}.", cachedCount)
+                            Log.Error(ex, "File data provider small-file preload failed. CachedFiles={CachedFiles}.", Volatile.Read(_preloadCached))
                         End Using
                     End Using
                 End Using
             End Using
         End Try
+    End Function
+
+    Private Async Function PreloadWorkerAsync() As Task
+        While Not _cts.IsCancellationRequested
+            Dim i As Integer = Interlocked.Increment(_preloadNext)
+            If i >= _writeList.Count Then Exit While
+            If i <= Volatile.Read(_currentIndex) Then Continue While
+            Dim fr As LTFSWriter.FileRecord = _writeList(i)
+            If Not IsSmallRecord(fr) OrElse fr.Buffer IsNot Nothing Then Continue While ' a buffered record is in memory already
+            ' 控制小文件缓存上限
+            While (_smallCacheMap.Count >= _smallCacheCapacity OrElse Interlocked.Read(_smallCacheBytes) >= SmallCacheByteLimit) AndAlso
+                  Not _cts.IsCancellationRequested
+                Await Task.Delay(10, _cts.Token).ConfigureAwait(False)
+            End While
+            If i <= Volatile.Read(_currentIndex) Then Continue While
+
+            Dim data As Byte() = Nothing
+            Try
+                data = fr.ReadAllBytes()
+            Catch
+                data = Nothing
+            End Try
+            If data Is Nothing OrElse data.LongLength <> fr.File.length Then Continue While
+            Interlocked.Add(_smallCacheBytes, data.LongLength)
+            If Not _smallCacheMap.TryAdd(fr, data) Then
+                Interlocked.Add(_smallCacheBytes, -data.LongLength)
+                Continue While
+            End If
+            Interlocked.Increment(_preloadCached)
+            ' The producer may have reached this file while it was being read: take it back so it is not held to the end.
+            Dim stale As Byte() = Nothing
+            If i <= Volatile.Read(_currentIndex) AndAlso _smallCacheMap.TryRemove(fr, stale) Then
+                Interlocked.Add(_smallCacheBytes, -stale.LongLength)
+                Interlocked.Decrement(_preloadCached)
+            End If
+        End While
     End Function
 End Class
 Public Class HardDriveDataProvider

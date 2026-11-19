@@ -992,6 +992,9 @@ P0Size和P1Size如果都不为65535，则两者总和不得超过磁带容量</v
   <data name="PropertyDescription_LTFSWriter_ExternalReaderEnabled" xml:space="preserve">
     <value>启用外部高速读取器（需要Windows 10及以上系统）</value>
   </data>
+  <data name="PropertyDescription_LTFSWriter_ParallelSourceReads" xml:space="preserve">
+    <value>写入时同时进行的源文件读取数：16 MiB 及以上的文件按 8 MiB 分块通过多个句柄并行读取，1 MiB 以下的文件由多个线程预读。1 = 逐个读取（v1.009 行为）；最多 8。</value>
+  </data>
   <data name="PropertyDescription_LTFSWriter_PackSmallFiles" xml:space="preserve">
     <value>小文件打包写入共享磁带块（多个小文件合并为一次写入，可提升小文件写入速度）</value>
   </data>

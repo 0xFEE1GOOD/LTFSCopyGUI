@@ -981,6 +981,9 @@ Enable only when memory usage is abnormally high</value>
   <data name="PropertyDescription_LTFSWriter_ExternalReaderEnabled" xml:space="preserve">
     <value>Enable external high-performance reader (Windows 10+ required)</value>
   </data>
+  <data name="PropertyDescription_LTFSWriter_ParallelSourceReads" xml:space="preserve">
+    <value>Source reads kept in flight while writing: files of 16 MiB or more are read in 8 MiB chunks over this many handles, and files under 1 MiB are read ahead by this many workers. From a NAS over 10G large files then come at ~480 MB/s instead of ~280. 1 = one read at a time (v1.009 behaviour); at most 8.</value>
+  </data>
   <data name="PropertyDescription_LTFSWriter_PackSmallFiles" xml:space="preserve">
     <value>Pack small files into shared tape blocks (many small files per 512 KiB write; much faster for small files). Readable by any LTFS reader.</value>
   </data>

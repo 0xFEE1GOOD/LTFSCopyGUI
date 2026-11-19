@@ -604,6 +604,21 @@ Namespace My
         End Property
 
         <Global.System.Configuration.UserScopedSettingAttribute(),
+         Global.System.Configuration.SettingsDescriptionAttribute("Source reads kept in flight"),
+         Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
+         Global.System.Configuration.DefaultSettingValueAttribute("4"),
+         Category("LTFSWriter"),
+         LocalizedDescription("PropertyDescription_LTFSWriter_ParallelSourceReads")>
+        Public Property LTFSWriter_ParallelSourceReads() As Integer
+            Get
+                Return CType(Me("LTFSWriter_ParallelSourceReads"), Integer)
+            End Get
+            Set(Value As Integer)
+                Me("LTFSWriter_ParallelSourceReads") = Value
+            End Set
+        End Property
+
+        <Global.System.Configuration.UserScopedSettingAttribute(),
          Global.System.Configuration.SettingsDescriptionAttribute("Ring buffer模式"),
          Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
          Global.System.Configuration.DefaultSettingValueAttribute("True"),
