@@ -22,7 +22,17 @@ Measured on a DS3615xs over 10G (cold office folder, 7,126 files, 5.9 GB):
 | SMB, 4 readers over 3 connections (LTFSCopyGui2 1.011) | 132 | 159 |
 | LTFS NAS Reader | ~500 | ~600 |
 
-With the NAS reader, no second dropped below 300 MB/s.
+With the NAS reader, no second dropped below 300 MB/s. Since 2.003 the NAS reads large files in 8 MiB pieces with
+several readers at once (two cold 12–15 GiB .pst files: 564 MB/s through the reader). Read-ahead is capped at its
+window for every file, including the one being sent.
+
+In LTFSCopyGui2NAS, the **NAS** light in the writer's status line shows whether the reader is ready:
+- **Blue:** set up, answering, and the key is accepted.
+- **Grey:** `LTFSWriter_NasReader` is empty.
+- **Red:** set up but not ready. The tooltip says why and which shares it can read.
+
+The writer log gets a "Source progress" line every 10 s. The NAS log gets a line per write every 10 s with the rate
+and what the NAS waited for: its disks, or the app (the tape side).
 
 ## Install
 

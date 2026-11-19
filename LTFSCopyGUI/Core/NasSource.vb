@@ -62,28 +62,103 @@ Friend NotInheritable Class NasSource
     ''' Connects, proves the key both ways and sends the list of files that are on that NAS; Nothing (logged) when the
     ''' setting is empty, no file is on that NAS, or the NAS cannot be reached - the provider then reads over the share.
     ''' </summary>
-    Public Shared Function TryOpen(setting As String, keyHex As String, writeList As List(Of LTFSWriter.FileRecord),
-                                   routes As SourceRoutes, isSmall As Func(Of LTFSWriter.FileRecord, Boolean)) As NasSource
-        setting = If(setting, String.Empty).Trim()
-        If setting.Length = 0 Then Return Nothing
-        Dim host As String = setting
-        Dim port As Integer = DefaultPort
+    ''' <summary>"host" or "host:port" -> host and port (7171 by default).</summary>
+    Private Shared Sub ParseEndpoint(setting As String, ByRef host As String, ByRef port As Integer)
+        host = setting
+        port = DefaultPort
         Dim colon As Integer = setting.LastIndexOf(":"c)
         If colon > 0 AndAlso Integer.TryParse(setting.Substring(colon + 1), port) Then
             host = setting.Substring(0, colon)
         Else
             port = DefaultPort
         End If
-        Dim endpoint As String = $"{host}:{port}"
-        Dim key As Byte() = Nothing
+    End Sub
+
+    ''' <summary>The key's bytes, or Nothing when it is not hex.</summary>
+    Private Shared Function ParseKey(keyHex As String) As Byte()
         Try
             Dim hex As String = If(keyHex, String.Empty).Trim()
-            If hex.Length > 0 AndAlso hex.Length Mod 2 = 0 Then
-                key = Enumerable.Range(0, hex.Length \ 2).Select(Function(i) Convert.ToByte(hex.Substring(i * 2, 2), 16)).ToArray()
-            End If
+            If hex.Length = 0 OrElse hex.Length Mod 2 <> 0 Then Return Nothing
+            Return Enumerable.Range(0, hex.Length \ 2).Select(Function(i) Convert.ToByte(hex.Substring(i * 2, 2), 16)).ToArray()
         Catch
-            key = Nothing
+            Return Nothing
         End Try
+    End Function
+
+    ''' <summary>Opens a connection and proves the key both ways; the stream is then ready for the job or a ping.</summary>
+    Private Shared Function Connect(host As String, port As Integer, key As Byte(), connectMs As Integer,
+                                    ByRef client As TcpClient) As BufferedStream
+        ' No fixed ReceiveBufferSize: setting one turns off Windows' receive window auto-tuning.
+        client = New TcpClient() With {.NoDelay = True}
+        If Not client.ConnectAsync(host, port).Wait(connectMs) Then Throw New TimeoutException($"no answer within {connectMs \ 1000} s")
+        Dim ns As NetworkStream = client.GetStream()
+        ns.ReadTimeout = 30000
+        ns.WriteTimeout = 60000
+        Dim input As New BufferedStream(ns, 1 << 20)
+        Dim hello As Byte() = ReadExact(input, 22)
+        If Encoding.ASCII.GetString(hello, 0, 4) <> "LNR1" OrElse BitConverter.ToUInt16(hello, 4) <> 1 Then
+            Throw New InvalidDataException("the service there is not an LTFS NAS Reader of protocol version 1")
+        End If
+        Dim nonce(15) As Byte
+        Buffer.BlockCopy(hello, 6, nonce, 0, 16)
+        Using h As New HMACSHA256(key)
+            ns.Write(h.ComputeHash(nonce.Concat(Encoding.ASCII.GetBytes("client")).ToArray()), 0, 32)
+            Dim proof As Byte() = ReadExact(input, 32, eofMessage:="the NAS refused the key (LTFSWriter_NasReaderKey)")
+            If Not h.ComputeHash(nonce.Concat(Encoding.ASCII.GetBytes("server")).ToArray()).SequenceEqual(proof) Then
+                Throw New UnauthorizedAccessException("the NAS answered with another key")
+            End If
+        End Using
+        Return input
+    End Function
+
+    ''' <summary>For the NAS light: 0 = off (no setting), 1 = ready, 2 = not ready; Text says why or what it can read.</summary>
+    Public Structure ProbeResult
+        Public State As Integer
+        Public Text As String
+    End Structure
+
+    ''' <summary>Is the NAS reader there and does it take the key? Sends no job (a ping); never throws.</summary>
+    Public Shared Function Probe(setting As String, keyHex As String) As ProbeResult
+        setting = If(setting, String.Empty).Trim()
+        If setting.Length = 0 Then Return New ProbeResult With {.State = 0, .Text = "off: LTFSWriter_NasReader is empty, files are read over the share"}
+        Dim host As String = Nothing, port As Integer
+        ParseEndpoint(setting, host, port)
+        Dim key As Byte() = ParseKey(keyHex)
+        If key Is Nothing Then Return New ProbeResult With {.State = 2, .Text = $"{host}:{port}: no valid key in LTFSWriter_NasReaderKey"}
+        Dim client As TcpClient = Nothing
+        Try
+            Dim input As BufferedStream = Connect(host, port, key, 3000, client)
+            input.WriteByte(2)
+            input.Flush()
+            Dim version As String = "2.002 or older", shares As String = ""
+            Try
+                Dim n As Integer = BitConverter.ToUInt16(ReadExact(input, 2), 0)
+                Dim json As String = Encoding.UTF8.GetString(ReadExact(input, n))
+                Dim v = RegularExpressions.Regex.Match(json, """version""\s*:\s*""([^""]*)""")
+                If v.Success Then version = v.Groups(1).Value
+                Dim s = RegularExpressions.Regex.Match(json, """shares""\s*:\s*\[([^\]]*)\]")
+                If s.Success Then shares = String.Join(", ", RegularExpressions.Regex.Matches(s.Groups(1).Value, """((?:[^""\\]|\\.)*)""").Cast(Of RegularExpressions.Match)().Select(Function(m) RegularExpressions.Regex.Unescape(m.Groups(1).Value)))
+            Catch ex As IOException
+                ' a 2.002 service closes on the ping; the key was accepted all the same
+            End Try
+            Return New ProbeResult With {.State = 1, .Text = $"{host}:{port}: ready (service {version})" &
+                                         If(shares.Length > 0, $"; it can read {shares}", "")}
+        Catch ex As Exception
+            Dim reason As String = If(TypeOf ex Is AggregateException AndAlso ex.InnerException IsNot Nothing, ex.InnerException.Message, ex.Message)
+            Return New ProbeResult With {.State = 2, .Text = $"{host}:{port}: not ready: {reason}"}
+        Finally
+            If client IsNot Nothing Then client.Close()
+        End Try
+    End Function
+
+    Public Shared Function TryOpen(setting As String, keyHex As String, writeList As List(Of LTFSWriter.FileRecord),
+                                   routes As SourceRoutes, isSmall As Func(Of LTFSWriter.FileRecord, Boolean)) As NasSource
+        setting = If(setting, String.Empty).Trim()
+        If setting.Length = 0 Then Return Nothing
+        Dim host As String = Nothing, port As Integer
+        ParseEndpoint(setting, host, port)
+        Dim endpoint As String = $"{host}:{port}"
+        Dim key As Byte() = ParseKey(keyHex)
         If key Is Nothing Then
             Log.Warning("NAS reader {Endpoint} not used: no valid key in LTFSWriter_NasReaderKey (copy it from the NAS page). Reading over the share.", endpoint)
             Return Nothing
@@ -129,26 +204,8 @@ Friend NotInheritable Class NasSource
 
         Dim client As TcpClient = Nothing
         Try
-            ' No fixed ReceiveBufferSize: setting one turns off Windows' receive window auto-tuning.
-            client = New TcpClient() With {.NoDelay = True}
-            If Not client.ConnectAsync(host, port).Wait(5000) Then Throw New TimeoutException("no answer within 5 s")
+            Dim input As BufferedStream = Connect(host, port, key, 5000, client)
             Dim ns As NetworkStream = client.GetStream()
-            ns.ReadTimeout = 30000
-            ns.WriteTimeout = 60000
-            Dim input As New BufferedStream(ns, 1 << 20)
-            Dim hello As Byte() = ReadExact(input, 22)
-            If Encoding.ASCII.GetString(hello, 0, 4) <> "LNR1" OrElse BitConverter.ToUInt16(hello, 4) <> 1 Then
-                Throw New InvalidDataException("the service there is not an LTFS NAS Reader of protocol version 1")
-            End If
-            Dim nonce(15) As Byte
-            Buffer.BlockCopy(hello, 6, nonce, 0, 16)
-            Using h As New HMACSHA256(key)
-                ns.Write(h.ComputeHash(nonce.Concat(Encoding.ASCII.GetBytes("client")).ToArray()), 0, 32)
-                Dim proof As Byte() = ReadExact(input, 32, eofMessage:="the NAS refused the key (LTFSWriter_NasReaderKey)")
-                If Not h.ComputeHash(nonce.Concat(Encoding.ASCII.GetBytes("server")).ToArray()).SequenceEqual(proof) Then
-                    Throw New UnauthorizedAccessException("the NAS answered with another key")
-                End If
-            End Using
             Dim name As Byte() = Encoding.UTF8.GetBytes(Environment.MachineName)
             Dim header As New MemoryStream()
             Using hw As New BinaryWriter(header, Encoding.UTF8, True)

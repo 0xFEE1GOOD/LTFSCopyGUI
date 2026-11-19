@@ -15,6 +15,7 @@ Protocol (TCP, little-endian), one write job per connection:
   client: HMAC-SHA256(key, nonce + b"client")          server: HMAC-SHA256(key, nonce + b"server")
   client: u8 1, u32 count, u16 name length, name, then per entry: u32 index, u64 offset, u64 length,
           u16 path length, path ("Share/dir/file", UTF-8)
+     or:  u8 2 (ping) -> server: u16 length, JSON {"version", "shares": readable share names}, then closes
   server, per entry in the client's order: DATA frames (u8 1, u32 index, u32 n, n bytes) as the file is read,
           then END (u8 2, u32 index, u8 status, u64 bytes sent); after the last entry u8 3.
   status: 0 read (bytes sent = min(length, file size - offset)), 1 not found, 2 read error (bytes sent so far are
@@ -150,24 +151,39 @@ class Shares:
 
 
 class Slot:
-    __slots__ = ('chunks', 'done', 'status', 'sent', 'reason')
+    """One entry, split into 8 MiB pieces that any reader may read; the sender passes them on in order."""
+    __slots__ = ('path', 'pieces', 'npieces', 'next_send', 'end', 'status', 'reason', 'sent')
 
-    def __init__(self):
-        self.chunks = collections.deque()
-        self.done, self.status, self.sent, self.reason = False, OK, 0, ''
+    def __init__(self, length):
+        self.path = None                          # resolved by the first reader that needs it
+        self.pieces = {}                          # piece number -> bytes, read but not yet sent
+        self.npieces = max(1, -(-length // CHUNK))
+        self.next_send = 0
+        self.end = None                           # piece where the entry stops early (shorter file, error)
+        self.status, self.reason, self.sent = OK, '', 0
 
 
 class Job:
+    """
+    Readers take (entry, piece) in the client's order, so a large file is read by several readers at once (one reader
+    in order: 485 MB/s cold for an 11.6 GiB .pst, 8 readers in 8 MiB pieces: 730). Read-ahead is bounded for every
+    entry, the one being sent too: only the very next piece the sender needs may exceed the window. (2.002 let the
+    entry being sent read on without a limit, so a slow tape side could make it hold a whole large file in memory.)
+    The lock is never held while sending.
+    """
+
     def __init__(self, entries, shares, window):
         self.entries, self.shares, self.window = entries, shares, window
         self.cv = threading.Condition()
         self.slots = {}
-        self.claim = self.sending = self.buffered = 0
+        self.claim_pos = self.claim_piece = 0
+        self.sending = self.buffered = 0
         self.cancelled = False
         self.files_done = self.bytes_done = self.not_served = 0
+        self.wait_disk = self.wait_app = 0.0      # seconds the sender waited for reads / for the client to take data
         self.drop_after = 0
         self.current = ''
-        self.problems = []              # (path, reason) for entries the client reads over SMB
+        self.problems = []                        # (path, reason) for entries the client reads over SMB
 
     def cancel(self):
         with self.cv:
@@ -177,61 +193,71 @@ class Job:
     def reader(self):
         while True:
             with self.cv:
-                while (not self.cancelled and self.claim < len(self.entries) and self.claim > self.sending
+                while (not self.cancelled and self.claim_pos < len(self.entries) and self.claim_pos > self.sending
                        and self.buffered >= self.window):
                     self.cv.wait()
-                if self.cancelled or self.claim >= len(self.entries):
+                if self.cancelled or self.claim_pos >= len(self.entries):
                     return
-                pos = self.claim
-                self.claim += 1
-                slot = self.slots[pos] = Slot()
+                pos, piece = self.claim_pos, self.claim_piece
+                slot = self.slots.get(pos)
+                if slot is None:
+                    slot = self.slots[pos] = Slot(self.entries[pos][3])
+                if piece + 1 >= slot.npieces:
+                    self.claim_pos, self.claim_piece = pos + 1, 0
+                else:
+                    self.claim_piece = piece + 1
                 self.cv.notify_all()
-            self._read(pos, slot)
+            self._read(pos, slot, piece)
 
-    def _put(self, pos, slot, data):
+    def _stop_at(self, slot, piece, status, reason):
+        """The entry ends before this piece (status OK: the file is shorter now)."""
         with self.cv:
-            while not self.cancelled and pos != self.sending and self.buffered + len(data) > self.window:
+            if slot.end is None or piece < slot.end:
+                slot.end, slot.status, slot.reason = piece, status, reason
+                for k in [k for k in slot.pieces if k >= piece]:
+                    self.buffered -= len(slot.pieces.pop(k))
+            self.cv.notify_all()
+
+    def _put(self, pos, slot, piece, data):
+        with self.cv:
+            while (not self.cancelled and self.buffered + len(data) > self.window
+                   and not (pos == self.sending and piece == slot.next_send)):
                 self.cv.wait()
-            if self.cancelled:
-                return False
-            slot.chunks.append(data)
-            slot.sent += len(data)
+            if self.cancelled or (slot.end is not None and piece >= slot.end):
+                return
+            slot.pieces[piece] = data
             self.buffered += len(data)
             self.cv.notify_all()
-            return True
 
-    def _finish(self, slot, status, reason=''):
-        with self.cv:
-            slot.status, slot.reason, slot.done = status, reason, True
-            self.cv.notify_all()
-
-    def _read(self, pos, slot):
+    def _read(self, pos, slot, piece):
         _, rel, offset, length = self.entries[pos]
+        if slot.end is not None and piece >= slot.end:
+            return
+        start = piece * CHUNK
+        want = max(0, min(CHUNK, length - start))
         try:
-            path = self.shares.resolve(rel)
-        except PermissionError as e:
-            return self._finish(slot, REFUSED, str(e))
-        except FileNotFoundError:
-            return self._finish(slot, NOT_FOUND, 'not found')
-        try:
+            path = slot.path
+            if path is None:
+                path = slot.path = self.shares.resolve(rel)
             with open(path, 'rb', buffering=0) as f:
-                remaining = min(length, max(0, os.fstat(f.fileno()).st_size - offset))
-                if offset:
-                    f.seek(offset)
-                if remaining > CHUNK and hasattr(os, 'posix_fadvise'):
-                    os.posix_fadvise(f.fileno(), offset, remaining, os.POSIX_FADV_SEQUENTIAL)
-                while remaining > 0:
-                    data = f.read(min(CHUNK, remaining))
-                    if not data:
-                        break                       # shorter now: the client sees fewer bytes, as with SMB
-                    if not self._put(pos, slot, data):
-                        return
-                    remaining -= len(data)
-            self._finish(slot, OK)
+                f.seek(offset + start)
+                parts, got = [], 0
+                while got < want:
+                    b = f.read(want - got)
+                    if not b:
+                        break
+                    parts.append(b)
+                    got += len(b)
+                data = parts[0] if len(parts) == 1 else b''.join(parts)
+        except PermissionError as e:
+            return self._stop_at(slot, piece, REFUSED, str(e))
         except FileNotFoundError:
-            self._finish(slot, NOT_FOUND, 'not found')
+            return self._stop_at(slot, piece, NOT_FOUND, 'not found')
         except OSError as e:
-            self._finish(slot, READ_ERROR, e.strerror or str(e))
+            return self._stop_at(slot, piece, READ_ERROR, e.strerror or str(e))
+        if len(data) < want:                      # shorter now: the client gets fewer bytes, as over SMB
+            self._stop_at(slot, piece + 1, OK, '')
+        self._put(pos, slot, piece, data)
 
     def send_all(self, out):
         """Sends every entry in order; returns normally when done, raises when the client went away."""
@@ -241,24 +267,47 @@ class Job:
                 self.current = rel
                 self.cv.notify_all()
             while True:
+                data = None
                 with self.cv:
                     slot = self.slots.get(pos)
-                    if slot is None or not (slot.chunks or slot.done):
-                        out.flush()                 # nothing ready: let the client have what is buffered
-                        while not self.cancelled and (slot is None or not (slot.chunks or slot.done)):
-                            self.cv.wait()
+                    ready = slot is not None and (slot.next_send in slot.pieces or slot.next_send >= slot.npieces or
+                                                  (slot.end is not None and slot.next_send >= slot.end))
+                if not ready:
+                    t = time.monotonic()
+                    out.flush()                   # nothing ready: let the client have what is buffered (no lock held)
+                    t2 = time.monotonic()
+                    self.wait_app += t2 - t
+                    with self.cv:
+                        while True:
+                            if self.cancelled:
+                                raise ConnectionAbortedError('cancelled')
                             slot = self.slots.get(pos)
+                            if slot is not None and (slot.next_send in slot.pieces or slot.next_send >= slot.npieces or
+                                                     (slot.end is not None and slot.next_send >= slot.end)):
+                                break
+                            self.cv.wait()
+                    self.wait_disk += time.monotonic() - t2
+                with self.cv:
                     if self.cancelled:
                         raise ConnectionAbortedError('cancelled')
-                    data = slot.chunks.popleft() if slot.chunks else None
-                    if data is not None:
+                    k = slot.next_send
+                    if k in slot.pieces and (slot.end is None or k < slot.end):
+                        data = slot.pieces.pop(k)
+                        slot.next_send = k + 1
+                        slot.sent += len(data)
                         self.buffered -= len(data)
                     else:
+                        for d in slot.pieces.values():
+                            self.buffered -= len(d)
                         del self.slots[pos]
                     self.cv.notify_all()
                 if data is not None:
+                    if not data:
+                        continue                  # an empty file: no DATA frame, just its END
+                    t = time.monotonic()
                     out.write(DATA.pack(1, index, len(data)))
                     out.write(data)
+                    self.wait_app += time.monotonic() - t
                     self.bytes_done += len(data)
                     if self.drop_after and self.bytes_done >= self.drop_after:   # tests only: --test-drop-after
                         out.flush()
@@ -422,7 +471,14 @@ class Service:
                 return
             wf.write(hmac.new(key, nonce + b'server', hashlib.sha256).digest())
             wf.flush()
-            if recv_exact(rf, 1) != b'\x01':
+            kind = recv_exact(rf, 1)
+            if kind == b'\x02':                   # ping from the app's NAS light: version and readable shares
+                reply = json.dumps({'version': VERSION, 'shares': [s['name'] for s in self.shares.readable()
+                                                                    if s['readable']]}).encode('utf-8')
+                wf.write(struct.pack('<H', len(reply)) + reply)
+                wf.flush()
+                return
+            if kind != b'\x01':
                 return
             count, name_len = struct.unpack('<IH', recv_exact(rf, 6))
             name = recv_exact(rf, name_len).decode('utf-8', 'replace')
@@ -438,7 +494,8 @@ class Service:
             job.drop_after = self.drop_after
             info = {'client': peer, 'name': name, 'started': time.time(), 'files_total': count,
                     'bytes_total': sum(e[3] for e in entries), 'job': job, 'readers': settings['threads'],
-                    'last': (time.monotonic(), 0, 0), 'now': (0.0, 0.0)}
+                    'last': (time.monotonic(), 0, 0), 'now': (0.0, 0.0),
+                    'logged': (time.monotonic(), 0, 0, 0.0, 0.0), 'waits': (0.0, 0.0)}
             with self.lock:
                 self.live[id(job)] = info
             self.event('%s (%s) started a write of %d files, %.1f GB.' % (name, peer, count, info['bytes_total'] / 1e9))
@@ -493,6 +550,18 @@ class Service:
                     if t - t0 >= 2:
                         info['now'] = ((job.bytes_done - b0) / 1e6 / (t - t0), (job.files_done - f0) / (t - t0))
                         info['last'] = (t, job.files_done, job.bytes_done)
+                    lt, lf, lb, ld, la = info['logged']
+                    if t - lt >= 10:
+                        # Every 10 s in the log: what the sender waited for. Disks = reading is the limit; the app = the
+                        # client (in the end the tape) takes the data more slowly than the NAS reads it.
+                        dd, da = job.wait_disk - ld, job.wait_app - la
+                        info['waits'] = (dd, da)
+                        log.info('%s: %d of %d files, %.1f GB; last %.0f s: %.0f MB/s, %.0f files/s; read-ahead %d MiB; '
+                                 'waited for the disks %.1f s, for the app %.1f s',
+                                 info['name'], job.files_done, info['files_total'], job.bytes_done / 1e9, t - lt,
+                                 (job.bytes_done - lb) / 1e6 / (t - lt), (job.files_done - lf) / (t - lt),
+                                 job.buffered / 1048576, dd, da)
+                        info['logged'] = (t, job.files_done, job.bytes_done, job.wait_disk, job.wait_app)
                     secs = max(0.001, time.time() - info['started'])
                     jobs.append({'client': info['client'], 'name': info['name'], 'started': now_iso(info['started']),
                                  'files_done': job.files_done, 'files_total': info['files_total'],
@@ -501,6 +570,7 @@ class Service:
                                  'files_now': round(info['now'][1], 1),
                                  'mbps_avg': round(job.bytes_done / 1e6 / secs, 1),
                                  'readahead_mib': round(job.buffered / 1048576), 'readers': info['readers'],
+                                 'wait_disk_s': round(info['waits'][0], 1), 'wait_app_s': round(info['waits'][1], 1),
                                  'not_served': job.not_served, 'problems': job.problems[-10:]})
                 with self.lock:
                     history, events = list(self.history), list(self.events)

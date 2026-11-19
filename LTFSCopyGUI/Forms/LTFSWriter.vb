@@ -8744,6 +8744,11 @@ Public Class LTFSWriter
             Return
         End If
         If Not PipePause Then Return
+        If provider.ProducerCompleted Then
+            ' Everything is in the buffer: no wait, and no "refilled" line for each of the last files (2.002 logged ~20).
+            PipePause = False
+            Return
+        End If
         Dim reader As System.IO.Pipelines.PipeReader = provider.Reader
         Dim target As Long = BufferFullMark(My.Settings.LTFSWriter_PreLoadBytes)
         Dim sw As Stopwatch = Stopwatch.StartNew()

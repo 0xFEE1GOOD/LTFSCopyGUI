@@ -72,6 +72,13 @@ Public Class FileDataProvider
     Private _laneBuffers As Byte()() = Nothing
     ' LTFSWriter_NasReader: files on that NAS come from its reader service, in list order (see NasSource); Nothing = off.
     Private _nas As NasSource
+    ' Progress line every 10 s (2.003): what was read, and how long the producer waited because the buffer was full (the
+    ' tape side is the limit) - the rest of the time it was waiting for the source.
+    Private _outWaitTicks As Long
+    Private _producedFiles As Long
+    Private _producedBytes As Long
+    Private ReadOnly _progressClock As Stopwatch = Stopwatch.StartNew()
+    Private _progressLast As (T As Long, Files As Long, Bytes As Long, OutWait As Long)
 
     Private ReadOnly _nextFileSignal As New AutoResetEvent(False)
     Private ReadOnly _cts As New CancellationTokenSource()
@@ -398,7 +405,7 @@ Public Class FileDataProvider
                             WriteAllToRing(data, _cts.Token)
                         Else
                             _writer.Write(data.AsSpan())
-                            Dim res = Await _writer.FlushAsync(_cts.Token)
+                            Dim res = Await FlushTimedAsync(_cts.Token)
                             If res.IsCanceled OrElse res.IsCompleted Then Exit While
                         End If
                     End If
@@ -406,6 +413,7 @@ Public Class FileDataProvider
                     ' 大文件：流式拷贝到 Pipe（积极缓存，受 Pipe 背压调节）
                     Await StreamFileToPipeAsync(fr, nextIdx, _cts.Token)
                 End If
+                CountProduced(If(isSmallFile, fr.File.length, fr.SegmentLength))
                 If Log.IsEnabled(Serilog.Events.LogEventLevel.Debug) Then ' per-file trace: thousands per second
                     Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(FileDataProvider))
                         Using categoryScope As IDisposable = LogContext.PushProperty("Category", "FileProvider")
@@ -460,10 +468,41 @@ Public Class FileDataProvider
         WriteAllToRing(data, data.Length, ct)
     End Sub
 
+    ''' <summary>FlushAsync, timing the wait (it waits only when the buffer is full).</summary>
+    Private Async Function FlushTimedAsync(ct As CancellationToken) As Task(Of FlushResult)
+        Dim t As Long = Stopwatch.GetTimestamp()
+        Dim res As FlushResult = Await _writer.FlushAsync(ct).ConfigureAwait(False)
+        Interlocked.Add(_outWaitTicks, Stopwatch.GetTimestamp() - t)
+        Return res
+    End Function
+
+    Private Function RingSegmentTimed(minimum As Integer, ct As CancellationToken) As ArraySegment(Of Byte)
+        Dim t As Long = Stopwatch.GetTimestamp()
+        Dim seg = RingBuffer.GetWriteSegment(minimum, ct)
+        Interlocked.Add(_outWaitTicks, Stopwatch.GetTimestamp() - t)
+        Return seg
+    End Function
+
+    ''' <summary>After each file: every 10 s one line on the source rate and on what the producer waited for.</summary>
+    Private Sub CountProduced(bytes As Long)
+        _producedFiles += 1
+        _producedBytes += bytes
+        Dim now As Long = _progressClock.ElapsedMilliseconds
+        If now - _progressLast.T < 10000 Then Return
+        Dim secs As Double = (now - _progressLast.T) / 1000.0
+        Dim outWait As Long = Interlocked.Read(_outWaitTicks)
+        Dim waited As Double = (outWait - _progressLast.OutWait) / CDbl(Stopwatch.Frequency)
+        Log.Information("Source progress: {Files} files, {MB:0} MB in the last {Seconds:0} s = {Rate:0} MB/s, {FilesPerSecond:0} files/s; waited {OutWait:0.0} s for the tape side (buffer full), {SourceWait:0.0} s for the source{Via}.",
+                        _producedFiles - _progressLast.Files, (_producedBytes - _progressLast.Bytes) / 1000000.0, secs,
+                        (_producedBytes - _progressLast.Bytes) / 1000000.0 / secs, (_producedFiles - _progressLast.Files) / secs,
+                        waited, Math.Max(0, secs - waited), If(_nas IsNot Nothing, " (NAS reader)", ""))
+        _progressLast = (now, _producedFiles, _producedBytes, outWait)
+    End Sub
+
     Private Sub WriteAllToRing(data As Byte(), count As Integer, ct As CancellationToken)
         Dim offset As Integer = 0
         While offset < count
-            Dim seg = RingBuffer.GetWriteSegment(1, ct)
+            Dim seg = RingSegmentTimed(1, ct)
             If seg.Count = 0 Then Throw New EndOfStreamException("Ring buffer completed before all data was written.")
             Dim n As Integer = Math.Min(seg.Count, count - offset)
             Buffer.BlockCopy(data, offset, seg.Array, seg.Offset, n)
@@ -525,7 +564,7 @@ Public Class FileDataProvider
             Return True
         End If
         _writer.Write(buffer.AsSpan(0, count))
-        Dim res = Await _writer.FlushAsync(_cts.Token).ConfigureAwait(False)
+        Dim res = Await FlushTimedAsync(_cts.Token).ConfigureAwait(False)
         Return Not (res.IsCanceled OrElse res.IsCompleted)
     End Function
 
@@ -620,7 +659,7 @@ Public Class FileDataProvider
                 While Not ct.IsCancellationRequested
                     If totalReadLen >= fr.SegmentLength Then Exit While
                     Dim remaining As Long = fr.SegmentLength - totalReadLen
-                    Dim seg = RingBuffer.GetWriteSegment(CInt(Math.Min(CLng(minChunk), remaining)), ct)
+                    Dim seg = RingSegmentTimed(CInt(Math.Min(CLng(minChunk), remaining)), ct)
                     If seg.Count = 0 Then
                         ' 理论上不会（除非 completed/disposed/canceled）
                         Throw New EndOfStreamException($"Source stream ended before the expected length was read: {fr.SourcePath}")
@@ -648,7 +687,7 @@ Public Class FileDataProvider
                     If n = 0 Then Throw New EndOfStreamException($"Source stream ended before the expected length was read: {fr.SourcePath}")
                     _writer.Advance(n)
                     totalReadLen += n
-                    Dim result = Await _writer.FlushAsync(ct).ConfigureAwait(False)
+                    Dim result = Await FlushTimedAsync(ct).ConfigureAwait(False)
                     If result.IsCanceled OrElse result.IsCompleted Then Exit While
                 End While
             End If
@@ -730,7 +769,7 @@ Public Class FileDataProvider
                     WriteAllToRing(buf, n, ct)
                 Else
                     _writer.Write(buf.AsSpan(0, n))
-                    Dim result = Await _writer.FlushAsync(ct).ConfigureAwait(False)
+                    Dim result = Await FlushTimedAsync(ct).ConfigureAwait(False)
                     outputClosed = result.IsCanceled OrElse result.IsCompleted
                 End If
                 total += n
