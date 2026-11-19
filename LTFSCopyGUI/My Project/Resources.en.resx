@@ -982,7 +982,10 @@ Enable only when memory usage is abnormally high</value>
     <value>Enable external high-performance reader (Windows 10+ required)</value>
   </data>
   <data name="PropertyDescription_LTFSWriter_ParallelSourceReads" xml:space="preserve">
-    <value>Source reads kept in flight while writing: files of 16 MiB or more are read in 8 MiB chunks over this many handles, and files under 1 MiB are read ahead by this many workers. From a NAS over 10G large files then come at ~480 MB/s instead of ~280. 1 = one read at a time (v1.009 behaviour); at most 8.</value>
+    <value>Source reads kept in flight while writing: files of 16 MiB or more are read in 8 MiB chunks over this many handles, and smaller files are read ahead by this many workers (over several network connections, see LTFSWriter_SourceServerAliases). From a NAS over 10G large files then come at ~480 MB/s instead of ~280. 1 = one read at a time (v1.009 behaviour); at most 8.</value>
+  </data>
+  <data name="PropertyDescription_LTFSWriter_SourceServerAliases" xml:space="preserve">
+    <value>Other names for the server of a network source (a NAS), comma-separated, so source files are read over several network connections at once. Windows opens one connection per server name, and a Samba NAS reads one file at a time per connection: three names read small files about 2.3 times faster. auto = the server's own names (e.g. 192.168.3.5 -&gt; LinkBigNas.local, LinkBigNas); empty = one connection. More names can be added in the Windows hosts file. Used when parallel source reads is above 1.</value>
   </data>
   <data name="PropertyDescription_LTFSWriter_PackSmallFiles" xml:space="preserve">
     <value>Pack small files into shared tape blocks (many small files per 512 KiB write; much faster for small files). Readable by any LTFS reader.</value>

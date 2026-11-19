@@ -993,7 +993,10 @@ P0Size和P1Size如果都不为65535，则两者总和不得超过磁带容量</v
     <value>启用外部高速读取器（需要Windows 10及以上系统）</value>
   </data>
   <data name="PropertyDescription_LTFSWriter_ParallelSourceReads" xml:space="preserve">
-    <value>写入时同时进行的源文件读取数：16 MiB 及以上的文件按 8 MiB 分块通过多个句柄并行读取，1 MiB 以下的文件由多个线程预读。1 = 逐个读取（v1.009 行为）；最多 8。</value>
+    <value>写入时同时进行的源文件读取数：16 MiB 及以上的文件按 8 MiB 分块通过多个句柄并行读取，较小的文件由多个线程预读。1 = 逐个读取（v1.009 行为）；最多 8。</value>
+  </data>
+  <data name="PropertyDescription_LTFSWriter_SourceServerAliases" xml:space="preserve">
+    <value>网络源服务器（NAS）的其他名称，逗号分隔，用于通过多个网络连接同时读取源文件（Windows 每个服务器名称一个连接，Samba NAS 每个连接一次只读一个文件）。auto = 服务器自身的名称；留空 = 单个连接。</value>
   </data>
   <data name="PropertyDescription_LTFSWriter_PackSmallFiles" xml:space="preserve">
     <value>小文件打包写入共享磁带块（多个小文件合并为一次写入，可提升小文件写入速度）</value>

@@ -4,6 +4,7 @@ Imports System.IO.Pipelines
 Imports System.Threading
 Imports System.Buffers
 Imports System.Runtime.InteropServices
+Imports System.Text
 Imports Serilog
 Imports Serilog.Context
 
@@ -50,8 +51,11 @@ Public Class FileDataProvider
     Private ReadOnly _smallCacheCapacity As Integer
     Private ReadOnly _requireSignal As Boolean
 
-    Private ReadOnly _smallCacheMap As New ConcurrentDictionary(Of LTFSWriter.FileRecord, Byte())
+    ' Read-ahead entries: a worker registers a file before reading it, so the producer can wait for that read instead of
+    ' reading the file a second time (the source then serves one file at a time per connection; a duplicate costs one).
+    Private ReadOnly _smallCacheMap As New ConcurrentDictionary(Of LTFSWriter.FileRecord, Task(Of Byte()))
     Private _smallCacheBytes As Long = 0
+    Private ReadOnly _routes As SourceRoutes
     Private Const SmallCacheByteLimit As Long = 256L * 1024 * 1024 ' with the file-count setting: at most this much held
 
     ' Reads kept in flight (LTFSWriter_ParallelSourceReads): preload workers for small files, and handles ("lanes") per
@@ -116,6 +120,7 @@ Public Class FileDataProvider
 
         If writeList Is Nothing Then Throw New ArgumentNullException(NameOf(writeList))
         _parallelReads = Math.Max(1, Math.Min(8, parallelReads))
+        _routes = New SourceRoutes(If(_parallelReads > 1, My.Settings.LTFSWriter_SourceServerAliases, ""))
 
         'Keep a private shallow copy.  The provider may release slots as it
         'advances, while the writer must keep its indexed plan stable until
@@ -364,12 +369,15 @@ Public Class FileDataProvider
 
                 If isSmallFile Then
                     Dim data As Byte() = Nothing
-                    If _smallCacheMap.TryRemove(fr, data) Then
-                        Interlocked.Add(_smallCacheBytes, -data.LongLength)
-                        fr.IsOpened = True ' as ReadAllBytesSafe does: the writer waits for this before taking the data
-                    Else
-                        data = ReadAllBytesSafe(fr)
+                    Dim preloaded As Task(Of Byte()) = Nothing
+                    If _smallCacheMap.TryRemove(fr, preloaded) Then
+                        data = Await preloaded.ConfigureAwait(False) ' read, or still being read by a worker
+                        If data IsNot Nothing Then
+                            Interlocked.Add(_smallCacheBytes, -data.LongLength)
+                            fr.IsOpened = True ' as ReadAllBytesSafe does: the writer waits for this before taking the data
+                        End If
                     End If
+                    If data Is Nothing Then data = ReadAllBytesSafe(fr) ' not read ahead, or the worker could not read it
 
                     Dim expectedLength As Long = fr.File.length
                     If data Is Nothing OrElse data.LongLength <> expectedLength Then
@@ -644,7 +652,12 @@ Public Class FileDataProvider
         Try
             For i As Integer = 1 To lanes - 1
                 Try
-                    streams.Add(New FileStream(sourcePath, FileMode.Open, FileAccess.Read, LTFSWriter.FileRecord.SourceShare, 4096, FileOptions.Asynchronous Or FileOptions.RandomAccess))
+                    Dim lanePath As String = _routes.Route(sourcePath, i) ' lanes go over the server's names in turn
+                    Try
+                        streams.Add(New FileStream(lanePath, FileMode.Open, FileAccess.Read, LTFSWriter.FileRecord.SourceShare, 4096, FileOptions.Asynchronous Or FileOptions.RandomAccess))
+                    Catch When Not ReferenceEquals(lanePath, sourcePath)
+                        streams.Add(New FileStream(sourcePath, FileMode.Open, FileAccess.Read, LTFSWriter.FileRecord.SourceShare, 4096, FileOptions.Asynchronous Or FileOptions.RandomAccess))
+                    End Try
                 Catch ex As Exception
                     Log.Warning(ex, "File data provider opened {Lanes} of {Wanted} read lanes. SourcePath={SourcePath}.", streams.Count, lanes, fr.SourcePath)
                     Exit For
@@ -733,7 +746,8 @@ Public Class FileDataProvider
             ' Workers take the next index from one counter, so the files nearest the producer are fetched first.
             Dim workers(_parallelReads - 1) As Task
             For w As Integer = 0 To _parallelReads - 1
-                workers(w) = Task.Run(AddressOf PreloadWorkerAsync)
+                Dim worker As Integer = w
+                workers(w) = Task.Run(Function() PreloadWorkerAsync(worker))
             Next
             Await Task.WhenAll(workers).ConfigureAwait(False)
             Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(FileDataProvider))
@@ -760,7 +774,7 @@ Public Class FileDataProvider
         End Try
     End Function
 
-    Private Async Function PreloadWorkerAsync() As Task
+    Private Async Function PreloadWorkerAsync(worker As Integer) As Task
         While Not _cts.IsCancellationRequested
             Dim i As Integer = Interlocked.Increment(_preloadNext)
             If i >= _writeList.Count Then Exit While
@@ -772,30 +786,155 @@ Public Class FileDataProvider
                   Not _cts.IsCancellationRequested
                 Await Task.Delay(10, _cts.Token).ConfigureAwait(False)
             End While
-            If i <= Volatile.Read(_currentIndex) Then Continue While
+
+            ' Register first, then check the producer has not got here: from then on it finds the entry and waits for
+            ' this read. If it got here first it reads the file itself, unless it already took the entry.
+            Dim entry As New TaskCompletionSource(Of Byte())(TaskCreationOptions.RunContinuationsAsynchronously)
+            If Not _smallCacheMap.TryAdd(fr, entry.Task) Then Continue While
+            If i <= Volatile.Read(_currentIndex) Then
+                Dim mine As Task(Of Byte()) = Nothing
+                If _smallCacheMap.TryRemove(fr, mine) Then
+                    entry.SetResult(Nothing)
+                    Continue While
+                End If
+            End If
 
             Dim data As Byte() = Nothing
             Try
-                data = fr.ReadAllBytes()
+                ' Each worker starts on another of the server's names (own connections); the producer mostly waits on these.
+                data = ReadWholeFile(_routes.Route(fr.SourcePath, worker + 1), fr.File.length)
             Catch
-                data = Nothing
+                Try
+                    data = fr.ReadAllBytes() ' as given (resolves a renamed path); failures are left to the producer
+                Catch
+                    data = Nothing
+                End Try
             End Try
-            If data Is Nothing OrElse data.LongLength <> fr.File.length Then Continue While
-            Interlocked.Add(_smallCacheBytes, data.LongLength)
-            If Not _smallCacheMap.TryAdd(fr, data) Then
-                Interlocked.Add(_smallCacheBytes, -data.LongLength)
-                Continue While
+            If data IsNot Nothing AndAlso data.LongLength <> fr.File.length Then data = Nothing ' the producer re-reads and reports it
+            If data IsNot Nothing Then
+                Interlocked.Add(_smallCacheBytes, data.LongLength) ' before SetResult: the producer subtracts after its Await
+                Interlocked.Increment(_preloadCached)
             End If
-            Interlocked.Increment(_preloadCached)
-            ' The producer may have reached this file while it was being read: take it back so it is not held to the end.
-            Dim stale As Byte() = Nothing
-            If i <= Volatile.Read(_currentIndex) AndAlso _smallCacheMap.TryRemove(fr, stale) Then
-                Interlocked.Add(_smallCacheBytes, -stale.LongLength)
-                Interlocked.Decrement(_preloadCached)
-            End If
+            entry.SetResult(data)
         End While
     End Function
+
+    ''' <summary>The file's first <paramref name="recorded"/> bytes (a file that grew since it was added is cut there).</summary>
+    Private Shared Function ReadWholeFile(path As String, recorded As Long) As Byte()
+        Using s As New FileStream(path, FileMode.Open, FileAccess.Read, LTFSWriter.FileRecord.SourceShare, 4096, FileOptions.None)
+            Dim n As Integer = CInt(Math.Min(s.Length, recorded))
+            Dim data(n - 1) As Byte
+            Dim got As Integer = 0
+            While got < n
+                Dim r As Integer = s.Read(data, got, n - got)
+                If r = 0 Then Exit While
+                got += r
+            End While
+            If got < n Then Array.Resize(data, got)
+            Return data
+        End Using
+    End Function
 End Class
+
+''' <summary>
+''' Spreads reads of a network source over several SMB connections. Windows opens one connection per server name, and a
+''' Samba NAS serves each connection with one smbd process that waits on each cold disk read, so readers sharing a
+''' connection only queue (DS3615xs, 2026-11-19, cold files under 1 MiB: 3 readers on 1 connection 45 files/s, on 3
+''' connections 105, 6 readers on 3 connections 96). Setting LTFSWriter_SourceServerAliases: "auto" = the server's own
+''' names from DNS (192.168.3.5 -> LinkBigNas.local, LinkBigNas; a name also gives its IPv4 address), or a list of names
+''' (e.g. extra hosts-file entries); empty = one connection. A name is used only once the share answered under it.
+''' </summary>
+Friend NotInheritable Class SourceRoutes
+    Private ReadOnly _setting As String
+    Private ReadOnly _names As New ConcurrentDictionary(Of String, String())(StringComparer.OrdinalIgnoreCase) ' "server\share" -> names, (0) = server
+    Private ReadOnly _drives As New ConcurrentDictionary(Of Char, String)() ' mapped drive -> "\\server\share[\folder]", "" when local
+
+    <DllImport("mpr.dll", CharSet:=CharSet.Unicode)>
+    Private Shared Function WNetGetConnection(localName As String, remoteName As StringBuilder, ByRef length As Integer) As Integer
+    End Function
+
+    Public Sub New(setting As String)
+        _setting = If(setting, String.Empty).Trim()
+    End Sub
+
+    ''' <summary>
+    ''' The path to read for a reader slot: the server's names in turn, slot 0 = the path as given. Local paths and
+    ''' servers without other names come back unchanged (the same string).
+    ''' </summary>
+    Public Function Route(path As String, slot As Integer) As String
+        If _setting.Length = 0 OrElse slot < 0 Then Return path
+        Dim server As String = Nothing, share As String = Nothing, rest As String = Nothing
+        If Not SplitNetworkPath(path, server, share, rest) Then Return path
+        Dim names As String() = _names.GetOrAdd(server & "\" & share, Function(key) FindNames(server, share))
+        If names.Length < 2 Then Return path
+        Dim pick As Integer = slot Mod names.Length
+        If pick = 0 Then Return path
+        Return "\\?\UNC\" & names(pick) & "\" & share & rest
+    End Function
+
+    ''' <summary>Splits \\?\UNC\, \\server\ and mapped-drive paths into server, share and the rest ("\dir\file").</summary>
+    Private Function SplitNetworkPath(path As String, ByRef server As String, ByRef share As String, ByRef rest As String) As Boolean
+        If String.IsNullOrEmpty(path) Then Return False
+        Dim unc As String
+        If path.StartsWith("\\?\UNC\", StringComparison.OrdinalIgnoreCase) Then
+            unc = path.Substring(8)
+        ElseIf path.StartsWith("\\?\", StringComparison.Ordinal) AndAlso path.Length >= 6 AndAlso path(5) = ":"c Then
+            Dim root As String = DriveRoot(path(4))
+            If root.Length = 0 Then Return False
+            unc = root.Substring(2).TrimEnd("\"c) & path.Substring(6)
+        ElseIf path.Length >= 2 AndAlso path(1) = ":"c Then
+            Dim root As String = DriveRoot(path(0))
+            If root.Length = 0 Then Return False
+            unc = root.Substring(2).TrimEnd("\"c) & path.Substring(2)
+        ElseIf path.StartsWith("\\", StringComparison.Ordinal) AndAlso Not path.StartsWith("\\?\", StringComparison.Ordinal) AndAlso
+               Not path.StartsWith("\\.\", StringComparison.Ordinal) Then
+            unc = path.Substring(2)
+        Else
+            Return False
+        End If
+        Dim a As Integer = unc.IndexOf("\"c)
+        If a <= 0 Then Return False
+        Dim b As Integer = unc.IndexOf("\"c, a + 1)
+        server = unc.Substring(0, a)
+        share = If(b < 0, unc.Substring(a + 1), unc.Substring(a + 1, b - a - 1))
+        rest = If(b < 0, String.Empty, unc.Substring(b))
+        Return share.Length > 0
+    End Function
+
+    Private Function DriveRoot(letter As Char) As String
+        Return _drives.GetOrAdd(Char.ToUpperInvariant(letter),
+                                Function(c)
+                                    Dim sb As New StringBuilder(1024)
+                                    Dim length As Integer = sb.Capacity
+                                    If WNetGetConnection(c & ":", sb, length) = 0 AndAlso sb.ToString().StartsWith("\\", StringComparison.Ordinal) Then Return sb.ToString()
+                                    Return String.Empty
+                                End Function)
+    End Function
+
+    Private Function FindNames(server As String, share As String) As String()
+        Dim candidates As New List(Of String)
+        If _setting.Equals("auto", StringComparison.OrdinalIgnoreCase) Then
+            Try
+                Dim entry As Net.IPHostEntry = Net.Dns.GetHostEntry(server) ' an IP gives its host name, a name its addresses
+                candidates.Add(entry.HostName)
+                If entry.HostName.Contains(".") Then candidates.Add(entry.HostName.Substring(0, entry.HostName.IndexOf("."c)))
+                candidates.AddRange(entry.AddressList.Where(Function(ip) ip.AddressFamily = Net.Sockets.AddressFamily.InterNetwork).Select(Function(ip) ip.ToString()))
+            Catch
+            End Try
+        Else
+            candidates.AddRange(_setting.Split({","c, ";"c}, StringSplitOptions.RemoveEmptyEntries).Select(Function(s) s.Trim()))
+        End If
+        Dim names As New List(Of String) From {server}
+        For Each name As String In candidates
+            If name.Length = 0 OrElse names.Contains(name, StringComparer.OrdinalIgnoreCase) Then Continue For
+            Dim probe As Task(Of Boolean) = Task.Run(Function() Directory.Exists("\\" & name & "\" & share & "\"))
+            If probe.Wait(10000) AndAlso probe.Result Then names.Add(name)
+        Next
+        Log.Information("Source reads from \\{Server}\{Share} use {Count} network connection(s): {Names}.", server, share, names.Count, String.Join(", ", names))
+        Return names.ToArray()
+    End Function
+End Class
+
 Public Class HardDriveDataProvider
     Private ReadOnly _pipe As Pipe
     Private ReadOnly _writer As PipeWriter

@@ -619,6 +619,21 @@ Namespace My
         End Property
 
         <Global.System.Configuration.UserScopedSettingAttribute(),
+         Global.System.Configuration.SettingsDescriptionAttribute("Other names for a network source's server"),
+         Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
+         Global.System.Configuration.DefaultSettingValueAttribute("auto"),
+         Category("LTFSWriter"),
+         LocalizedDescription("PropertyDescription_LTFSWriter_SourceServerAliases")>
+        Public Property LTFSWriter_SourceServerAliases() As String
+            Get
+                Return CType(Me("LTFSWriter_SourceServerAliases"), String)
+            End Get
+            Set(Value As String)
+                Me("LTFSWriter_SourceServerAliases") = Value
+            End Set
+        End Property
+
+        <Global.System.Configuration.UserScopedSettingAttribute(),
          Global.System.Configuration.SettingsDescriptionAttribute("Ring buffer模式"),
          Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
          Global.System.Configuration.DefaultSettingValueAttribute("True"),

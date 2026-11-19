@@ -92,6 +92,9 @@
     <Setting Name="LTFSWriter_ParallelSourceReads" Description="Source reads kept in flight" Type="System.Int32" Scope="User">
       <Value Profile="(Default)">4</Value>
     </Setting>
+    <Setting Name="LTFSWriter_SourceServerAliases" Description="Other names for a network source's server" Type="System.String" Scope="User">
+      <Value Profile="(Default)">auto</Value>
+    </Setting>
     <Setting Name="LTFSWriter_EnrichTarMetadata" Description="写入 tar 元数据索引" Type="System.Boolean"
       Scope="User">
       <Value Profile="(Default)">False</Value>
