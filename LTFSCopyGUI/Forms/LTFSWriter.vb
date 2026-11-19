@@ -1169,33 +1169,45 @@ Public Class LTFSWriter
             File = New ltfsindex.file
         End Sub
         Public Sub New(Path As String, ParentDir As ltfsindex.directory)
-            Dim resolvedPath As String = FileSystemPathResolver.ResolveExistingFilePath(Path)
-            If Not resolvedPath.StartsWith("\\") Then resolvedPath = $"\\?\{resolvedPath}"
+            Dim resolvedPath As String = ExtendedPath(FileSystemPathResolver.ResolveExistingFilePath(Path))
             Dim xattrPath As String = Nothing
             Dim xattrCandidate As String = FileSystemPathResolver.ResolveExistingFilePath(resolvedPath & ".xattr")
             If IO.File.Exists(xattrCandidate) Then xattrPath = xattrCandidate
             Initialize(New IO.FileInfo(resolvedPath), ParentDir, xattrPath)
         End Sub
-        Public Sub New(FileInfo As IO.FileInfo, ParentDir As ltfsindex.directory, XattrPath As String)
-            Initialize(FileInfo, ParentDir, XattrPath)
+        ''' <param name="fromListing">True when FileInfo (and XattrPath) came from a directory listing: the listing already
+        ''' holds the length and times and spells the names as the filesystem does, so the file is not looked up again.</param>
+        Public Sub New(FileInfo As IO.FileInfo, ParentDir As ltfsindex.directory, XattrPath As String, Optional fromListing As Boolean = False)
+            Initialize(FileInfo, ParentDir, XattrPath, fromListing)
         End Sub
         Public Sub New(FileInfo As IO.FileInfo, ParentDir As ltfsindex.directory)
-            Dim resolvedPath As String = FileSystemPathResolver.ResolveExistingFilePath(FileInfo.FullName)
+            Dim resolvedPath As String = ExtendedPath(FileSystemPathResolver.ResolveExistingFilePath(FileInfo.FullName))
             Dim xattrPath As String = Nothing
             Dim xattrCandidate As String = FileSystemPathResolver.ResolveExistingFilePath(resolvedPath & ".xattr")
             If IO.File.Exists(xattrCandidate) Then xattrPath = xattrCandidate
             Initialize(New IO.FileInfo(resolvedPath), ParentDir, xattrPath)
         End Sub
-        Private Sub Initialize(finf As IO.FileInfo, ParentDir As ltfsindex.directory, xattrPath As String)
+        ''' <summary>The \\?\ form of a path, so a source deeper than 260 characters still opens: X:\a -> \\?\X:\a and
+        ''' \\server\share\a -> \\?\UNC\server\share\a (a network path used to stay plain and failed past 260).</summary>
+        Friend Shared Function ExtendedPath(path As String) As String
+            If String.IsNullOrEmpty(path) OrElse path.StartsWith("\\?\") OrElse path.StartsWith("\\.\") Then Return path
+            If path.StartsWith("\\") Then Return "\\?\UNC\" & path.Substring(2)
+            Return "\\?\" & path
+        End Function
+
+        Private Sub Initialize(finf As IO.FileInfo, ParentDir As ltfsindex.directory, xattrPath As String, Optional fromListing As Boolean = False)
             If finf Is Nothing Then Throw New ArgumentNullException(NameOf(finf))
-            Dim resolvedPath As String = FileSystemPathResolver.ResolveExistingFilePath(finf.FullName)
-            finf = New IO.FileInfo(resolvedPath)
+            If Not fromListing Then
+                ' Not needed for a listed file: on a network share the existence check and the fresh FileInfo are two
+                ' more round trips per file (15-39 ms each on a cold NAS folder).
+                Dim resolvedPath As String = FileSystemPathResolver.ResolveExistingFilePath(finf.FullName)
+                finf = New IO.FileInfo(ExtendedPath(resolvedPath))
+            End If
             ParentDirectory = ParentDir
             'The FileInfo was created from the resolved path above.  Assign the
             'backing field directly so SourcePath does not resolve the same path
             'a second time for every added file.
-            _sourcePath = finf.FullName
-            If Not _sourcePath.StartsWith("\\") Then _sourcePath = $"\\?\{_sourcePath}"
+            _sourcePath = ExtendedPath(finf.FullName)
             File = New ltfsindex.file With {
                 .name = finf.Name,
                 .fileuid = -1,
@@ -1224,8 +1236,8 @@ Public Class LTFSWriter
                 .backuptime = Now.ToUniversalTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
                 Try
                     If xattrPath IsNot Nothing Then
-                        xattrPath = FileSystemPathResolver.ResolveExistingFilePath(xattrPath)
-                        If Not xattrPath.StartsWith("\\") Then xattrPath = $"\\?\{xattrPath}"
+                        If Not fromListing Then xattrPath = FileSystemPathResolver.ResolveExistingFilePath(xattrPath)
+                        xattrPath = ExtendedPath(xattrPath)
                         Dim x As String = IO.File.ReadAllText(xattrPath)
                         Dim xlist As List(Of ltfsindex.file.xattr) = ltfsindex.file.xattr.FromXMLList(x)
                         If .extendedattributes Is Nothing Then .extendedattributes = New List(Of ltfsindex.file.xattr)
@@ -4709,8 +4721,10 @@ Public Class LTFSWriter
         End If
         Return Result
     End Function
+    ''' <param name="XattrPath">The file's .xattr sidecar; Nothing = look for one, "" = known to have none.</param>
+    ''' <param name="fromListing">f (and XattrPath) came from a directory listing (see FileRecord.New).</param>
     Public Sub AddFile(f As IO.FileInfo, d As ltfsindex.directory, Optional ByVal OverWrite As Boolean = False,
-                       Optional ByVal XattrPath As String = Nothing)
+                       Optional ByVal XattrPath As String = Nothing, Optional ByVal fromListing As Boolean = False)
         Try
             If StopFlag Then Exit Sub
             If f.Extension.Equals(".xattr", StringComparison.OrdinalIgnoreCase) Then Exit Sub
@@ -4743,7 +4757,7 @@ Public Class LTFSWriter
                 If IO.File.Exists(candidateXattrPath) Then xattrPathToUse = candidateXattrPath
             End If
             If String.IsNullOrEmpty(xattrPathToUse) Then xattrPathToUse = Nothing
-            Dim frnew As New FileRecord(f, d, xattrPathToUse)
+            Dim frnew As New FileRecord(f, d, xattrPathToUse, fromListing)
             AddPendingRecord(frnew)
         Catch ex As Exception
             Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"{ex.ToString()}{vbCrLf}{ex.StackTrace}"))
@@ -4796,7 +4810,8 @@ Public Class LTFSWriter
     Private Sub AddSourceFile(file As IO.FileInfo,
                               targetDirectory As ltfsindex.directory,
                               OverWrite As Boolean,
-                              exceptExtention As String())
+                              exceptExtention As String(),
+                              xattrPath As String)
         Try
             If StopFlag OrElse file Is Nothing OrElse file.Extension.Equals(".xattr", StringComparison.OrdinalIgnoreCase) Then Exit Sub
             If exceptExtention IsNot Nothing Then
@@ -4804,7 +4819,7 @@ Public Class LTFSWriter
                     If file.FullName.EndsWith(ext, StringComparison.OrdinalIgnoreCase) Then Exit Sub
                 Next
             End If
-            AddFile(file, targetDirectory, OverWrite)
+            AddFile(file, targetDirectory, OverWrite, XattrPath:=xattrPath, fromListing:=True)
         Catch ex As Exception
             Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"{ex}{vbCrLf}{ex.StackTrace}"))
         End Try
@@ -4818,11 +4833,23 @@ Public Class LTFSWriter
         If My.Settings.LTFSWriter_SkipSymlink AndAlso ((sourceDirectory.Attributes And IO.FileAttributes.ReparsePoint) <> 0) Then Exit Sub
 
         Dim targetDirectory As ltfsindex.directory = GetOrCreateTargetDirectory(sourceDirectory, parent)
-        For Each entry As IO.FileSystemInfo In sourceDirectory.EnumerateFileSystemInfos()
+        ' One listing per folder gives every entry's name, length and times. The .xattr sidecars are found in it too, so
+        ' no file is asked for again (on a network share each lookup is a round trip; a miss can make Samba scan the
+        ' whole folder for a case-insensitive match).
+        Dim entries As IO.FileSystemInfo() = sourceDirectory.GetFileSystemInfos()
+        Dim sidecars As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+        For Each entry As IO.FileSystemInfo In entries
+            If TypeOf entry Is IO.FileInfo AndAlso entry.Name.EndsWith(".xattr", StringComparison.OrdinalIgnoreCase) Then
+                sidecars(entry.Name) = entry.FullName
+            End If
+        Next
+        For Each entry As IO.FileSystemInfo In entries
             If StopFlag Then Exit For
             Dim sourceFile As IO.FileInfo = TryCast(entry, IO.FileInfo)
             If sourceFile IsNot Nothing Then
-                AddSourceFile(sourceFile, targetDirectory, OverWrite, exceptExtention)
+                Dim sidecar As String = Nothing
+                If Not sidecars.TryGetValue(sourceFile.Name & ".xattr", sidecar) Then sidecar = ""
+                AddSourceFile(sourceFile, targetDirectory, OverWrite, exceptExtention, sidecar)
                 Continue For
             End If
 
