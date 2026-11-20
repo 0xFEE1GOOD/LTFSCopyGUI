@@ -4880,18 +4880,58 @@ Public Class LTFSWriter
         End Try
     End Sub
 
+    ' 2.014: folders an add could not read; reported once at its end (ReportUnreadableAddFolders).
+    Private ReadOnly _addUnreadableFolders As New List(Of String)
+
+    Private Sub NoteUnreadableAddFolder(path As String, reason As String)
+        SyncLock _addUnreadableFolders
+            _addUnreadableFolders.Add($"{path}: {reason}")
+        End SyncLock
+        PrintMsg($"Folder not added, it cannot be read: {path} ({reason})", IsWarn:=True, LogOnly:=True)
+    End Sub
+
+    ''' <summary>End of an add: one warning (and one box) for the folders that could not be read, red light.</summary>
+    Private Sub ReportUnreadableAddFolders()
+        Dim items As List(Of String)
+        SyncLock _addUnreadableFolders
+            items = New List(Of String)(_addUnreadableFolders)
+            _addUnreadableFolders.Clear()
+        End SyncLock
+        If items.Count = 0 Then Return
+        PrintMsg($"{items.Count} folder(s) could not be read and were not added; everything else was added - see the log", IsWarn:=True, ShowOnWarningLabel:=True)
+        SetStatusLight(LWStatus.Err)
+        Dim shown As String = String.Join(vbCrLf, items.Take(10)) & If(items.Count > 10, $"{vbCrLf}... and {items.Count - 10} more (see the log)", "")
+        Try
+            Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True},
+                                         $"{items.Count} folder(s) could not be read and were not added; everything else was added.{vbCrLf}{vbCrLf}{shown}",
+                                         My.Resources.ResText_Warning, MessageBoxButtons.OK, MessageBoxIcon.Warning))
+        Catch
+        End Try
+    End Sub
+
     Private Sub AddScannedDirectory(sourceDirectory As IO.DirectoryInfo,
                                     parent As ltfsindex.directory,
                                     OverWrite As Boolean,
                                     exceptExtention As String())
         If StopFlag Then Exit Sub
-        If My.Settings.LTFSWriter_SkipSymlink AndAlso ((sourceDirectory.Attributes And IO.FileAttributes.ReparsePoint) <> 0) Then Exit Sub
-
-        Dim targetDirectory As ltfsindex.directory = GetOrCreateTargetDirectory(sourceDirectory, parent)
         ' One listing per folder gives every entry's name, length and times. The .xattr sidecars are found in it too, so
         ' no file is asked for again (on a network share each lookup is a round trip; a miss can make Samba scan the
         ' whole folder for a case-insensitive match).
-        Dim entries As IO.FileSystemInfo() = sourceDirectory.GetFileSystemInfos()
+        ' 2.014: a folder that cannot be read (gone, no permission, refused by the share) is skipped and reported at the
+        ' end of the add. Before, it stopped the rest of the add with an error box while the files added before it
+        ' stayed in the write list, so a write then took part of the folder without saying so. Listed before its
+        ' entry in the index is made, so no empty folder is added for it.
+        Dim entries As IO.FileSystemInfo()
+        Dim targetDirectory As ltfsindex.directory
+        Try
+            If My.Settings.LTFSWriter_SkipSymlink AndAlso ((sourceDirectory.Attributes And IO.FileAttributes.ReparsePoint) <> 0) Then Exit Sub
+            entries = sourceDirectory.GetFileSystemInfos()
+            targetDirectory = GetOrCreateTargetDirectory(sourceDirectory, parent)
+        Catch ex As Exception When TypeOf ex Is IO.IOException OrElse TypeOf ex Is UnauthorizedAccessException OrElse
+                                   TypeOf ex Is Security.SecurityException
+            NoteUnreadableAddFolder(sourceDirectory.FullName, ex.Message)
+            Exit Sub
+        End Try
         Dim sidecars As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
         For Each entry As IO.FileSystemInfo In entries
             If TypeOf entry Is IO.FileInfo AndAlso entry.Name.EndsWith(".xattr", StringComparison.OrdinalIgnoreCase) Then
@@ -5316,6 +5356,9 @@ Public Class LTFSWriter
                     BeginAddFileLookup()
                     Try
                         StopFlag = False
+                        SyncLock _addUnreadableFolders
+                            _addUnreadableFolders.Clear()
+                        End SyncLock
                         If pathCount >= 0 Then
                             PrintMsg($"{My.Resources.ResText_Adding}{pathCount}{My.Resources.ResText_Items_x}")
                         Else
@@ -5325,7 +5368,9 @@ Public Class LTFSWriter
                         For Each path As String In Paths
                             If String.IsNullOrWhiteSpace(path) Then Continue For
                             path = FileSystemPathResolver.ResolveExistingPath(path)
-                            If Not path.StartsWith("\\") Then path = $"\\?\{path}"
+                            ' 2.014: network paths too get the extended form (\\?\UNC\server\share\...); a folder on
+                            ' a share deeper than 260 characters could not be listed and stopped the add.
+                            path = FileRecord.ExtendedPath(path)
                             Dim i As Integer = Threading.Interlocked.Increment(numi)
                             If StopFlag Then Exit For
                             Try
@@ -5371,6 +5416,7 @@ Public Class LTFSWriter
                         RefreshDisplay()
                         PrintMsg(My.Resources.ResText_AddFin)
                         SetStatusLight(LWStatus.Succ)
+                        ReportUnreadableAddFolders() ' 2.014
                         LockGUI(False)
                     Finally
                         EndAddFileLookup()
@@ -17934,6 +17980,9 @@ Public Class LTFSWriter
             LockGUI(True)
             Task.Run(Sub()
                          Dim currpath As String = ""
+                         SyncLock _addUnreadableFolders
+                             _addUnreadableFolders.Clear()
+                         End SyncLock
                          If currdir Is Nothing Then currdir = schema._directory(0)
                          For i As Integer = 0 To s.Length - 1
                              Dim t() As String = s(i).Split({vbTab}, StringSplitOptions.None)
@@ -17950,12 +17999,13 @@ Public Class LTFSWriter
                              If IO.File.Exists(toadd) Then
                                  AddFile(New IO.FileInfo(toadd), currdir, overwrite)
                              ElseIf IO.Directory.Exists(toadd) Then
-                                 AddDirectry(New IO.DirectoryInfo(toadd), currdir, overwrite)
+                                 AddDirectry(New IO.DirectoryInfo(FileRecord.ExtendedPath(toadd)), currdir, overwrite) ' 2.014: long share paths
                              End If
                          Next
                          RefreshDisplay()
                          PrintMsg(My.Resources.ResText_AddFin)
                          SetStatusLight(LWStatus.Succ)
+                         ReportUnreadableAddFolders() ' 2.014
                          LockGUI(False)
                      End Sub)
 
