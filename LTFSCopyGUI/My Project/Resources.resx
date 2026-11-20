@@ -1013,6 +1013,9 @@ P0Size和P1Size如果都不为65535，则两者总和不得超过磁带容量</v
   <data name="PropertyDescription_LTFSWriter_EarlyStart" xml:space="preserve">
     <value>在完成当前文件的收尾工作时，就把下一个文件的第一个数据块发给磁带机，使磁带机在文件之间不必停顿等待下一个写命令。文件数量多、每个只有几 MB 时，这些停顿会让磁带机降速甚至停转（往复磨带）。两种方式写到磁带上的数据和索引完全相同。关闭 = 当前文件完全结束后才开始下一个文件（2.015 之前的方式）。</value>
   </data>
+  <data name="PropertyDescription_LTFSWriter_WriteThread" xml:space="preserve">
+    <value>用一个专用线程把数据块发给磁带机：磁带机接收当前块的同时，下一个块已复制到第二个缓冲区，当前写命令一返回就立即发送。以前每个块都是一个新任务，要等上一个写命令结束后才开始，磁带机每块约空等 0.2 毫秒。两种方式写到磁带上的数据和索引完全相同。关闭 = 每块一个任务（2.016 之前的方式）。</value>
+  </data>
   <data name="PropertyDescription_LTFSWriter_EnrichTarMetadata" xml:space="preserve">
     <value>写入 tar 元数据索引</value>
   </data>

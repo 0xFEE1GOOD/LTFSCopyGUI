@@ -95,6 +95,9 @@
     <Setting Name="LTFSWriter_EarlyStart" Description="Start the next file's first block early" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">True</Value>
     </Setting>
+    <Setting Name="LTFSWriter_WriteThread" Description="Send data blocks from one dedicated thread" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
     <Setting Name="LTFSWriter_ParallelSourceReads" Description="Source reads kept in flight" Type="System.Int32" Scope="User">
       <Value Profile="(Default)">4</Value>
     </Setting>

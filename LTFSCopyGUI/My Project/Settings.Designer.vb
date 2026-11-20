@@ -634,6 +634,21 @@ Namespace My
         End Property
 
         <Global.System.Configuration.UserScopedSettingAttribute(),
+         Global.System.Configuration.SettingsDescriptionAttribute("Send data blocks from one dedicated thread"),
+         Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
+         Global.System.Configuration.DefaultSettingValueAttribute("True"),
+         Category("LTFSWriter"),
+         LocalizedDescription("PropertyDescription_LTFSWriter_WriteThread")>
+        Public Property LTFSWriter_WriteThread() As Boolean
+            Get
+                Return CType(Me("LTFSWriter_WriteThread"), Boolean)
+            End Get
+            Set(Value As Boolean)
+                Me("LTFSWriter_WriteThread") = Value
+            End Set
+        End Property
+
+        <Global.System.Configuration.UserScopedSettingAttribute(),
          Global.System.Configuration.SettingsDescriptionAttribute("Source reads kept in flight"),
          Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
          Global.System.Configuration.DefaultSettingValueAttribute("4"),

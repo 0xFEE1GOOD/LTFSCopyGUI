@@ -1002,6 +1002,9 @@ Enable only when memory usage is abnormally high</value>
   <data name="PropertyDescription_LTFSWriter_EarlyStart" xml:space="preserve">
     <value>Send the next file's first block to the drive while the current file is still being finished, so the drive gets its next WRITE without a pause at every file boundary. With many files of a few MB, those pauses made the drive slow down and stop (shoe-shining). The data and the index on tape are the same either way. Off = the next file starts only after the current one is fully done (as before 2.015).</value>
   </data>
+  <data name="PropertyDescription_LTFSWriter_WriteThread" xml:space="preserve">
+    <value>Send the data blocks to the drive from one dedicated thread: the next block is copied into a second buffer while the drive takes the current one, and is sent the moment that WRITE returns. Before, each block was a new task that started only after the previous WRITE had ended, and the drive waited about 0.2 ms per block. The data and the index on tape are the same either way. Off = one task per block (as before 2.016).</value>
+  </data>
   <data name="PropertyDescription_LTFSWriter_EnrichTarMetadata" xml:space="preserve">
     <value>Write tar metadata index</value>
   </data>

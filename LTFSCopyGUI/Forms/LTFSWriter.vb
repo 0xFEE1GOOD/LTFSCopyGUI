@@ -9204,22 +9204,18 @@ Public Class LTFSWriter
     End Function
 
     ''' <summary>
-    ''' 2.015: the next file's first block, sent to the drive as soon as the previous file's last WRITE completed and
-    ''' before that file's bookkeeping, so the drive is not idle at file boundaries (files of a few MB went to tape at
-    ''' ~255 MiB/s with the drive idle 30% of the time; the swings made it change speed and stop).
-    ''' </summary>
-    ''' <summary>
     ''' 2.015: the first block of the next file, sent to the drive before the current file's bookkeeping.
     ''' Before, the drive got no WRITE from the end of one file's last block until the next file's first one: the
     ''' current file's close, hash task, index bookkeeping and log, then the next file's setup and first read. At
     ''' 1-7 MB files that pause came many times a second and the drive kept slowing down and stopping. Now the next
     ''' file's first block is read while the current file's last WRITE runs and is sent the moment it ends, as the
-    ''' blocks inside a file are; the drive still has one WRITE at a time (one block buffer, wBufferPtr).
-    ''' Only a whole data-partition file of more than one block, not packed, not a .tar being scanned, with its
-    ''' bytes already in the buffer. Nothing that reads the drive's position runs while that block is in flight:
-    ''' the 1024-file position check, the capacity check and a mid-write index each wait for a file boundary
-    ''' without an early start (the start is skipped when one of them is due). The early file is indexed only
-    ''' through its own loop pass, like any other; if the write stops first, it is not indexed.
+    ''' blocks inside a file are (2.016: for files of any size, so small files form a chain too).
+    ''' Only a whole data-partition file, not packed, not a .tar being scanned, with its first block already in the
+    ''' buffer. The current file's blocks are all on tape before the next file's extent is made, so its start block
+    ''' is the drive's. Nothing that reads the drive's position runs while that block is in flight: the 1024-file
+    ''' position check, the capacity check and a mid-write index each wait for a file boundary without an early
+    ''' start (the start is skipped when one of them is due). The early file is indexed only through its own loop
+    ''' pass, like any other; if the write stops first, it is not indexed.
     ''' </summary>
     Private NotInheritable Class EarlyStartState
         Public Index As Integer
@@ -9227,6 +9223,81 @@ Public Class LTFSWriter
         Public Hash As IOManager.CheckSumBlockwiseCalculator
         Public WriteTask As Task
         Public FirstBytes As Integer
+    End Class
+
+    ' 2.016: why the next file did not start early, counted per write and logged at its end (EarlyStartState).
+    Private Shared ReadOnly EarlySkipNames As String() = {
+        "early start off or packing on", "stopping, paused or refilling the buffer", "next is not a data-partition file",
+        "1024-file position check due", "capacity check due", "index due",
+        "next file split, a scanned .tar or a direct copy", "next file not opened yet", "next block not in the buffer yet",
+        "this file's last block stopped the write or the tape is nearly full"}
+    Private _earlyFileEnds As Integer
+    Private _earlyStarted As Integer
+    Private ReadOnly _earlySkipped(9) As Integer
+
+    ''' <summary>
+    ''' 2.016: one thread sends the data blocks of a write to the drive, in the order given. Before, each block was a
+    ''' new task, started only after the previous WRITE had ended and been seen by the writer loop, and the task first
+    ''' copied the block into the one unmanaged buffer: about 0.2 ms with the drive idle per 512 KiB block (1.5 s of
+    ''' every 10 s). Now the writer loop copies the next block into the other of two buffers while the drive takes the
+    ''' current one and queues it, so this thread sends it the moment the current WRITE returns. At most two blocks
+    ''' are given out (one at the drive, one waiting); the loop waits for a block before reusing its buffer.
+    ''' A block is not sent after any block before it failed or once the write is stopping (shouldSkip, i.e.
+    ''' StopFlag): it is completed as not written, so its file is short and is discarded, as when the next block was
+    ''' never started. Errors and their dialogs are the block routine's own, unchanged.
+    ''' </summary>
+    Private NotInheritable Class BlockWriteQueue
+        Implements IDisposable
+        Private NotInheritable Class Item
+            Public Body As Action(Of Object)
+            Public State As Object
+            Public OnSkip As Action
+            Public Done As TaskCompletionSource(Of Boolean)
+        End Class
+        Private ReadOnly _items As New System.Collections.Concurrent.BlockingCollection(Of Item)(New System.Collections.Concurrent.ConcurrentQueue(Of Item)())
+        Private ReadOnly _shouldSkip As Func(Of Boolean)
+        Private ReadOnly _thread As Threading.Thread
+        Private _failed As Boolean
+
+        Public Sub New(shouldSkip As Func(Of Boolean))
+            _shouldSkip = shouldSkip
+            _thread = New Threading.Thread(AddressOf Run) With {.IsBackground = True, .Name = "LTFS block writer"}
+            _thread.Start()
+        End Sub
+
+        ''' <summary>Queues one block; the task ends True when it was sent, False when it was skipped.</summary>
+        Public Function Enqueue(body As Action(Of Object), state As Object, onSkip As Action) As Task
+            Dim it As New Item With {.Body = body, .State = state, .OnSkip = onSkip, .Done = New TaskCompletionSource(Of Boolean)()}
+            _items.Add(it)
+            Return it.Done.Task
+        End Function
+
+        Private Sub Run()
+            For Each it As Item In _items.GetConsumingEnumerable()
+                If _failed OrElse _shouldSkip() Then
+                    Try
+                        If it.OnSkip IsNot Nothing Then it.OnSkip()
+                    Catch
+                    End Try
+                    it.Done.TrySetResult(False)
+                    Continue For
+                End If
+                Try
+                    it.Body(it.State)
+                    it.Done.TrySetResult(True)
+                Catch ex As Exception
+                    _failed = True
+                    it.Done.TrySetException(ex)
+                End Try
+            Next
+        End Sub
+
+        ''' <summary>Call only when every queued block has ended (the writer waits for all its write tasks first).</summary>
+        Public Sub Dispose() Implements IDisposable.Dispose
+            _items.CompleteAdding()
+            _thread.Join()
+            _items.Dispose()
+        End Sub
     End Class
 
     ''' <summary>2.015: the capacity check (which reads the drive) is due.</summary>
@@ -9705,6 +9776,8 @@ Public Class LTFSWriter
                 Dim diskFastProvider As RustFastReaderProvider = Nothing
                 Dim WriteList As New List(Of FileRecord)
                 Dim wBufferPtr As IntPtr = IntPtr.Zero
+                Dim wBufferPtr2 As IntPtr = IntPtr.Zero ' 2.016: the second block buffer of the write thread (BlockWriteQueue)
+                Dim writeQueue As BlockWriteQueue = Nothing
                 Dim hashTasks As New List(Of Task)
                 Dim writeTasks As New List(Of Task)
                 Dim LTE As AutoResetEvent = Nothing
@@ -9894,6 +9967,10 @@ Public Class LTFSWriter
                     End If
                     If WriteList.Count > 0 Then
                         wBufferPtr = Marshal.AllocHGlobal(CInt(plabel.blocksize))
+                        If My.Settings.LTFSWriter_WriteThread Then
+                            wBufferPtr2 = Marshal.AllocHGlobal(CInt(plabel.blocksize))
+                            writeQueue = New BlockWriteQueue(Function() StopFlag)
+                        End If
 
                         'Dim PNum As Integer = My.Settings.LTFSWriter_PreLoadFileCount
                         'If PNum > 0 Then
@@ -9988,10 +10065,22 @@ Public Class LTFSWriter
                         ' 2.015: the next file's first block may go to the drive before the previous file's bookkeeping (see
                         ' EarlyStartState); the block loop and that early start send blocks through the same code.
                         Dim earlyNext As EarlyStartState = Nothing
+                        Dim writeSlot As Integer = 0 ' 2.016: buffer of the last queued block (0 = wBufferPtr, 1 = wBufferPtr2)
                         Dim startBlockWrite As Func(Of FileRecord, IOManager.CheckSumBlockwiseCalculator, Boolean, Byte(), Integer, Task) =
                             Function(fr As FileRecord, sh As IOManager.CheckSumBlockwiseCalculator, IsIndexPartition As Boolean,
                                      buffer As Byte(), BytesReaded As Integer) As Task
-                                Return Task.Factory.StartNew(
+                                ' 2.016: with the write thread the block is copied here, into the buffer no block in flight
+                                ' uses (the caller waited for the block before the last one), and queued; the thread sends
+                                ' it as soon as the WRITE before it returns. Without it: a task per block, as before.
+                                Dim blockPtr As IntPtr = wBufferPtr
+                                Dim copied As Boolean = False
+                                If writeQueue IsNot Nothing Then
+                                    writeSlot = 1 - writeSlot
+                                    blockPtr = If(writeSlot = 0, wBufferPtr, wBufferPtr2)
+                                    If BytesReaded > 0 Then Marshal.Copy(buffer, 0, blockPtr, BytesReaded)
+                                    copied = True
+                                End If
+                                Dim body As Action(Of Object) =
                                  Sub(state)
                                      Dim writeState = DirectCast(state, Tuple(Of Byte(), Integer))
                                      Dim buf As Byte() = writeState.Item1
@@ -10012,12 +10101,12 @@ Public Class LTFSWriter
                                              End If
 
                                              ' 写带（保留原 TapeUtils.Write + sense 处理）
-                                             Marshal.Copy(buf, 0, wBufferPtr, bytesToWrite)
+                                             If Not copied Then Marshal.Copy(buf, 0, blockPtr, bytesToWrite)
                                              Dim succ As Boolean = False Or IsIndexPartition
                                              While ((Not succ) AndAlso (Not IsIndexPartition))
                                                  Dim sense As Byte()
                                                  Try
-                                                     sense = TapeUtils.Write(driveHandle, wBufferPtr, CUInt(bytesToWrite), True)
+                                                     sense = TapeUtils.Write(driveHandle, blockPtr, CUInt(bytesToWrite), True)
                                                      SyncLock p
                                                          p.BlockNumber = CULng(p.BlockNumber + 1)
                                                      End SyncLock
@@ -10177,8 +10266,40 @@ Public Class LTFSWriter
                                              IOManager.PublicArrayPool.Return(buf)
                                          End If
                                      End Try
-                                 End Sub, Tuple.Create(buffer, BytesReaded))
+                                 End Sub
+                                Dim blockState As Tuple(Of Byte(), Integer) = Tuple.Create(buffer, BytesReaded)
+                                If writeQueue IsNot Nothing Then
+                                    ' Skipped (an earlier block failed, or the write is stopping): not sent, buffer given back.
+                                    Return writeQueue.Enqueue(body, blockState, Sub() IOManager.PublicArrayPool.Return(buffer))
+                                End If
+                                Return Task.Factory.StartNew(body, blockState)
                             End Function
+                        ' Waits for one block's WRITE (the buffer level is refreshed once a second meanwhile), rethrows its
+                        ' error and drops it from writeTasks.
+                        Dim waitWrite As Action(Of Task) =
+                            Sub(t As Task)
+                                Dim lwcounter As Integer = 0
+                                While Not (t.IsCompleted OrElse t.IsCanceled OrElse t.IsFaulted)
+                                    WaitTaskBriefly(t, 10) ' 2.008: no kernel wait handle per WRITE task
+                                    lwcounter += 1
+                                    If lwcounter >= 100 Then
+                                        lwcounter = 0
+                                        If RingBufferEnabled Then
+                                            PipeBufferLength = PipeGetLength(provider.RingBuffer)
+                                        Else
+                                            PipeBufferLength = PipeGetLength(provider.Reader)
+                                        End If
+                                    End If
+                                End While
+                                ObserveTask(t)
+                                writeTasks.Remove(t)
+                            End Sub
+                        ' 2.016: small files go through the block loop too when files are chained by early start, so a
+                        ' run of small files is not cut into single synchronous WRITEs (packed ones still use their record).
+                        Dim chainSmallFiles As Boolean = earlyStartEnabled AndAlso Not packEnabled
+                        _earlyFileEnds = 0
+                        _earlyStarted = 0
+                        Array.Clear(_earlySkipped, 0, _earlySkipped.Length)
                         TapeUtils.SetBlockSize(driveHandle, plabel.blocksize)
                         EarlyWarningSeen = False
                         For i As Integer = 0 To WriteList.Count - 1
@@ -10391,6 +10512,7 @@ Public Class LTFSWriter
                                         End If
                                         'write to tape
                                         Dim LastWriteTask As Task = If(early IsNot Nothing, early.WriteTask, Nothing)
+                                        Dim PrevWriteTask As Task = Nothing ' 2.016: the block before LastWriteTask, while it may still be in flight
                                         If fr.File Is Nothing Then Continue For
                                         While (Not useFastReader) AndAlso Not fr.IsOpened AndAlso Not StopFlag
                                             If fr.File Is Nothing Then Continue For
@@ -10411,7 +10533,8 @@ Public Class LTFSWriter
                                         ElseIf useFastReader AndAlso Not IsIndexPartition Then
                                             Dim providerFileIndex = If(fr.IsDirectTapeCopy, CInt(fr.DirectCopyOrdinal), i)
                                             If Not WriteFileFromFastReader(fastProvider, providerFileIndex, fr, driveHandle, p, currentPlan.ExpectedDedupeHash, tarScanner, writerCancellation.Token) Then Exit For
-                                        ElseIf early Is Nothing AndAlso (fr.File.length <= plabel.blocksize) AndAlso (fr.FileOffset = 0) AndAlso (fr.File.length = fr.SegmentLength) Then
+                                        ElseIf early Is Nothing AndAlso (fr.File.length <= plabel.blocksize) AndAlso (fr.FileOffset = 0) AndAlso (fr.File.length = fr.SegmentLength) AndAlso
+                                               (packThis OrElse IsIndexPartition OrElse Not chainSmallFiles) Then
                                             Dim succ As Boolean = False
                                             Dim FileData(CInt(fr.File.length - 1)) As Byte
                                             While True
@@ -10679,103 +10802,104 @@ Public Class LTFSWriter
                                                     tarScanner.Process(buffer, 0, BytesReaded)
                                                 End If
 
-                                                If LastWriteTask IsNot Nothing Then
-                                                    Dim lwcounter As Integer = 0
-                                                    While Not (LastWriteTask.IsCompleted OrElse LastWriteTask.IsCanceled OrElse LastWriteTask.IsFaulted)
-                                                        WaitTaskBriefly(LastWriteTask, 10) ' 2.008: no kernel wait handle per WRITE task
-                                                        lwcounter += 1
-                                                        If lwcounter >= 100 Then
-                                                            lwcounter = 0
-                                                            If RingBufferEnabled Then
-                                                                PipeBufferLength = PipeGetLength(RingBufferReader)
-                                                            Else
-                                                                PipeBufferLength = PipeGetLength(PipeReader)
-                                                            End If
-                                                        End If
-                                                    End While
+                                                ' The block whose buffer this one reuses must have ended: the last block, or with the
+                                                ' write thread (2.016) the one before it, so one block waits while one is at the drive.
+                                                Dim freeing As Task = If(writeQueue IsNot Nothing, PrevWriteTask, LastWriteTask)
+                                                If freeing IsNot Nothing Then
                                                     Try
-                                                        ObserveTask(LastWriteTask)
+                                                        waitWrite(freeing)
                                                     Catch
                                                         IOManager.PublicArrayPool.Return(buffer)
                                                         Throw
                                                     End Try
-                                                    writeTasks.Remove(LastWriteTask)
+                                                    If ReferenceEquals(freeing, PrevWriteTask) Then PrevWriteTask = Nothing
                                                 End If
                                                 If ExitWhileFlag Then Exit While
                                                 ' The previous block may have hit volume overflow: do not send another WRITE.
                                                 If StopFlag Then IOManager.PublicArrayPool.Return(buffer) : Exit While
 
+                                                If writeQueue IsNot Nothing Then PrevWriteTask = LastWriteTask
                                                 LastWriteTask = startBlockWrite(fr, sh, IsIndexPartition, buffer, BytesReaded)
                                                 writeTasks.Add(LastWriteTask)
                                                 remainingInFile -= BytesReaded
                                             End While
 
                                             ' 2.015: read the next file's first block while this file's last WRITE runs, and send it
-                                            ' as soon as that WRITE ends (EarlyStartState).
+                                            ' as soon as that WRITE ends (EarlyStartState). 2.016: next files of any size; the reason
+                                            ' for each file end without an early start is counted (EarlySkipNames).
                                             Dim earlyRec As FileRecord = Nothing
                                             Dim earlyBuf As Byte() = Nothing
                                             Dim earlyLen As Integer = 0
-                                            If earlyStartEnabled AndAlso remainingInFile = 0 AndAlso LastWriteTask IsNot Nothing AndAlso Not StopFlag AndAlso
-                                               Not IsIndexPartition AndAlso Not packEnabled AndAlso Not Pause AndAlso Not PipePause AndAlso Not EarlyWarningSeen AndAlso
-                                               i + 1 < WriteList.Count AndAlso writePlan(i + 1).Kind = PlannedWriteKind.DataPartitionMaterial AndAlso
-                                               filesSincePosCheck + 1 < 1024 AndAlso Not CapacityCheckDue() AndAlso Not CheckpointDue(plabel.blocksize) Then
-                                                earlyRec = WriteList(i + 1)
-                                                If earlyRec Is Nothing OrElse earlyRec.File Is Nothing OrElse Not earlyRec.IsOpened OrElse earlyRec.IsDirectTapeCopy OrElse
-                                                   earlyRec.FileOffset <> 0 OrElse earlyRec.SegmentLength <> earlyRec.File.length OrElse
-                                                   earlyRec.File.length <= plabel.blocksize OrElse IsTarFile(earlyRec) Then
-                                                    earlyRec = Nothing
+                                            If remainingInFile = 0 AndAlso LastWriteTask IsNot Nothing AndAlso Not IsIndexPartition AndAlso i + 1 < WriteList.Count Then
+                                                _earlyFileEnds += 1
+                                                Dim skip As Integer = -1
+                                                If Not earlyStartEnabled OrElse packEnabled Then
+                                                    skip = 0
+                                                ElseIf StopFlag OrElse Pause OrElse PipePause OrElse EarlyWarningSeen Then
+                                                    skip = 1
+                                                ElseIf writePlan(i + 1).Kind <> PlannedWriteKind.DataPartitionMaterial Then
+                                                    skip = 2
+                                                ElseIf filesSincePosCheck + 1 >= 1024 Then
+                                                    skip = 3
+                                                ElseIf CapacityCheckDue() Then
+                                                    skip = 4
+                                                ElseIf CheckpointDue(plabel.blocksize) Then
+                                                    skip = 5
                                                 Else
-                                                    earlyLen = plabel.blocksize ' more than one block, so the first one is whole
-                                                    ' Only bytes already in the buffer: this read must not wait for the source.
-                                                    Dim buffered As Long = If(RingBufferEnabled, CLng(RingBufferReader.AvailableToRead()), PipeGetLength(PipeReader, flagEmpty:=False))
-                                                    If buffered < earlyLen Then
-                                                        earlyRec = Nothing
+                                                    earlyRec = WriteList(i + 1)
+                                                    If earlyRec Is Nothing OrElse earlyRec.File Is Nothing OrElse earlyRec.IsDirectTapeCopy OrElse
+                                                       earlyRec.FileOffset <> 0 OrElse earlyRec.SegmentLength <> earlyRec.File.length OrElse
+                                                       earlyRec.File.length <= 0 OrElse IsTarFile(earlyRec) Then
+                                                        skip = 6
+                                                    ElseIf Not earlyRec.IsOpened Then
+                                                        skip = 7
                                                     Else
-                                                        earlyBuf = IOManager.PublicArrayPool.Rent(plabel.blocksize)
-                                                        Dim got As Integer = 0
-                                                        Try
-                                                            got = If(RingBufferEnabled, PipeReadExactly(RingBufferReader, earlyBuf, earlyLen), PipeReadExactly(PipeReader, earlyBuf, earlyLen))
-                                                        Catch
-                                                            IOManager.PublicArrayPool.Return(earlyBuf)
-                                                            Throw
-                                                        End Try
-                                                        If got <> earlyLen Then
-                                                            ' Not expected (the bytes were in the buffer). The stream is out of step now, so stop.
-                                                            IOManager.PublicArrayPool.Return(earlyBuf)
-                                                            StopFlag = True
-                                                            Throw New IO.EndOfStreamException($"Early start read {got} of {earlyLen} bytes of {earlyRec.SourcePath}")
-                                                        End If
-                                                    End If
-                                                End If
-                                            End If
-                                            If LastWriteTask IsNot Nothing Then
-                                                Dim lwcounter As Integer = 0
-                                                While Not (LastWriteTask.IsCompleted OrElse LastWriteTask.IsCanceled OrElse LastWriteTask.IsFaulted)
-                                                    WaitTaskBriefly(LastWriteTask, 10) ' 2.008: no kernel wait handle per WRITE task
-                                                    lwcounter += 1
-                                                    If lwcounter >= 100 Then
-                                                        lwcounter = 0
-                                                        If RingBufferEnabled Then
-                                                            PipeBufferLength = PipeGetLength(RingBufferReader)
+                                                        earlyLen = CInt(Math.Min(CLng(plabel.blocksize), earlyRec.SegmentLength))
+                                                        ' Only bytes already in the buffer: this read must not wait for the source.
+                                                        Dim buffered As Long = If(RingBufferEnabled, CLng(RingBufferReader.AvailableToRead()), PipeGetLength(PipeReader, flagEmpty:=False))
+                                                        If buffered < earlyLen Then
+                                                            skip = 8
                                                         Else
-                                                            PipeBufferLength = PipeGetLength(PipeReader)
+                                                            earlyBuf = IOManager.PublicArrayPool.Rent(plabel.blocksize)
+                                                            Dim got As Integer = 0
+                                                            Try
+                                                                got = If(RingBufferEnabled, PipeReadExactly(RingBufferReader, earlyBuf, earlyLen), PipeReadExactly(PipeReader, earlyBuf, earlyLen))
+                                                            Catch
+                                                                IOManager.PublicArrayPool.Return(earlyBuf)
+                                                                Throw
+                                                            End Try
+                                                            If got <> earlyLen Then
+                                                                ' Not expected (the bytes were in the buffer). The stream is out of step now, so stop.
+                                                                IOManager.PublicArrayPool.Return(earlyBuf)
+                                                                StopFlag = True
+                                                                Throw New IO.EndOfStreamException($"Early start read {got} of {earlyLen} bytes of {earlyRec.SourcePath}")
+                                                            End If
                                                         End If
                                                     End If
-                                                End While
-                                                Try
-                                                    ObserveTask(LastWriteTask)
-                                                Catch
-                                                    If earlyBuf IsNot Nothing Then IOManager.PublicArrayPool.Return(earlyBuf)
-                                                    Throw
-                                                End Try
-                                                writeTasks.Remove(LastWriteTask)
+                                                    If skip >= 0 Then earlyRec = Nothing
+                                                End If
+                                                If skip >= 0 Then _earlySkipped(skip) += 1
                                             End If
+                                            ' All of this file's blocks are on tape before the next file's extent is made, so its start
+                                            ' block is the drive's: the block before the last (2.016, write thread), then the last.
+                                            Try
+                                                If PrevWriteTask IsNot Nothing Then
+                                                    waitWrite(PrevWriteTask)
+                                                    PrevWriteTask = Nothing
+                                                End If
+                                                If LastWriteTask IsNot Nothing Then waitWrite(LastWriteTask)
+                                            Catch
+                                                If earlyBuf IsNot Nothing Then IOManager.PublicArrayPool.Return(earlyBuf)
+                                                Throw
+                                            End Try
                                             If earlyBuf IsNot Nothing Then
                                                 If StopFlag OrElse EarlyWarningSeen Then
                                                     ' This file's last block stopped the write, or the tape is nearly full: the next file
                                                     ' does not start here (the write ends before it).
+                                                    _earlySkipped(9) += 1
                                                     IOManager.PublicArrayPool.Return(earlyBuf)
                                                 Else
+                                                    _earlyStarted += 1
                                                     ' No WRITE is in flight, so p is exact: this file ends and the next one starts here.
                                                     earlyEndPos = New TapeUtils.PositionData(p)
                                                     If earlyRec.File.extentinfo IsNot Nothing AndAlso earlyRec.File.extentinfo.Count > 0 Then earlyRec.File.extentinfo.Clear()
@@ -10823,6 +10947,9 @@ Public Class LTFSWriter
                                                               hashCalculator.StopFlag = True
                                                           End Try
                                                       End Sub, Tuple.Create(fr, sh))
+                                                ' 2.016: small files come this way too now; drop finished tasks as the small-file
+                                                ' branch does, or each file's checksum object stays alive until the next index.
+                                                hashTasks.RemoveAll(Function(t) t.Status = TaskStatus.RanToCompletion)
                                                 hashTasks.Add(hashTask)
                                                 If CheckUnindexedDataLimit(CheckOnly:=True) Then
                                                     WaitForHashTasks(hashTasks)
@@ -11066,6 +11193,15 @@ Public Class LTFSWriter
                             PrintMsg($"The write stopped after the first block of file {earlyNext.Index + 1}; that file is not indexed", LogOnly:=True)
                             earlyNext = Nothing
                         End If
+                        If _earlyFileEnds > 0 Then ' 2.016
+                            Dim notStarted As New List(Of String)
+                            For r As Integer = 0 To _earlySkipped.Length - 1
+                                If _earlySkipped(r) > 0 Then notStarted.Add($"{_earlySkipped(r)} {EarlySkipNames(r)}")
+                            Next
+                            PrintMsg($"Next file started early at {_earlyStarted} of {_earlyFileEnds} file ends" &
+                                     If(notStarted.Count > 0, $"; not at: {String.Join(", ", notStarted)}", "") &
+                                     $"; write thread {If(writeQueue IsNot Nothing, "on", "off")}", LogOnly:=True)
+                        End If
                         flushPack() ' the last record (also after Cancel; a failed write discards its files)
                         WaitForHashTasks(hashTasks)
                         ' 2.008: files the drive cannot confirm stay in the write list instead of being indexed.
@@ -11153,6 +11289,16 @@ Public Class LTFSWriter
                         Log.Error(cleanupEx, "Writer write tasks failed during cleanup.")
                         StopFlag = True
                     End Try
+                    If writeQueue IsNot Nothing Then
+                        ' Every block it was given has ended (WaitForTasks above), so no WRITE uses the buffers below.
+                        Try
+                            writeQueue.Dispose()
+                        Catch cleanupEx As Exception
+                            Log.Error(cleanupEx, "Writer block thread cleanup failed.")
+                        Finally
+                            writeQueue = Nothing
+                        End Try
+                    End If
                     Try
                         WaitForHashTasks(hashTasks)
                     Catch cleanupEx As Exception
@@ -11166,6 +11312,15 @@ Public Class LTFSWriter
                             Log.Error(cleanupEx, "Writer buffer cleanup failed.")
                         Finally
                             wBufferPtr = IntPtr.Zero
+                        End Try
+                    End If
+                    If wBufferPtr2 <> IntPtr.Zero Then
+                        Try
+                            Marshal.FreeHGlobal(wBufferPtr2)
+                        Catch cleanupEx As Exception
+                            Log.Error(cleanupEx, "Writer buffer cleanup failed.")
+                        Finally
+                            wBufferPtr2 = IntPtr.Zero
                         End Try
                     End If
                     If fastProvider IsNot Nothing Then
