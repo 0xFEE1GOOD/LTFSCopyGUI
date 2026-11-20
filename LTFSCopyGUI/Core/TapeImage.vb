@@ -1255,6 +1255,29 @@ Public Class TapeImage
             Next
             VolumeChanged = True
         End If
+        SaveIndexFile()
+    End Sub
+
+    ''' <summary>
+    ''' 2.011: the block table (end of data, filemarks) was saved only by CloseFile, so a process that ended without
+    ''' closing the image left the table from before its writes. Like a drive, what was written up to a filemark or a
+    ''' flush now survives: the table is saved there (to a temporary file first, so a crash cannot leave half of it).
+    ''' </summary>
+    Private Sub SaveIndexFile()
+        If _readOnlySession OrElse idxFile Is Nothing Then Return
+        Try
+            For Each s As Stream In PartitionMappingStream.Values
+                s.Flush()
+            Next
+            Dim tmp As String = idxFile.FullName & ".tmp"
+            File.WriteAllText(tmp, GetSerializedString())
+            If File.Exists(idxFile.FullName) Then
+                File.Replace(tmp, idxFile.FullName, Nothing)
+            Else
+                File.Move(tmp, idxFile.FullName)
+            End If
+        Catch
+        End Try
     End Sub
 
     Public Function ReadBlock(ByRef sense As Byte()) As Byte()

@@ -5974,8 +5974,24 @@ Public Class LTFSWriter
         Return result
     End Function
 
+    ' Test hook (2.011) for tools\taperestore only, set through reflection (inert in normal use): the answer to the
+    ' restore's Abort/Retry/Ignore questions when no window shows them (Retry at most 3 times in a row, then Ignore).
+    Friend Shared TestExtractionAnswer As Integer = 0
+    Private _testRetriesInARow As Integer
+
     Private Function AskExtractionRetry(message As String,
                                         Optional caption As String = Nothing) As DialogResult
+        If TestExtractionAnswer <> 0 Then
+            Dim answer As DialogResult = CType(TestExtractionAnswer, DialogResult)
+            If answer = DialogResult.Retry Then
+                _testRetriesInARow += 1
+                If _testRetriesInARow > 3 Then answer = DialogResult.Ignore : _testRetriesInARow = 0
+            Else
+                _testRetriesInARow = 0
+            End If
+            PrintMsg($"Restore question answered {answer} (test hook): {message}", IsWarn:=True, LogOnly:=True)
+            Return answer
+        End If
         Dim result As DialogResult = DialogResult.Abort
         Try
             Invoke(Sub()

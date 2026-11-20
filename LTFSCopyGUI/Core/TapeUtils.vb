@@ -98,25 +98,47 @@ Public Class TapeUtils
         End Sub
     End Class
 
-    ' Test hook (2.008), for the tools\tapewrite harness only: it is set through reflection, never by the app, so it is
-    ' inert in normal use. It arms one simulated fault at the Nth data WRITE (counted from arming, both handle-based
-    ' Write overloads); that command is not sent to the drive. Mode 1 answers MEDIUM ERROR / WRITE ERROR, a failed
-    ' WRITE; mode 2 answers success, a block the drive silently did not take - the writer's block count then disagrees
-    ' with the drive on purpose, to test that such files are never indexed.
+    ' Test hooks (2.008, extended 2.011) for the tools\tapewrite / taperestore harnesses only: set through reflection,
+    ' never by the app, so they are inert in normal use.
+    ' Write: one simulated fault at the Nth data WRITE (counted from arming; both handle-based Write overloads, on the
+    ' drive and on the virtual tape). 1 = MEDIUM ERROR, block not written; 2 = success answered, block not written (the
+    ' writer's block count then disagrees with the drive, to test that such files are never indexed); 3 = RECOVERED
+    ' ERROR, block written; 4 = early warning (EOM bit), block written; 5 = VOLUME OVERFLOW, block not written.
     Friend Shared TestWriteFaultAt As Long = 0
     Friend Shared TestWriteFaultMode As Integer = 0
     Private Shared _testWriteCount As Long
-    Private Shared Function TestWriteFault(senseLength As Integer, ByRef sense As Byte()) As Boolean
-        If TestWriteFaultAt <= 0 Then Return False
-        If Threading.Interlocked.Increment(_testWriteCount) <> TestWriteFaultAt Then Return False
-        sense = New Byte(Math.Max(senseLength, 18) - 1) {}
-        sense(0) = &H70
-        sense(7) = 10
-        If TestWriteFaultMode = 1 Then
-            sense(2) = 3          ' MEDIUM ERROR
-            sense(12) = &HC       ' ASC 0C/00: WRITE ERROR
-        End If
-        Return True
+    ''' <summary>The fault for this WRITE (0 = none).</summary>
+    Private Shared Function TestWriteFaultHit() As Integer
+        If TestWriteFaultAt <= 0 Then Return 0
+        If Threading.Interlocked.Increment(_testWriteCount) <> TestWriteFaultAt Then Return 0
+        Return TestWriteFaultMode
+    End Function
+    ''' <summary>True when the faulted WRITE must not reach the medium (modes 1, 2, 5).</summary>
+    Private Shared Function TestWriteFaultSkips(mode As Integer) As Boolean
+        Return mode = 1 OrElse mode = 2 OrElse mode = 5
+    End Function
+    Private Shared Function TestWriteFaultSense(senseLength As Integer, mode As Integer) As Byte()
+        Dim s(Math.Max(senseLength, 18) - 1) As Byte
+        s(0) = &H70
+        s(7) = 10
+        Select Case mode
+            Case 1 : s(2) = 3 : s(12) = &HC                ' MEDIUM ERROR, ASC 0C/00 WRITE ERROR
+            Case 3 : s(2) = 1 : s(12) = &H17 : s(13) = 1    ' RECOVERED ERROR, ASC 17/01 recovered data with retries
+            Case 4 : s(2) = &H40 : s(13) = 2                ' NO SENSE + EOM, ASC 00/02 end of partition (early warning)
+            Case 5 : s(2) = &H40 Or &HD : s(13) = 2         ' VOLUME OVERFLOW + EOM
+        End Select
+        Return s
+    End Function
+    ' Read (2.011): one simulated fault at the Nth ReadBlockInPlace (the restore's reads). 1 = MEDIUM ERROR, no data;
+    ' 2 = the record comes back half its length; 3 = the record comes back with one byte changed and no error (silent
+    ' corruption: only the checksum check can catch it).
+    Friend Shared TestReadFaultAt As Long = 0
+    Friend Shared TestReadFaultMode As Integer = 0
+    Private Shared _testReadCount As Long
+    Private Shared Function TestReadFaultHit() As Integer
+        If TestReadFaultAt <= 0 Then Return 0
+        If Threading.Interlocked.Increment(_testReadCount) <> TestReadFaultAt Then Return 0
+        Return TestReadFaultMode
     End Function
 
     Private Shared ReadOnly _writeTrackers As New Dictionary(Of String, WriteTracker)(StringComparer.OrdinalIgnoreCase)
@@ -810,6 +832,17 @@ Public Class TapeUtils
     ''' the large object heap) made the GC run a full collection several times a second and held up the reading thread.
     ''' </summary>
     Public Shared Function ReadBlockInPlace(handle As IntPtr, buffer As IntPtr, ByRef sense As Byte(), BlockSizeLimit As UInteger) As Integer
+        Dim fault As Integer = TestReadFaultHit()
+        If fault = 1 Then
+            sense = CType(TapeImage.SenseData.MediumError.Clone(), Byte())
+            Return 0
+        End If
+        Dim got As Integer = ReadBlockInPlaceCore(handle, buffer, sense, BlockSizeLimit)
+        If fault = 2 AndAlso got > 1 Then got \= 2
+        If fault = 3 AndAlso got > 0 Then Marshal.WriteByte(buffer, got \ 2, CByte(Marshal.ReadByte(buffer, got \ 2) Xor &H5A))
+        Return got
+    End Function
+    Private Shared Function ReadBlockInPlaceCore(handle As IntPtr, buffer As IntPtr, ByRef sense As Byte(), BlockSizeLimit As UInteger) As Integer
         If DriverTypeSetting = DriverType.TapeStream OrElse DriverTypeSetting = DriverType.SLR1 Then
             Dim data As Byte() = ReadBlock(handle, sense, BlockSizeLimit, True)
             Dim n As Integer = CInt(Math.Min(CLng(data.Length), CLng(BlockSizeLimit)))
@@ -6984,16 +7017,19 @@ Public Class TapeUtils
                     Throw New Exception($"SCSI Failure. {vbCrLf}ErrCode: 0x{ErrCode.ToString("X8")}h{vbCrLf}{win32ex.Message}")
                 End If
             Case DriverType.TapeStream
+                Dim fault As Integer = TestWriteFaultHit()
+                If TestWriteFaultSkips(fault) Then Return TestWriteFaultSense(sense.Length, fault)
                 Dim ts As TapeImage = Nothing
                 TapeStreamMapping.MappingTable.TryGetValue(handle, ts)
                 If ts Is Nothing Then
                     sense = TapeImage.SenseData.NotPresent
                 Else
                     ts.WriteBlock(Data)
-                    sense = TapeImage.SenseData.NoSense
+                    sense = If(fault <> 0, TestWriteFaultSense(sense.Length, fault), TapeImage.SenseData.NoSense)
                 End If
             Case Else
-                If TestWriteFault(sense.Length, sense) Then Return sense
+                Dim fault As Integer = TestWriteFaultHit()
+                If TestWriteFaultSkips(fault) Then Return TestWriteFaultSense(sense.Length, fault)
                 Dim writeStart As Long = Diagnostics.Stopwatch.GetTimestamp()
                 Dim succ As Boolean =
             SendSCSICommandUnmanaged(handle, {&HA, 0, CByte((Data.Length >> 16) And &HFF), CByte((Data.Length >> 8) And &HFF), CByte(Data.Length And &HFF), 0}, Data, 0,
@@ -7007,6 +7043,7 @@ Public Class TapeUtils
                     Dim win32ex As New Win32Exception(ErrCode)
                     Throw New Exception($"SCSI Failure. {vbCrLf}ErrCode: 0x{ErrCode.ToString("X8")}h{vbCrLf}{win32ex.Message}")
                 End If
+                If fault <> 0 Then sense = TestWriteFaultSense(sense.Length, fault)
         End Select
         Return sense
     End Function
@@ -7025,6 +7062,8 @@ Public Class TapeUtils
         If senseEnabled Then ReDim sense(63)
         Select Case DriverTypeSetting
             Case DriverType.TapeStream
+                Dim fault As Integer = TestWriteFaultHit()
+                If TestWriteFaultSkips(fault) Then Return TestWriteFaultSense(sense.Length, fault)
                 Dim ts As TapeImage = Nothing
                 TapeStreamMapping.MappingTable.TryGetValue(handle, ts)
                 If ts Is Nothing Then
@@ -7033,10 +7072,11 @@ Public Class TapeUtils
                     Dim dataArr(CInt(Length - 1)) As Byte
                     Marshal.Copy(Data, dataArr, 0, CInt(Length))
                     ts.WriteBlock(dataArr)
-                    sense = TapeImage.SenseData.NoSense
+                    sense = If(fault <> 0, TestWriteFaultSense(sense.Length, fault), TapeImage.SenseData.NoSense)
                 End If
             Case Else
-                If TestWriteFault(sense.Length, sense) Then Return sense
+                Dim fault As Integer = TestWriteFaultHit()
+                If TestWriteFaultSkips(fault) Then Return TestWriteFaultSense(sense.Length, fault)
                 Dim cdbData As Byte() = {&HA, 0, CByte(Length >> 16 And &HFF), CByte(Length >> 8 And &HFF), CByte(Length And &HFF), 0}
                 Dim writeStart As Long = Diagnostics.Stopwatch.GetTimestamp()
                 Dim succ As Boolean = TapeSCSIIOCtlUnmanaged(handle, cdbData, Data, Length, 0, 900, sense)
@@ -7046,6 +7086,7 @@ Public Class TapeUtils
                     Dim win32ex As New Win32Exception(ErrCode)
                     Throw New Exception($"SCSI Failure. {vbCrLf}ErrCode: 0x{ErrCode.ToString("X8")}h{vbCrLf}{win32ex.Message}")
                 End If
+                If fault <> 0 Then sense = TestWriteFaultSense(sense.Length, fault)
         End Select
         Return sense
     End Function
