@@ -999,6 +999,9 @@ Enable only when memory usage is abnormally high</value>
   <data name="PropertyDescription_LTFSWriter_VerifyOnRestore" xml:space="preserve">
     <value>Check every restored file against the checksum written to tape with it (SHA-1, or another standard checksum the index holds). A file whose data does not match is reported as not restored and is not left under its name. The check runs beside the restore on its own thread and does not slow it down. Files without a checksum in the index are restored unchecked. Off = no check.</value>
   </data>
+  <data name="PropertyDescription_LTFSWriter_EarlyStart" xml:space="preserve">
+    <value>Send the next file's first block to the drive while the current file is still being finished, so the drive gets its next WRITE without a pause at every file boundary. With many files of a few MB, those pauses made the drive slow down and stop (shoe-shining). The data and the index on tape are the same either way. Off = the next file starts only after the current one is fully done (as before 2.015).</value>
+  </data>
   <data name="PropertyDescription_LTFSWriter_EnrichTarMetadata" xml:space="preserve">
     <value>Write tar metadata index</value>
   </data>

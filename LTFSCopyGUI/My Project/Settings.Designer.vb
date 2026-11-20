@@ -619,6 +619,21 @@ Namespace My
         End Property
 
         <Global.System.Configuration.UserScopedSettingAttribute(),
+         Global.System.Configuration.SettingsDescriptionAttribute("Start the next file's first block early"),
+         Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
+         Global.System.Configuration.DefaultSettingValueAttribute("True"),
+         Category("LTFSWriter"),
+         LocalizedDescription("PropertyDescription_LTFSWriter_EarlyStart")>
+        Public Property LTFSWriter_EarlyStart() As Boolean
+            Get
+                Return CType(Me("LTFSWriter_EarlyStart"), Boolean)
+            End Get
+            Set(Value As Boolean)
+                Me("LTFSWriter_EarlyStart") = Value
+            End Set
+        End Property
+
+        <Global.System.Configuration.UserScopedSettingAttribute(),
          Global.System.Configuration.SettingsDescriptionAttribute("Source reads kept in flight"),
          Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
          Global.System.Configuration.DefaultSettingValueAttribute("4"),
