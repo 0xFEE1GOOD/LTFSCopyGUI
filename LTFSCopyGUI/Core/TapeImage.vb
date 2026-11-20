@@ -888,7 +888,10 @@ Public Class TapeImage
                         ParamLen <<= 8
                         ParamLen = ParamLen Or Param(i)
                     Next
-                    If allocLen - 4 >= ParamLen Then
+                    ' 2.012: TapeUtils.SetMAMAttribute puts the whole list length (header included) in the length field,
+                    ' which drives accept; requiring it to exclude the 4 header bytes rejected every attribute written,
+                    ' so the virtual tape never kept the LTFS volume coherency information (080Ch).
+                    If ParamLen <= allocLen Then
                         Dim offset As Integer = 4
                         While offset + 4 < allocLen - 1
                             Dim attriblen As Integer = Param(offset + 3)
@@ -1269,6 +1272,9 @@ Public Class TapeImage
             For Each s As Stream In PartitionMappingStream.Values
                 s.Flush()
             Next
+            ' A drive changes its Volume Change Reference when the medium is written; the image did only when the
+            ' value was read. Count the change now, so a reload after a crash sees a changed reference (2.012).
+            Dim vcrNow As UInt32 = VolumeChangeReference
             Dim tmp As String = idxFile.FullName & ".tmp"
             File.WriteAllText(tmp, GetSerializedString())
             If File.Exists(idxFile.FullName) Then

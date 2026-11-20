@@ -1212,11 +1212,13 @@ Public Class LTFSWriter
             'backing field directly so SourcePath does not resolve the same path
             'a second time for every added file.
             _sourcePath = ExtendedPath(finf.FullName)
+            ' 2.012: the read-only flag is kept (it was always written as False, so a read-only file came back writable;
+            ' restore applies it). From the listing's attributes, no extra round trip.
             File = New ltfsindex.file With {
                 .name = finf.Name,
                 .fileuid = -1,
                 .length = finf.Length,
-                .readonly = False,
+                .readonly = (finf.Attributes And IO.FileAttributes.ReadOnly) <> 0,
                 .openforwrite = False}
             FileOffset = 0
             SegmentLength = finf.Length
@@ -10836,7 +10838,9 @@ Public Class LTFSWriter
                             Catch ex As OperationCanceledException When StopFlag
                                 Exit For
                             Catch ex As Exception
-                                Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"{My.Resources.ResText_WErr}{vbCrLf}{ex.ToString}"))
+                                ' 2.012: every Abort answer sets StopFlag before it throws; the operator has just seen
+                                ' that error, so no second box with the exception text (the log keeps it).
+                                If Not StopFlag Then Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"{My.Resources.ResText_WErr}{vbCrLf}{ex.ToString}"))
                                 PrintMsg($"{My.Resources.ResText_WErr}{ex.Message}{vbCrLf}{ex.StackTrace}", IsWarn:=True)
                                 SetStatusLight(LWStatus.Err)
                                 StopFlag = True
