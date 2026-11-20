@@ -5964,14 +5964,19 @@ Public Class LTFSWriter
         Public NotInheritable Class Record
             Public Partition As Byte
             Public Block As Long
+            ' A pooled buffer (2.006): it can be longer than the record, so Length says how much of it is data.
+            ' Nothing for an empty read (filemark, end of data) or a failed one.
             Public Data As Byte()
+            Public Length As Integer
             Public Sense As Byte()
             Public ReadError As Exception
         End Class
 
-        ' Unneeded records up to this far ahead are read and dropped: a LOCATE stops the tape, while
-        ' 64 records take about 0.1 s to read.
-        Private Const ReadThroughBlocks As Long = 64
+        ' Unneeded records up to this far ahead are read and dropped: a LOCATE stops the tape and repositions it
+        ' (seconds), while 2048 records take 2-3 s to read with the tape streaming. The index a write leaves in the
+        ' middle of the tape every LTFSWriter_IndexWriteInterval is ~160 records for 60,000 files, which the old
+        ' limit of 64 turned into a stop each (2.006).
+        Private Const ReadThroughBlocks As Long = 2048
 
         Private ReadOnly _owner As LTFSWriter
         Private ReadOnly _plan As List(Of ExtractionExtentWork)
@@ -5988,11 +5993,23 @@ Public Class LTFSWriter
         Private _partition As Byte
         Private _block As Long
         Private _buffer As IntPtr ' one record, reused for every read (owned by the reader thread)
+        ' Record buffers are reused (2.006). A new array per record (512 KiB, large object heap) made .NET run a full
+        ' collection several times a second during a restore (1,137 in 7 minutes), holding up this thread and with it
+        ' the drive, which then slowed down or stopped.
+        Private ReadOnly _pool As System.Buffers.ArrayPool(Of Byte)
+        ' Read timing (2.006), as on the write side; touched by the reader thread only.
+        Private _statStart As Long
+        Private _statReads As Long
+        Private _statBytes As Long
+        Private _statInside As Long
+        Private _statGen2 As Integer
 
         Public ReadOnly Property Capacity As Long
         Public ReadOnly Property StoppedAtError As Boolean
         Public ReadOnly Property Records As Long
         Public ReadOnly Property Pauses As Integer
+        Public ReadOnly Property SlowReads As Integer
+        Public ReadOnly Property SlowReadSeconds As Double
 
         Public Sub New(owner As LTFSWriter, plan As List(Of ExtractionExtentWork), startIndex As Integer, startBlock As Long)
             _owner = owner
@@ -6007,6 +6024,9 @@ Public Class LTFSWriter
             Catch
             End Try
             Capacity = Math.Max(wanted, 64L << 20)
+            ' Buffers come in power-of-two sizes up to the block size; enough per size for a full read-ahead of records.
+            _pool = System.Buffers.ArrayPool(Of Byte).Create(CInt(Math.Min(_blockSize, Integer.MaxValue)),
+                                                              CInt(Math.Min(65536L, Capacity \ 65536L + 64)))
             _thread = New Threading.Thread(AddressOf Run) With {.IsBackground = True, .Name = "Restore read-ahead"}
             _thread.Start()
         End Sub
@@ -6072,7 +6092,7 @@ Public Class LTFSWriter
                 If havePos AndAlso posPartition = part AndAlso b >= posBlock AndAlso b - posBlock <= ReadThroughBlocks Then
                     While posBlock < b AndAlso havePos AndAlso Not Stopping()
                         Dim skipSense As Byte() = Nothing
-                        TapeUtils.ReadBlock(handle, _buffer, skipSense, CUInt(_blockSize))
+                        TimedRead(handle, skipSense)
                         If SenseKey(skipSense) > 1 Then havePos = False Else posBlock += 1
                     End While
                 Else
@@ -6091,11 +6111,11 @@ Public Class LTFSWriter
                     havePos = True
                 End If
                 Dim sense As Byte() = Nothing
-                Dim data As Byte() = TapeUtils.ReadBlock(handle, _buffer, sense, CUInt(_blockSize))
+                Dim n As Integer = TimedRead(handle, sense)
                 posBlock += 1
                 ' Stop after a hard error or an empty read (filemark, end of data); the restore decides what comes next.
-                Dim failed As Boolean = data Is Nothing OrElse data.Length = 0 OrElse SenseKey(sense) > 1
-                Add(New Record With {.Partition = part, .Block = b, .Data = data, .Sense = sense}, failed)
+                Dim failed As Boolean = n <= 0 OrElse SenseKey(sense) > 1
+                Add(New Record With {.Partition = part, .Block = b, .Data = TakeData(n), .Length = Math.Max(0, n), .Sense = sense}, failed)
                 Return Not failed
             Catch ex As Exception
                 havePos = False
@@ -6103,6 +6123,62 @@ Public Class LTFSWriter
                 Return False
             End Try
         End Function
+
+        ' One READ into _buffer, timed: every 10 s a line with the time inside READ commands (the drive delivering)
+        ' and outside them (this thread: copying, waiting for room), the read-ahead fill and the full GCs. A READ the
+        ' drive holds 1 s or more means the tape was not moving (repositioning or a speed change).
+        Private Function TimedRead(handle As IntPtr, ByRef sense As Byte()) As Integer
+            Dim t0 As Long = Diagnostics.Stopwatch.GetTimestamp()
+            Dim n As Integer = TapeUtils.ReadBlockInPlace(handle, _buffer, sense, CUInt(_blockSize))
+            Dim t1 As Long = Diagnostics.Stopwatch.GetTimestamp()
+            Dim freq As Long = Diagnostics.Stopwatch.Frequency
+            If _statStart = 0 Then
+                _statStart = t0
+                _statGen2 = GC.CollectionCount(2)
+            End If
+            _statReads += 1
+            _statBytes += Math.Max(0, n)
+            _statInside += t1 - t0
+            If t1 - t0 >= freq Then
+                Dim held As Double = (t1 - t0) / CDbl(freq)
+                _SlowReads += 1
+                _SlowReadSeconds += held
+                _owner.PrintMsg($"Drive held a READ for {held:0.0} s: the tape stopped (repositioning or a speed change)", LogOnly:=True)
+            End If
+            If t1 - _statStart >= 10 * freq Then
+                Dim wall As Double = (t1 - _statStart) / CDbl(freq)
+                Dim inside As Double = _statInside / CDbl(freq)
+                Dim queued As Long
+                SyncLock _lock
+                    queued = _queuedBytes
+                End SyncLock
+                Dim gen2 As Integer = GC.CollectionCount(2)
+                Dim mib As Double = _statBytes / 1048576.0
+                _owner.PrintMsg($"Restore read, last {wall:0} s: {mib:0} MiB in {_statReads} records = {mib / wall:0} MiB/s; inside READ {inside:0.0} s (the drive), outside {Math.Max(0, wall - inside):0.0} s (the app); read-ahead holds {queued >> 20} MiB; full GCs {gen2 - _statGen2}", LogOnly:=True)
+                _statStart = t1
+                _statReads = 0
+                _statBytes = 0
+                _statInside = 0
+                _statGen2 = gen2
+            End If
+            Return n
+        End Function
+
+        ' The record just read, copied from _buffer into a pooled buffer of at least n bytes.
+        Private Function TakeData(n As Integer) As Byte()
+            If n <= 0 Then Return Nothing
+            Dim a As Byte() = _pool.Rent(n)
+            Runtime.InteropServices.Marshal.Copy(_buffer, a, 0, n)
+            Return a
+        End Function
+
+        ''' <summary>Gives a record's buffer back for reuse once the restore has written its data. Safe to call twice.</summary>
+        Public Sub ReturnData(r As Record)
+            If r Is Nothing Then Return
+            Dim a As Byte() = r.Data
+            r.Data = Nothing
+            If a IsNot Nothing Then _pool.Return(a)
+        End Sub
 
         ' Waits while the buffer is full. Once it is full, reading resumes only when three quarters of it
         ' has been used, so the drive restarts once per buffer, not once per record.
@@ -6148,6 +6224,7 @@ Public Class LTFSWriter
                             Threading.Monitor.PulseAll(_lock)
                         End If
                         If r.Partition = partition AndAlso r.Block = block Then Return r
+                        ReturnData(r) ' a record of a file the restore skipped
                     End While
                     If _finished OrElse Stopping() Then Return Nothing
                     Threading.Monitor.Wait(_lock, 250)
@@ -6174,6 +6251,7 @@ Public Class LTFSWriter
     Private _extractIgnoredBlock As Long = -1
 
     Private Sub RestartExtractionReader(planIndex As Integer, block As Long)
+        If _extractReader IsNot Nothing Then _extractReader.ReturnData(_extractRecord)
         _extractRecord = Nothing
         If _extractReader IsNot Nothing Then _extractReader.Dispose()
         _extractReader = New ExtractionReadAhead(Me, _extractPlan, planIndex, block)
@@ -6189,16 +6267,21 @@ Public Class LTFSWriter
             record = _extractReader.Take(partition, block)
         End If
         If record Is Nothing AndAlso Not StopFlag Then Throw New IO.IOException($"Tape record P{partition} B{block} was not read")
+        ' The restore has written the previous record's data by now (each record is used right after it is taken),
+        ' so its buffer goes back to the reader for reuse.
+        If _extractRecord IsNot Nothing AndAlso _extractRecord IsNot record Then _extractReader.ReturnData(_extractRecord)
         _extractRecord = record
         Return record
     End Function
 
-    ' The read checks of a restore, applied to a record read ahead. Returns the data, or Nothing when
-    ' the user chose Retry.
+    ' The read checks of a restore, applied to a record read ahead. Returns the data (its first dataLength
+    ' bytes; the buffer can be longer), or Nothing when the user chose Retry.
     Private Function CheckExtractionRecord(record As ExtractionReadAhead.Record,
                                            blockLength As Long,
-                                           ByRef shortReadIgnored As Boolean) As Byte()
+                                           ByRef shortReadIgnored As Boolean,
+                                           ByRef dataLength As Integer) As Byte()
         shortReadIgnored = False
+        dataLength = 0
         If record.ReadError IsNot Nothing Then
             Select Case AskExtractionRetry($"{My.Resources.ResText_RErrSCSI}{vbCrLf}{record.ReadError}")
                 Case DialogResult.Abort
@@ -6213,6 +6296,7 @@ Public Class LTFSWriter
         End If
 
         Dim data As Byte() = If(record.Data, {})
+        Dim length As Integer = If(record.Data Is Nothing, 0, record.Length)
         Dim sense As Byte() = record.Sense
         If sense IsNot Nothing AndAlso sense.Length > 2 Then
             Dim senseValue As Integer = sense(2)
@@ -6247,9 +6331,9 @@ Public Class LTFSWriter
             End If
         End If
 
-        If data.Length = 0 Then Throw New IO.EndOfStreamException("The tape returned an empty block while reading an extent")
-        If data.Length < blockLength Then
-            Dim message As String = $"Error reading tape block: read {data.Length} bytes, expected {blockLength}"
+        If length = 0 Then Throw New IO.EndOfStreamException("The tape returned an empty block while reading an extent")
+        If length < blockLength Then
+            Dim message As String = $"Error reading tape block: read {length} bytes, expected {blockLength}"
             PrintMsg(message, LogOnly:=True, IsWarn:=True)
             If Not My.Settings.LTFSWriter_IgnoreILI AndAlso Not shortReadIgnored Then
                 Select Case AskExtractionRetry(message)
@@ -6265,6 +6349,7 @@ Public Class LTFSWriter
                 shortReadIgnored = True
             End If
         End If
+        dataLength = length
         Return data
     End Function
 
@@ -6333,6 +6418,7 @@ Public Class LTFSWriter
                 Throw New IO.InvalidDataException($"record P{part} B{extent.startblock} was skipped after a read error")
             End If
             Dim data As Byte() = Nothing
+            Dim dataLength As Integer = 0 ' the buffer can be longer than the record
             Do
                 Dim record As ExtractionReadAhead.Record = TakeExtractionRecord(planIndex, part, extent.startblock)
                 If record Is Nothing Then Return
@@ -6343,6 +6429,7 @@ Public Class LTFSWriter
                     problem = $"{My.Resources.ResText_RestoreErr}{vbCrLf}{TapeUtils.ParseSenseData(record.Sense)}{vbCrLf}{vbCrLf}sense{vbCrLf}{TapeUtils.Byte2Hex(record.Sense, True)}"
                 Else
                     data = If(record.Data, {})
+                    dataLength = If(record.Data Is Nothing, 0, record.Length)
                     Exit Do
                 End If
                 PrintMsg($"Read error at P{part} B{extent.startblock}: {problem}", IsWarn:=True, LogOnly:=True)
@@ -6358,8 +6445,8 @@ Public Class LTFSWriter
                         Throw New IO.IOException(problem)
                 End Select
             Loop
-            If data.Length < extent.byteoffset + extent.bytecount Then
-                Throw New IO.InvalidDataException($"{work.FileWork.Request.FileIndex.name}: record P{part} B{extent.startblock} has {data.Length} bytes, extent needs {extent.byteoffset + extent.bytecount}")
+            If dataLength < extent.byteoffset + extent.bytecount Then
+                Throw New IO.InvalidDataException($"{work.FileWork.Request.FileIndex.name}: record P{part} B{extent.startblock} has {dataLength} bytes, extent needs {extent.byteoffset + extent.bytecount}")
             End If
             If work.FileWork.Direct Then
                 WriteExtractionFileDirect(work.FileWork, data, CInt(extent.byteoffset), CInt(extent.bytecount))
@@ -6398,17 +6485,18 @@ Public Class LTFSWriter
                 Dim record As ExtractionReadAhead.Record = TakeExtractionRecord(planIndex, part, block)
                 If record Is Nothing Then Exit While
                 Dim ignoredShortRead As Boolean = False
-                Dim data As Byte() = CheckExtractionRecord(record, requested, ignoredShortRead)
+                Dim dataLength As Integer = 0 ' the buffer can be longer than the record
+                Dim data As Byte() = CheckExtractionRecord(record, requested, ignoredShortRead, dataLength)
                 If StopFlag Then Exit While
                 If data Is Nothing Then
                     RestartExtractionReader(planIndex, block) ' Retry: read this record again
                     Continue While
                 End If
                 block += 1
-                If data.Length <= byteOffset Then
+                If dataLength <= byteOffset Then
                     Throw New IO.EndOfStreamException("The tape block does not contain the requested extent offset")
                 End If
-                Dim available As Long = data.Length - byteOffset
+                Dim available As Long = dataLength - byteOffset
                 Dim writeLength As Long = Math.Min(remaining, available)
                 If writeLength <= 0 OrElse writeLength > Integer.MaxValue Then
                     Throw New IO.EndOfStreamException("The tape block does not contain extent data")
@@ -6421,9 +6509,9 @@ Public Class LTFSWriter
                 ' rather than prompting keeps CommitExtractionFile from replacing the target with a
                 ' correct-length but wrong file, which IsExtractionTargetComplete would thereafter
                 ' report as already restored.
-                If data.Length < requested Then
+                If dataLength < requested Then
                     Throw New IO.InvalidDataException($"{work.FileWork.Request.FileIndex.name}: short tape block " &
-                                                      $"at P{work.PhysicalPartition} B{block - 1}: read {data.Length} of {requested} " &
+                                                      $"at P{work.PhysicalPartition} B{block - 1}: read {dataLength} of {requested} " &
                                                       $"bytes with {remaining} extent bytes outstanding; refusing to shift the " &
                                                       $"remaining {remaining - writeLength} bytes")
                 End If
@@ -6745,7 +6833,7 @@ Public Class LTFSWriter
         Finally
             If _extractReader IsNot Nothing Then
                 _extractReader.Dispose()
-                PrintMsg($"Restore read-ahead: {_extractReader.Records} records, buffer {_extractReader.Capacity >> 20} MiB, paused {_extractReader.Pauses} time(s) when full", LogOnly:=True)
+                PrintMsg($"Restore read-ahead: {_extractReader.Records} records, buffer {_extractReader.Capacity >> 20} MiB, paused {_extractReader.Pauses} time(s) when full; drive held {_extractReader.SlowReads} READ(s) 1 s or more, {_extractReader.SlowReadSeconds:0.0} s in total", LogOnly:=True)
                 _extractReader = Nothing
             End If
             _extractRecord = Nothing

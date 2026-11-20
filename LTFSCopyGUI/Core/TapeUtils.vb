@@ -730,6 +730,23 @@ Public Class TapeUtils
         If DriverTypeSetting = DriverType.TapeStream OrElse DriverTypeSetting = DriverType.SLR1 Then
             Return ReadBlock(handle, sense, BlockSizeLimit, True)
         End If
+        Dim DataLen As Integer = ReadBlockInPlace(handle, buffer, sense, BlockSizeLimit)
+        Dim RawData(DataLen - 1) As Byte
+        If DataLen > 0 Then Marshal.Copy(buffer, RawData, 0, DataLen)
+        Return RawData
+    End Function
+    ''' <summary>
+    ''' As ReadBlock(handle, buffer, sense, BlockSizeLimit), but the record stays in the caller's buffer and only its
+    ''' length is returned (2.006). A restore reads hundreds of records a second; a new array per record (512 KiB, on
+    ''' the large object heap) made the GC run a full collection several times a second and held up the reading thread.
+    ''' </summary>
+    Public Shared Function ReadBlockInPlace(handle As IntPtr, buffer As IntPtr, ByRef sense As Byte(), BlockSizeLimit As UInteger) As Integer
+        If DriverTypeSetting = DriverType.TapeStream OrElse DriverTypeSetting = DriverType.SLR1 Then
+            Dim data As Byte() = ReadBlock(handle, sense, BlockSizeLimit, True)
+            Dim n As Integer = CInt(Math.Min(CLng(data.Length), CLng(BlockSizeLimit)))
+            If n > 0 Then Marshal.Copy(data, 0, buffer, n)
+            Return n
+        End If
         BlockSizeLimit = CUInt(Math.Min(BlockSizeLimit, GlobalBlockLimit))
         Dim senseRaw(63) As Byte
         Dim cdb As Byte() = {8, 0, CByte((BlockSizeLimit >> 16) And &HFF), CByte((BlockSizeLimit >> 8) And &HFF), CByte(BlockSizeLimit And &HFF), 0}
@@ -747,10 +764,7 @@ Public Class TapeUtils
             DiffBytes = DiffBytes Or sense(i)
         Next
         DiffBytes = Math.Max(DiffBytes, 0)
-        Dim DataLen As Integer = CInt(Math.Min(BlockSizeLimit, BlockSizeLimit - DiffBytes))
-        Dim RawData(DataLen - 1) As Byte
-        If DataLen > 0 Then Marshal.Copy(buffer, RawData, 0, DataLen)
-        Return RawData
+        Return CInt(Math.Min(BlockSizeLimit, BlockSizeLimit - DiffBytes))
     End Function
     Public Shared Function ReadBlock(TapeDrive As String) As Byte()
         Return ReadBlock(TapeDrive, Nothing, &H80000, False)
