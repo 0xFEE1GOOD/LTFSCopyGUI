@@ -9209,9 +9209,11 @@ Public Class LTFSWriter
     ''' current file's close, hash task, index bookkeeping and log, then the next file's setup and first read. At
     ''' 1-7 MB files that pause came many times a second and the drive kept slowing down and stopping. Now the next
     ''' file's first block is read while the current file's last WRITE runs and is sent the moment it ends, as the
-    ''' blocks inside a file are (2.016: for files of any size, so small files form a chain too).
-    ''' Only a whole data-partition file, not packed, not a .tar being scanned, with its first block already in the
-    ''' buffer. The current file's blocks are all on tape before the next file's extent is made, so its start block
+    ''' blocks inside a file are.
+    ''' Only a whole data-partition file of more than one block, not packed, not a .tar being scanned, with its first
+    ''' block already in the buffer. (2.016 also chained files of one block or less: 4 KiB files went from 33 to 12-17
+    ''' MiB/s, as handing each file between two threads costs more than the overlap saves; 2.017 writes them directly
+    ''' again.) The current file's blocks are all on tape before the next file's extent is made, so its start block
     ''' is the drive's. Nothing that reads the drive's position runs while that block is in flight: the 1024-file
     ''' position check, the capacity check and a mid-write index each wait for a file boundary without an early
     ''' start (the start is skipped when one of them is due). The early file is indexed only through its own loop
@@ -9230,10 +9232,10 @@ Public Class LTFSWriter
         "early start off or packing on", "stopping, paused or refilling the buffer", "next is not a data-partition file",
         "1024-file position check due", "capacity check due", "index due",
         "next file split, a scanned .tar or a direct copy", "next file not opened yet", "next block not in the buffer yet",
-        "this file's last block stopped the write or the tape is nearly full"}
+        "this file's last block stopped the write or the tape is nearly full", "next file one block or less (written directly)"}
     Private _earlyFileEnds As Integer
     Private _earlyStarted As Integer
-    Private ReadOnly _earlySkipped(9) As Integer
+    Private ReadOnly _earlySkipped(10) As Integer
 
     ''' <summary>
     ''' 2.016: one thread sends the data blocks of a write to the drive, in the order given. Before, each block was a
@@ -10294,9 +10296,6 @@ Public Class LTFSWriter
                                 ObserveTask(t)
                                 writeTasks.Remove(t)
                             End Sub
-                        ' 2.016: small files go through the block loop too when files are chained by early start, so a
-                        ' run of small files is not cut into single synchronous WRITEs (packed ones still use their record).
-                        Dim chainSmallFiles As Boolean = earlyStartEnabled AndAlso Not packEnabled
                         _earlyFileEnds = 0
                         _earlyStarted = 0
                         Array.Clear(_earlySkipped, 0, _earlySkipped.Length)
@@ -10533,8 +10532,7 @@ Public Class LTFSWriter
                                         ElseIf useFastReader AndAlso Not IsIndexPartition Then
                                             Dim providerFileIndex = If(fr.IsDirectTapeCopy, CInt(fr.DirectCopyOrdinal), i)
                                             If Not WriteFileFromFastReader(fastProvider, providerFileIndex, fr, driveHandle, p, currentPlan.ExpectedDedupeHash, tarScanner, writerCancellation.Token) Then Exit For
-                                        ElseIf early Is Nothing AndAlso (fr.File.length <= plabel.blocksize) AndAlso (fr.FileOffset = 0) AndAlso (fr.File.length = fr.SegmentLength) AndAlso
-                                               (packThis OrElse IsIndexPartition OrElse Not chainSmallFiles) Then
+                                        ElseIf early Is Nothing AndAlso (fr.File.length <= plabel.blocksize) AndAlso (fr.FileOffset = 0) AndAlso (fr.File.length = fr.SegmentLength) Then
                                             Dim succ As Boolean = False
                                             Dim FileData(CInt(fr.File.length - 1)) As Byte
                                             While True
@@ -10835,7 +10833,11 @@ Public Class LTFSWriter
                                                 Dim skip As Integer = -1
                                                 If Not earlyStartEnabled OrElse packEnabled Then
                                                     skip = 0
-                                                ElseIf StopFlag OrElse Pause OrElse PipePause OrElse EarlyWarningSeen Then
+                                                ElseIf StopFlag OrElse Pause OrElse EarlyWarningSeen OrElse
+                                                       (PipePause AndAlso Not provider.ProducerCompleted) Then
+                                                    ' (2.017: PipePause only when the refill gate would wait. It is raised at every read
+                                                    ' with under 8 MiB in the pipe, also after the source has been read to the end, when
+                                                    ' WaitForBufferRefill just returns: then the last 8 MiB of every write never chained.)
                                                     skip = 1
                                                 ElseIf writePlan(i + 1).Kind <> PlannedWriteKind.DataPartitionMaterial Then
                                                     skip = 2
@@ -10851,6 +10853,8 @@ Public Class LTFSWriter
                                                        earlyRec.FileOffset <> 0 OrElse earlyRec.SegmentLength <> earlyRec.File.length OrElse
                                                        earlyRec.File.length <= 0 OrElse IsTarFile(earlyRec) Then
                                                         skip = 6
+                                                    ElseIf earlyRec.File.length <= plabel.blocksize Then
+                                                        skip = 10 ' 2.017: the direct small-file path is faster for these
                                                     ElseIf Not earlyRec.IsOpened Then
                                                         skip = 7
                                                     Else
@@ -10947,8 +10951,8 @@ Public Class LTFSWriter
                                                               hashCalculator.StopFlag = True
                                                           End Try
                                                       End Sub, Tuple.Create(fr, sh))
-                                                ' 2.016: small files come this way too now; drop finished tasks as the small-file
-                                                ' branch does, or each file's checksum object stays alive until the next index.
+                                                ' Drop finished tasks as the small-file branch does (2.016), or each file's checksum
+                                                ' object stays alive until the next index.
                                                 hashTasks.RemoveAll(Function(t) t.Status = TaskStatus.RanToCompletion)
                                                 hashTasks.Add(hashTask)
                                                 If CheckUnindexedDataLimit(CheckOnly:=True) Then
