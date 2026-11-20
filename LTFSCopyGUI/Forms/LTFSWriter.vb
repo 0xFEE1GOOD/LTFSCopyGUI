@@ -4660,6 +4660,12 @@ Public Class LTFSWriter
         TapeUtils.OnSlowWrite = Sub(seconds As Double)
                                     PrintMsg($"Drive held a WRITE for {seconds:0.0} s: the tape stopped (repositioning or a speed change)", LogOnly:=True)
                                 End Sub
+        IOManager.CheckSumBlockwiseCalculator.TakeQueueStats()
+        TapeUtils.OnWriteStats = Sub(s As TapeUtils.WriteStats)
+                                     Dim hq = IOManager.CheckSumBlockwiseCalculator.TakeQueueStats()
+                                     Dim mib As Double = s.Bytes / 1048576.0
+                                     PrintMsg($"Tape side, last {s.WallSeconds:0} s: {mib:0} MiB in {s.Writes} WRITEs = {mib / Math.Max(0.001, s.WallSeconds):0} MiB/s; inside WRITE {s.InsideSeconds:0.0} s (the drive), outside {Math.Max(0, s.WallSeconds - s.InsideSeconds):0.0} s (the app); checksum queue up to {hq.MaxBlocks} blocks, waited {hq.WaitSeconds:0.0} s for it", LogOnly:=True)
+                                 End Sub
     End Sub
     ''' <summary>One line per write with the drive stalls of its data phase.</summary>
     Private Sub ReportDriveStalls()

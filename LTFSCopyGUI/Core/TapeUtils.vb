@@ -21,7 +21,28 @@ Public Class TapeUtils
     Public Shared Sub ResetSlowWrites()
         Threading.Interlocked.Exchange(_slowWriteCount, 0)
         Threading.Interlocked.Exchange(_slowWriteMs, 0)
+        SyncLock _statsLock
+            _statsStart = 0 : _statsWrites = 0 : _statsBytes = 0 : _statsInside = 0
+        End SyncLock
     End Sub
+
+    ' Write-time split (2.005): every 10 s, the time the writing side spent inside WRITE commands (the drive taking the
+    ' data) and outside them (the app getting the next block ready). WRITEs go one at a time, so the two add up to the
+    ' wall time. With the source buffer full, mostly inside means the drive set the pace; mostly outside means the app.
+    Public Const WriteStatsIntervalMs As Long = 10000
+    Public Structure WriteStats
+        Public Writes As Long
+        Public Bytes As Long
+        Public InsideSeconds As Double
+        Public WallSeconds As Double
+    End Structure
+    Private Shared ReadOnly _statsLock As New Object
+    Private Shared _statsStart As Long
+    Private Shared _statsWrites As Long
+    Private Shared _statsBytes As Long
+    Private Shared _statsInside As Long
+    ''' <summary>Called (on the writing thread) about every 10 s of writing with the split since the last call.</summary>
+    Public Shared Property OnWriteStats As Action(Of WriteStats)
     Public Shared ReadOnly Property SlowWriteCount As Long
         Get
             Return Threading.Interlocked.Read(_slowWriteCount)
@@ -32,8 +53,33 @@ Public Class TapeUtils
             Return Threading.Interlocked.Read(_slowWriteMs) / 1000.0
         End Get
     End Property
-    Private Shared Sub NoteWriteTime(startTimestamp As Long)
-        Dim ms As Long = (Diagnostics.Stopwatch.GetTimestamp() - startTimestamp) * 1000 \ Diagnostics.Stopwatch.Frequency
+    Private Shared Sub NoteWriteTime(startTimestamp As Long, bytes As Long)
+        Dim now As Long = Diagnostics.Stopwatch.GetTimestamp()
+        Dim freq As Long = Diagnostics.Stopwatch.Frequency
+        Dim stats As WriteStats
+        Dim haveStats As Boolean = False
+        SyncLock _statsLock
+            If _statsStart = 0 Then _statsStart = startTimestamp
+            _statsWrites += 1
+            _statsBytes += bytes
+            _statsInside += now - startTimestamp
+            If (now - _statsStart) * 1000 \ freq >= WriteStatsIntervalMs Then
+                stats = New WriteStats With {.Writes = _statsWrites, .Bytes = _statsBytes,
+                    .InsideSeconds = _statsInside / CDbl(freq), .WallSeconds = (now - _statsStart) / CDbl(freq)}
+                haveStats = True
+                _statsStart = now : _statsWrites = 0 : _statsBytes = 0 : _statsInside = 0
+            End If
+        End SyncLock
+        If haveStats Then
+            Dim reportStats As Action(Of WriteStats) = OnWriteStats
+            If reportStats IsNot Nothing Then
+                Try
+                    reportStats(stats)
+                Catch
+                End Try
+            End If
+        End If
+        Dim ms As Long = (now - startTimestamp) * 1000 \ freq
         If ms < SlowWriteThresholdMs Then Return
         Threading.Interlocked.Increment(_slowWriteCount)
         Threading.Interlocked.Add(_slowWriteMs, ms)
@@ -6871,7 +6917,7 @@ Public Class TapeUtils
                             sense = senseData
                             Return True
                         End Function)
-                NoteWriteTime(writeStart)
+                NoteWriteTime(writeStart, Data.Length)
                 If Not succ Then
                     Dim ErrCode As Integer = LastWin32Error
                     Dim win32ex As New Win32Exception(ErrCode)
@@ -6909,7 +6955,7 @@ Public Class TapeUtils
                 Dim cdbData As Byte() = {&HA, 0, CByte(Length >> 16 And &HFF), CByte(Length >> 8 And &HFF), CByte(Length And &HFF), 0}
                 Dim writeStart As Long = Diagnostics.Stopwatch.GetTimestamp()
                 Dim succ As Boolean = TapeSCSIIOCtlUnmanaged(handle, cdbData, Data, Length, 0, 900, sense)
-                NoteWriteTime(writeStart)
+                NoteWriteTime(writeStart, Length)
                 If Not succ Then
                     Dim ErrCode As Integer = LastWin32Error
                     Dim win32ex As New Win32Exception(ErrCode)

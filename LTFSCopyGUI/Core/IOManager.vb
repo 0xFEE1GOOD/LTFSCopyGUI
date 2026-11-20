@@ -1261,11 +1261,26 @@ Public Class IOManager
             End SyncLock
         End Sub
 
+        ' 2.005: how far hashing fell behind the WRITEs (deepest queue, in blocks) and how long WRITE tasks waited because
+        ' the queue was full, summed over all files since the last TakeQueueStats.
+        Private Shared _maxQueueBlocks As Integer
+        Private Shared _queueWaitTicks As Long
+        Public Shared Function TakeQueueStats() As (MaxBlocks As Integer, WaitSeconds As Double)
+            Dim m As Integer = Interlocked.Exchange(_maxQueueBlocks, 0)
+            Dim w As Long = Interlocked.Exchange(_queueWaitTicks, 0)
+            Return (m, w / CDbl(Diagnostics.Stopwatch.Frequency))
+        End Function
+
         Public Sub PropagateAsync(block As Byte(), Optional ByVal Len As Integer = -1, Optional ByVal OnFinished As Action(Of Byte()) = Nothing)
             If Len = -1 Then Len = block.Length
-            While q.Count > 1024
-                DeQSig.WaitOne(10)
-            End While
+            If q.Count > 1024 Then
+                Dim waitStart As Long = Diagnostics.Stopwatch.GetTimestamp()
+                While q.Count > 1024
+                    DeQSig.WaitOne(10)
+                End While
+                Interlocked.Add(_queueWaitTicks, Diagnostics.Stopwatch.GetTimestamp() - waitStart)
+            End If
+            Dim depth As Integer
             ' Only the queue's own lock here. The hash thread holds Lock while it drains the queue, so taking
             ' Lock made every WRITE wait until the previous block was hashed: SCSI time + SHA-1 time per block
             ' (~370 MiB/s with SHA-1 on an E-core) instead of whichever is slower. Order is kept (one consumer,
@@ -1276,8 +1291,15 @@ Public Class IOManager
                     thStarted = True
                 End If
                 q.Enqueue(New QueueBlock With {.block = block, .Len = Len, .OnFinished = OnFinished})
+                depth = q.Count
             End SyncLock
             EnQSig.Set()
+            Dim seen As Integer = Volatile.Read(_maxQueueBlocks)
+            While depth > seen
+                Dim prev As Integer = Interlocked.CompareExchange(_maxQueueBlocks, depth, seen)
+                If prev = seen Then Exit While
+                seen = prev
+            End While
         End Sub
 
         Public Sub ProcessFinalBlock()
