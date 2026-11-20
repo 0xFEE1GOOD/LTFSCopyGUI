@@ -1556,6 +1556,9 @@ Public Class TapeImage
         End If
         While blocknum > 0
             If CurrentSetResidueBytes < BlockHeaderLen Then Exit Sub
+            ' 2.013: the end of data is the valid length. Scanning on read the headers of blocks a crash left after it
+            ' (written after the last saved block table) and put the end of data there, past the last filemark.
+            If CurrentFileOffset + BlockHeaderLen > CurrentStreamValidLength Then Exit While
             CurrentStream_SeekIfNeeded(CurrentFileOffset)
             If CurrentStream.Read(BlockHeader, 0, BlockHeaderLen) < BlockHeaderLen Then
                 Exit While
