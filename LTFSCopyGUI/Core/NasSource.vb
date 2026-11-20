@@ -378,7 +378,7 @@ Friend NotInheritable Class NasSource
         Select Case status
             Case 1 : Return "not found on the NAS"
             Case 2 : Return "read error on the NAS"
-            Case 3 : Return "refused (share unknown to the NAS)"
+            Case 3 : Return "refused by the NAS (share unknown to it, or the package may not read the share: give sc-ltfsnasreader Read on it in DSM)"
             Case Else : Return $"status {status}"
         End Select
     End Function

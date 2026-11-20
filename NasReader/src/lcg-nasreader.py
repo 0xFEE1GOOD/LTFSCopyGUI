@@ -97,6 +97,7 @@ class Shares:
         self.map = {k.lower(): (k, v) for k, v in m.items()}   # SMB share names ignore case
         with self._lock:
             self._listings.clear()
+            self._root_ok = {}
 
     def resolve(self, rel):
         parts = [p for p in rel.replace('\\', '/').split('/') if p]
@@ -106,6 +107,14 @@ class Shares:
         if share is None:
             raise PermissionError('unknown share ' + parts[0])
         root = share[1]
+        # A share the package may not read made every file "not found" (2.008: say why, once per share and job).
+        with self._lock:
+            ok = self._root_ok.get(root)
+            if ok is None:
+                ok = self._root_ok[root] = os.access(root, os.R_OK | os.X_OK)
+        if not ok:
+            raise PermissionError('no read permission on share %s (give the system internal user sc-ltfsnasreader '
+                                  'Read on it in Control Panel > Shared Folder)' % share[0])
         path = os.path.join(root, *parts[1:])
         if not os.path.lexists(path):
             path = self._ignoring_case(root, parts[1:])      # Windows matches names in any case

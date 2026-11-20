@@ -4700,7 +4700,11 @@ Public Class LTFSWriter
             Try
                 If (My.Settings.LTFSWriter_ForceIndex OrElse TotalBytesUnindexed <> 0) AndAlso schema IsNot Nothing AndAlso schema.location.partition = ltfsindex.PartitionLabel.b Then
                     WriteCurrentIndex(False)
-                    TapeUtils.Flush(driveHandle)
+                    ' The index's closing filemark is buffered; the flush is where the drive reports a failure to write
+                    ' it, so its answer is checked (2.008; it was discarded and a failed final index showed as success).
+                    Dim flushed As Boolean = True
+                    CheckIndexSense(TapeUtils.WriteFileMark(driveHandle, 0UI, flushed))
+                    If Not flushed Then Throw New IO.IOException("Flush after the index: the SCSI command failed")
                 End If
             Catch ex As Exception
                 OnWriteFinishedFailed(ex)
@@ -8966,6 +8970,79 @@ Public Class LTFSWriter
                  IsWarn:=False)
     End Sub
 
+    ''' <summary>
+    ''' Re-reads the drive's position into <paramref name="p"/> in place (2.008). The writer tracks the position itself
+    ''' (one block per WRITE) and must take the drive's word after any WRITE that did not plainly succeed: the block
+    ''' may or may not be on tape. In place, because callers share the object (WriteFileFromFastReader gets it ByVal,
+    ''' so a new object there never reached the caller).
+    ''' </summary>
+    Private Sub ResyncPosition(p As TapeUtils.PositionData)
+        Dim d As New TapeUtils.PositionData(driveHandle)
+        SyncLock p
+            p.PartitionNumber = d.PartitionNumber
+            p.BlockNumber = d.BlockNumber
+            p.FileNumber = d.FileNumber
+            p.SetNumber = d.SetNumber
+            p.BOP = d.BOP
+            p.EOP = d.EOP
+        End SyncLock
+    End Sub
+
+    ''' <summary>
+    ''' Waits up to ms for a WRITE task (2.008). Task.AsyncWaitHandle, used before, makes a kernel event for every task
+    ''' that is never disposed (one per 512 KiB block written). A fault is left to the caller's ObserveTask.
+    ''' </summary>
+    Private Shared Sub WaitTaskBriefly(t As Task, ms As Integer)
+        Try
+            t.Wait(ms)
+        Catch ex As AggregateException
+        End Try
+    End Sub
+
+    ''' <summary>True when the drive is where the writer's tracked position says (2.008: checked before every commit).</summary>
+    Private Function TrackedPositionMatchesDrive(p As TapeUtils.PositionData, ByRef drivePos As TapeUtils.PositionData) As Boolean
+        drivePos = New TapeUtils.PositionData(driveHandle)
+        Return drivePos.BlockNumber = p.BlockNumber AndAlso drivePos.PartitionNumber = p.PartitionNumber
+    End Function
+
+    ''' <summary>
+    ''' The check before files are committed to the index (2.008: at each index checkpoint and at the end of the write
+    ''' loop). The writer counts blocks itself; if the drive is somewhere else, the start blocks of the files written
+    ''' since the last good check cannot be trusted. Those are not committed: their extents are cleared and they stay in
+    ''' the write list, so the next write puts them on tape again. records(0 .. verifiedCount-1) passed an earlier check
+    ''' and are kept. True when nothing had to be dropped.
+    ''' </summary>
+    Private Function ConfirmBeforeCommit(p As TapeUtils.PositionData, records As List(Of FileRecord), verifiedCount As Integer,
+                                         indexPartition As Boolean) As Boolean
+        ' Index-partition files take their position from the drive per file; nothing to confirm for them.
+        If records Is Nothing OrElse records.Count = 0 OrElse indexPartition OrElse driveHandle = IntPtr.Zero Then Return True
+        Dim drivePos As TapeUtils.PositionData = Nothing
+        Try
+            If TrackedPositionMatchesDrive(p, drivePos) Then Return True
+        Catch ex As Exception
+            PrintMsg($"Tape position check failed: {ex.Message}", IsWarn:=True, LogOnly:=True)
+        End Try
+        Dim keep As Integer = Math.Max(0, Math.Min(verifiedCount, records.Count))
+        Dim dropped As Integer = records.Count - keep
+        For i As Integer = keep To records.Count - 1
+            Dim f As ltfsindex.file = records(i).File
+            If f Is Nothing Then Continue For
+            SyncLock _writeCompletionLock
+                _completedWriteFiles.Remove(f)
+            End SyncLock
+            If f.extentinfo IsNot Nothing Then f.extentinfo.Clear()
+            f.WrittenBytes = 0
+            f.MarkLazyRecordDirty()
+        Next
+        records.RemoveRange(keep, dropped)
+        PrintMsg($"Tape position mismatch: the writer expected {p}, the drive reports {If(drivePos Is Nothing, "no position", drivePos.ToString())}. " &
+                 $"{dropped} file(s) written since the last position check are not indexed and stay in the write list; write again to put them on tape.",
+                 IsWarn:=True, ShowOnWarningLabel:=True)
+        StopFlag = True
+        SetStatusLight(LWStatus.Err)
+        Return False
+    End Function
+
     Private Function WriteFileFromFastReader(fastProvider As IFastReaderConsumer,
                                              fileIndex As Integer,
                                              fr As FileRecord,
@@ -9164,10 +9241,11 @@ Public Class LTFSWriter
                                 End If
                                 'This block was never written, so the file is incomplete from here on.
                                 MarkWriteDegraded(fr.File)
+                                ResyncPosition(p) ' the drive, not the count, says where the next block goes (2.008)
                                 succ = True
                                 Exit While
                         End Select
-                        p = New TapeUtils.PositionData(driveHandle)
+                        ResyncPosition(p)
                         Continue While
                     End Try
                     If IsEomOnly(sense) Then
@@ -9189,7 +9267,7 @@ Public Class LTFSWriter
                             succ = True
                             Exit While
                         End If
-                    ElseIf (sense(2) And &HF) <> 0 Then
+                    ElseIf (sense(2) And &HF) > 1 Then ' 1 = RECOVERED ERROR: written (2.008)
                         Dim dResult As DialogResult
                         Dim errorButtons = If(fr.IsDirectTapeCopy, MessageBoxButtons.RetryCancel, MessageBoxButtons.AbortRetryIgnore)
                         Invoke(Sub() dResult = MessageBox.Show(New Form With {.TopMost = True}, $"{My.Resources.ResText_WErr}{vbCrLf}{TapeUtils.ParseSenseData(sense)}{vbCrLf}{vbCrLf}sense{vbCrLf}{TapeUtils.Byte2Hex(sense, True)}", My.Resources.ResText_Warning, errorButtons))
@@ -9209,10 +9287,11 @@ Public Class LTFSWriter
                                 End If
                                 'This block was never written, so the file is incomplete from here on.
                                 MarkWriteDegraded(fr.File)
+                                ResyncPosition(p) ' 2.008
                                 succ = True
                                 Exit While
                         End Select
-                        p = New TapeUtils.PositionData(driveHandle)
+                        ResyncPosition(p)
                     Else
                         succ = True
                         Exit While
@@ -9388,7 +9467,6 @@ Public Class LTFSWriter
                 Dim wBufferPtr As IntPtr = IntPtr.Zero
                 Dim hashTasks As New List(Of Task)
                 Dim writeTasks As New List(Of Task)
-                Dim writeWaitHandles As New List(Of AutoResetEvent)
                 Dim LTE As AutoResetEvent = Nothing
                 Dim locateTask As Task = Nothing
                 Dim tapeUnitReserved As Boolean = False
@@ -9609,6 +9687,10 @@ Public Class LTFSWriter
 
                         Dim lastpos As New TapeUtils.PositionData(driveHandle)
                         Dim filesSincePosCheck As Integer = 0
+                        ' 2.008: completedWriteRecords(0 .. verifiedCount-1) passed a drive position check; the rest is
+                        ' confirmed by ConfirmBeforeCommit before it is committed.
+                        Dim verifiedCount As Integer = 0
+                        Dim positionVerifiedHere As Boolean = False
                         ' Block packing (LTFSWriter_PackSmallFiles): small files are copied into one record and
                         ' written together; each extent points into it (startblock + byteoffset, LTFS "shared
                         ' blocks"). A packed file is committed only after its record reached the tape.
@@ -9941,7 +10023,15 @@ Public Class LTFSWriter
                                             While ((Not succ) AndAlso (Not IsIndexPartition))
                                                 Dim sense As Byte()
                                                 Try
-                                                    sense = TapeUtils.Write(driveHandle, FileData)
+                                                    If FileData.Length > 0 AndAlso wBufferPtr <> IntPtr.Zero Then
+                                                        ' 2.008: through the session's unmanaged block buffer, as large files are (the previous
+                                                        ' file's last WRITE task has finished by now). The Byte() overload allocated, copied
+                                                        ' into and freed an unmanaged block for every small file.
+                                                        Marshal.Copy(FileData, 0, wBufferPtr, FileData.Length)
+                                                        sense = TapeUtils.Write(driveHandle, wBufferPtr, CUInt(FileData.Length), True)
+                                                    Else
+                                                        sense = TapeUtils.Write(driveHandle, FileData)
+                                                    End If
                                                     SyncLock p
                                                         p.BlockNumber = CULng(p.BlockNumber + 1)
                                                     End SyncLock
@@ -9958,10 +10048,11 @@ Public Class LTFSWriter
                                                         Case DialogResult.Ignore
                                                             'This block was never written, so the file is incomplete.
                                                             MarkWriteDegraded(fr.File)
+                                                            ResyncPosition(p) ' 2.008
                                                             succ = True
                                                             Exit While
                                                     End Select
-                                                    p = New TapeUtils.PositionData(driveHandle)
+                                                    ResyncPosition(p)
                                                     Continue While
                                                 End Try
                                                 If IsEomOnly(sense) Then
@@ -9983,7 +10074,7 @@ Public Class LTFSWriter
                                                         succ = True
                                                         Exit While
                                                     End If
-                                                ElseIf (sense(2) And &HF) <> 0 Then
+                                                ElseIf (sense(2) And &HF) > 1 Then ' 1 = RECOVERED ERROR: written (2.008)
                                                     PrintMsg($"sense err {TapeUtils.Byte2Hex(sense, True)}", IsWarn:=True, LogOnly:=True)
                                                     Try
                                                         Throw New Exception("SCSI sense error")
@@ -10000,12 +10091,13 @@ Public Class LTFSWriter
                                                             Case DialogResult.Ignore
                                                                 'This block was never written, so the file is incomplete.
                                                                 MarkWriteDegraded(fr.File)
+                                                                ResyncPosition(p) ' 2.008: the count already moved on
                                                                 succ = True
                                                                 Exit While
                                                         End Select
                                                     End Try
 
-                                                    p = New TapeUtils.PositionData(driveHandle)
+                                                    ResyncPosition(p)
                                                 Else
                                                     succ = True
                                                 End If
@@ -10083,8 +10175,8 @@ Public Class LTFSWriter
                                                 PipeReader = provider.Reader
                                             End If
                                             Dim remainingInFile As Long = fr.SegmentLength
-                                            Dim LWTE As New AutoResetEvent(False)
-                                            writeWaitHandles.Add(LWTE)
+                                            ' (2.008: no AutoResetEvent per file any more: nothing waited on it, and each
+                                            ' one was a kernel handle kept until the end of the write.)
                                             While Not StopFlag AndAlso remainingInFile > 0
                                                 Dim toRead As Integer = CInt(Math.Min(plabel.blocksize, remainingInFile))
                                                 Dim buffer As Byte() = IOManager.PublicArrayPool.Rent(plabel.blocksize)
@@ -10142,7 +10234,7 @@ Public Class LTFSWriter
                                                 If LastWriteTask IsNot Nothing Then
                                                     Dim lwcounter As Integer = 0
                                                     While Not (LastWriteTask.IsCompleted OrElse LastWriteTask.IsCanceled OrElse LastWriteTask.IsFaulted)
-                                                        DirectCast(LastWriteTask, IAsyncResult).AsyncWaitHandle.WaitOne(10) ' wakes on task completion; LWTE was set before the task finished
+                                                        WaitTaskBriefly(LastWriteTask, 10) ' 2.008: no kernel wait handle per WRITE task
                                                         lwcounter += 1
                                                         If lwcounter >= 100 Then
                                                             lwcounter = 0
@@ -10207,10 +10299,11 @@ Public Class LTFSWriter
                                                                          Case DialogResult.Ignore
                                                                              'This block was never written, so the file is incomplete from here on.
                                                                              MarkWriteDegraded(fr.File)
+                                                                             ResyncPosition(p) ' 2.008
                                                                              succ = True
                                                                              Exit While
                                                                      End Select
-                                                                     p = New TapeUtils.PositionData(driveHandle)
+                                                                     ResyncPosition(p)
                                                                      Continue While
                                                                  End Try
                                                                  If IsEomOnly(sense) Then
@@ -10239,7 +10332,7 @@ Public Class LTFSWriter
                                                                          succ = True
                                                                          Exit While
                                                                      End If
-                                                                 ElseIf (sense(2) And &HF) <> 0 Then
+                                                                 ElseIf (sense(2) And &HF) > 1 Then ' 1 = RECOVERED ERROR: written (2.008)
                                                                      Try
                                                                          Throw New Exception("SCSI sense error")
                                                                      Catch ex As Exception
@@ -10254,11 +10347,12 @@ Public Class LTFSWriter
                                                                              Case DialogResult.Ignore
                                                                                  'This block was never written, so the file is incomplete from here on.
                                                                                  MarkWriteDegraded(fr.File)
+                                                                                 ResyncPosition(p) ' 2.008: the count already moved on
                                                                                  succ = True
                                                                                  Exit While
                                                                          End Select
                                                                      End Try
-                                                                     p = New TapeUtils.PositionData(driveHandle)
+                                                                     ResyncPosition(p)
                                                                  Else
                                                                      succ = True
                                                                      Exit While
@@ -10348,10 +10442,6 @@ Public Class LTFSWriter
                                                          If Not bufferReturned Then
                                                              IOManager.PublicArrayPool.Return(buf)
                                                          End If
-                                                         Try
-                                                             LWTE.Set()
-                                                         Catch
-                                                         End Try
                                                      End Try
                                                  End Sub, Tuple.Create(buffer, BytesReaded))
                                                 writeTasks.Add(LastWriteTask)
@@ -10362,7 +10452,7 @@ Public Class LTFSWriter
                                             If LastWriteTask IsNot Nothing Then
                                                 Dim lwcounter As Integer = 0
                                                 While Not (LastWriteTask.IsCompleted OrElse LastWriteTask.IsCanceled OrElse LastWriteTask.IsFaulted)
-                                                    DirectCast(LastWriteTask, IAsyncResult).AsyncWaitHandle.WaitOne(10) ' wakes on task completion; LWTE was set before the task finished
+                                                    WaitTaskBriefly(LastWriteTask, 10) ' 2.008: no kernel wait handle per WRITE task
                                                     lwcounter += 1
                                                     If lwcounter >= 100 Then
                                                         lwcounter = 0
@@ -10427,8 +10517,9 @@ Public Class LTFSWriter
                                             SetFileDedupeHash(fr.File, currentPlan.ExpectedDedupeHash)
                                         End If
                                         ' p is tracked on the host: every WRITE adds one block and every error
-                                        ' path re-reads it. A READ POSITION per file only costs a round trip, so
-                                        ' check the drive every 1024 files and stop loudly if the two disagree.
+                                        ' path re-reads it (2.008: Ignore too). A READ POSITION per file only costs a
+                                        ' round trip, so check the drive every 1024 files and stop loudly if the two
+                                        ' disagree; ConfirmBeforeCommit checks again before anything is committed.
                                         filesSincePosCheck += 1
                                         If IsIndexPartition OrElse filesSincePosCheck >= 1024 Then
                                             filesSincePosCheck = 0
@@ -10438,6 +10529,7 @@ Public Class LTFSWriter
                                                 Throw New IO.IOException($"Tape position mismatch: expected {p}, drive reports {drivePos}")
                                             End If
                                             p = drivePos
+                                            positionVerifiedHere = True ' this file and those before it are confirmed
                                         End If
                                         If Not IsIndexPartition Then
                                             ' Copy, never alias: p is mutated in place under SyncLock p.
@@ -10492,6 +10584,10 @@ Public Class LTFSWriter
                                 Threading.Interlocked.Increment(TotalFilesProcessed)
                                 Threading.Interlocked.Increment(CurrentFilesProcessed)
                                 If Not packedPending Then completedWriteRecords.Add(fr)
+                                If positionVerifiedHere Then
+                                    verifiedCount = completedWriteRecords.Count
+                                    positionVerifiedHere = False
+                                End If
                                 If Not useFastReader Then
                                     ReleaseManagedWriteRecord(WriteList, i, dedupeReferenceUseCount)
                                 End If
@@ -10526,8 +10622,12 @@ Public Class LTFSWriter
                                     'lose files that are already on tape.
                                     flushPack() ' an index must never name data still in the pack record
                                     WaitForHashTasks(hashTasks)
+                                    ' 2.008: the drive must confirm the tracked position before this batch is indexed.
+                                    Dim positionOk As Boolean = ConfirmBeforeCommit(p, completedWriteRecords, verifiedCount, IsIndexPartition)
                                     CommitWrittenFiles(completedWriteRecords)
                                     completedWriteRecords.Clear()
+                                    verifiedCount = 0
+                                    If Not positionOk Then Exit For
                                     If CheckUnindexedDataLimit() Then
                                         p = New TapeUtils.PositionData(driveHandle)
                                         ' Same redundant pair: snapshot instead of a second READ POSITION.
@@ -10604,6 +10704,8 @@ Public Class LTFSWriter
                         Next
                         flushPack() ' the last record (also after Cancel; a failed write discards its files)
                         WaitForHashTasks(hashTasks)
+                        ' 2.008: files the drive cannot confirm stay in the write list instead of being indexed.
+                        ConfirmBeforeCommit(p, completedWriteRecords, verifiedCount, False) ' index-partition files re-read p per file
                         CommitWrittenFiles(completedWriteRecords)
                     End If
                     If ufReadCountIncremented Then
@@ -10737,14 +10839,6 @@ Public Class LTFSWriter
                             Log.Error(cleanupEx, "File record cleanup failed. SourcePath={SourcePath}.", If(record Is Nothing, String.Empty, record.SourcePath))
                         End Try
                     Next
-                    For Each waitHandle As AutoResetEvent In writeWaitHandles
-                        Try
-                            waitHandle.Dispose()
-                        Catch cleanupEx As Exception
-                            Log.Error(cleanupEx, "Writer wait handle cleanup failed.")
-                        End Try
-                    Next
-                    writeWaitHandles.Clear()
                     If ufReadCountIncremented Then
                         UFReadCount.Dec()
                         ufReadCountIncremented = False
@@ -10892,7 +10986,9 @@ Public Class LTFSWriter
                     PrintMsg($"FileMark written", LogOnly:=True)
                     PrintMsg($"Position = {GetPos.ToString()}", LogOnly:=True)
                     schema = reloaded
-                    Modified = False
+                    ' 2.008: on a two-partition tape the index partition and the cartridge memory still name the
+                    ' newer generation whose data was just cut off, so the index partition still needs updating.
+                    Modified = ExtraPartitionCount > 0
                     Dim p As TapeUtils.PositionData = GetPos
                     PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
                     CurrentHeight = CLng(p.BlockNumber)
@@ -14643,7 +14739,7 @@ Public Class LTFSWriter
                                                  succ = True
                                                  Exit While
                                              End If
-                                         ElseIf (sense(2) And &HF) <> 0 Then
+                                         ElseIf (sense(2) And &HF) > 1 Then ' 1 = RECOVERED ERROR: written (2.008)
                                              Try
                                                  Throw New Exception("SCSI sense error")
                                              Catch ex As Exception
@@ -15795,7 +15891,7 @@ Public Class LTFSWriter
                                                     succ = True
                                                     Exit While
                                                 End If
-                                            ElseIf (sense(2) And &HF) <> 0 Then
+                                            ElseIf (sense(2) And &HF) > 1 Then ' 1 = RECOVERED ERROR: written (2.008)
                                                 Try
                                                     Throw New Exception("SCSI sense error")
                                                 Catch ex As Exception
@@ -15867,6 +15963,13 @@ Public Class LTFSWriter
                             If p.EOP Then PrintMsg(My.Resources.ResText_EWEOM, ShowOnWarningLabel:=True, DeDupe:=True)
                             PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
                             CurrentHeight = CLng(p.BlockNumber)
+                            ' 2.008: the extent covers what was written (it stayed 0 bytes), and a file cut short by Stop
+                            ' or an error is not committed (it was indexed at full length).
+                            fileextent.bytecount = fr.File.WrittenBytes
+                            If DiscardIfIncomplete(fr.File, fr.File.length, fr.SourcePath) Then
+                                StopFlag = True
+                                Exit Try
+                            End If
                             'mark as written
                             CommitWrittenFiles(New List(Of FileRecord) From {fr})
                             If TotalBytesUnindexed = 0 Then TotalBytesUnindexed = 1
@@ -17981,7 +18084,7 @@ Public Class LTFSWriter
                                  PipeReader = provider.Reader
                              End If
                              Dim remainingInFile As Long = newfile.length
-                             LWTE = New AutoResetEvent(False)
+                             ' (2.008: no AutoResetEvent per file: nothing waited on it, and only the last was disposed.)
                              While Not StopFlag AndAlso remainingInFile > 0
                                  Dim toRead As Integer = CInt(Math.Min(plabel.blocksize, remainingInFile))
                                  Dim buffer As Byte() = IOManager.PublicArrayPool.Rent(plabel.blocksize)
@@ -18067,7 +18170,7 @@ Public Class LTFSWriter
                                  If LastWriteTask IsNot Nothing Then
                                      Dim lwcounter As Integer = 0
                                      While Not (LastWriteTask.IsCompleted OrElse LastWriteTask.IsCanceled OrElse LastWriteTask.IsFaulted)
-                                         DirectCast(LastWriteTask, IAsyncResult).AsyncWaitHandle.WaitOne(10) ' wakes on task completion; LWTE was set before the task finished
+                                         WaitTaskBriefly(LastWriteTask, 10) ' 2.008: no kernel wait handle per WRITE task
                                          lwcounter += 1
                                          If lwcounter >= 100 Then
                                              lwcounter = 0
@@ -18131,10 +18234,11 @@ Public Class LTFSWriter
                                                               succ = False
                                                           Case DialogResult.Ignore
                                                               MarkWriteDegraded(newfile)
+                                                              ResyncPosition(p) ' 2.008
                                                               succ = True
                                                               Exit While
                                                       End Select
-                                                      p = New TapeUtils.PositionData(driveHandle)
+                                                      ResyncPosition(p)
                                                       Continue While
                                                   End Try
                                                   If IsEomOnly(sense) Then
@@ -18162,7 +18266,7 @@ Public Class LTFSWriter
                                                           succ = True
                                                           Exit While
                                                       End If
-                                                  ElseIf (sense(2) And &HF) <> 0 Then
+                                                  ElseIf (sense(2) And &HF) > 1 Then ' 1 = RECOVERED ERROR: written (2.008)
                                                       Try
                                                           Throw New Exception("SCSI sense error")
                                                       Catch ex As Exception
@@ -18176,11 +18280,12 @@ Public Class LTFSWriter
                                                                   succ = False
                                                               Case DialogResult.Ignore
                                                                   MarkWriteDegraded(newfile)
+                                                                  ResyncPosition(p) ' 2.008: the count already moved on
                                                                   succ = True
                                                                   Exit While
                                                           End Select
                                                       End Try
-                                                      p = New TapeUtils.PositionData(driveHandle)
+                                                      ResyncPosition(p)
                                                   Else
                                                       succ = True
                                                       Exit While
@@ -18270,10 +18375,6 @@ Public Class LTFSWriter
                                           If Not bufferReturned Then
                                               IOManager.PublicArrayPool.Return(buf)
                                           End If
-                                          Try
-                                              LWTE.Set()
-                                          Catch
-                                          End Try
                                       End Try
                                   End Sub, Tuple.Create(buffer, BytesReaded))
                                  writeTasks.Add(LastWriteTask)
@@ -18284,7 +18385,7 @@ Public Class LTFSWriter
                              If LastWriteTask IsNot Nothing Then
                                  Dim lwcounter As Integer = 0
                                  While Not (LastWriteTask.IsCompleted OrElse LastWriteTask.IsCanceled OrElse LastWriteTask.IsFaulted)
-                                     DirectCast(LastWriteTask, IAsyncResult).AsyncWaitHandle.WaitOne(10) ' wakes on task completion; LWTE was set before the task finished
+                                     WaitTaskBriefly(LastWriteTask, 10) ' 2.008: no kernel wait handle per WRITE task
                                      lwcounter += 1
                                      If lwcounter >= 100 Then
                                          lwcounter = 0

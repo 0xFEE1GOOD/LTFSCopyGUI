@@ -98,6 +98,27 @@ Public Class TapeUtils
         End Sub
     End Class
 
+    ' Test hook (2.008), for the tools\tapewrite harness only: it is set through reflection, never by the app, so it is
+    ' inert in normal use. It arms one simulated fault at the Nth data WRITE (counted from arming, both handle-based
+    ' Write overloads); that command is not sent to the drive. Mode 1 answers MEDIUM ERROR / WRITE ERROR, a failed
+    ' WRITE; mode 2 answers success, a block the drive silently did not take - the writer's block count then disagrees
+    ' with the drive on purpose, to test that such files are never indexed.
+    Friend Shared TestWriteFaultAt As Long = 0
+    Friend Shared TestWriteFaultMode As Integer = 0
+    Private Shared _testWriteCount As Long
+    Private Shared Function TestWriteFault(senseLength As Integer, ByRef sense As Byte()) As Boolean
+        If TestWriteFaultAt <= 0 Then Return False
+        If Threading.Interlocked.Increment(_testWriteCount) <> TestWriteFaultAt Then Return False
+        sense = New Byte(Math.Max(senseLength, 18) - 1) {}
+        sense(0) = &H70
+        sense(7) = 10
+        If TestWriteFaultMode = 1 Then
+            sense(2) = 3          ' MEDIUM ERROR
+            sense(12) = &HC       ' ASC 0C/00: WRITE ERROR
+        End If
+        Return True
+    End Function
+
     Private Shared ReadOnly _writeTrackers As New Dictionary(Of String, WriteTracker)(StringComparer.OrdinalIgnoreCase)
 
     ''' <summary>Counts the WRITEs to this drive (the device path given to OpenTapeDrive) into tracker from now on.</summary>
@@ -6972,6 +6993,7 @@ Public Class TapeUtils
                     sense = TapeImage.SenseData.NoSense
                 End If
             Case Else
+                If TestWriteFault(sense.Length, sense) Then Return sense
                 Dim writeStart As Long = Diagnostics.Stopwatch.GetTimestamp()
                 Dim succ As Boolean =
             SendSCSICommandUnmanaged(handle, {&HA, 0, CByte((Data.Length >> 16) And &HFF), CByte((Data.Length >> 8) And &HFF), CByte(Data.Length And &HFF), 0}, Data, 0,
@@ -7014,6 +7036,7 @@ Public Class TapeUtils
                     sense = TapeImage.SenseData.NoSense
                 End If
             Case Else
+                If TestWriteFault(sense.Length, sense) Then Return sense
                 Dim cdbData As Byte() = {&HA, 0, CByte(Length >> 16 And &HFF), CByte(Length >> 8 And &HFF), CByte(Length And &HFF), 0}
                 Dim writeStart As Long = Diagnostics.Stopwatch.GetTimestamp()
                 Dim succ As Boolean = TapeSCSIIOCtlUnmanaged(handle, cdbData, Data, Length, 0, 900, sense)
