@@ -11,24 +11,15 @@ Public Class TapeUtils
     <ThreadStatic>
     Private Shared _lastWin32Error As Integer
 
-    ' Drive stalls: a streaming drive takes a 512 KiB WRITE in about a millisecond. A WRITE it holds for a second
-    ' or more means the tape was not moving (repositioning or a speed change), so these are counted and reported.
-    Public Const SlowWriteThresholdMs As Long = 1000
-    Private Shared _slowWriteCount As Long
-    Private Shared _slowWriteMs As Long
-    ''' <summary>Called (on the writing thread) with the seconds a WRITE was held, for each slow WRITE.</summary>
-    Public Shared Property OnSlowWrite As Action(Of Double)
-    Public Shared Sub ResetSlowWrites()
-        Threading.Interlocked.Exchange(_slowWriteCount, 0)
-        Threading.Interlocked.Exchange(_slowWriteMs, 0)
-        SyncLock _statsLock
-            _statsStart = 0 : _statsWrites = 0 : _statsBytes = 0 : _statsInside = 0
-        End SyncLock
-    End Sub
-
+    ' Drive stalls (2.004): a streaming drive takes a 512 KiB WRITE in about a millisecond. A WRITE it holds for a
+    ' second or more means the tape was not moving (repositioning or a speed change), so these are counted and reported.
     ' Write-time split (2.005): every 10 s, the time the writing side spent inside WRITE commands (the drive taking the
     ' data) and outside them (the app getting the next block ready). WRITEs go one at a time, so the two add up to the
     ' wall time. With the source buffer full, mostly inside means the drive set the pace; mostly outside means the app.
+    ' Kept per drive (2.007): a writer registers a WriteTracker for its drive for the data phase of a write and removes
+    ' it afterwards. Process-wide counters mixed two writer windows' drives, and their callbacks kept a closed window
+    ' alive. A WRITE on a handle with no tracker is not counted.
+    Public Const SlowWriteThresholdMs As Long = 1000
     Public Const WriteStatsIntervalMs As Long = 10000
     Public Structure WriteStats
         Public Writes As Long
@@ -36,60 +27,117 @@ Public Class TapeUtils
         Public InsideSeconds As Double
         Public WallSeconds As Double
     End Structure
-    Private Shared ReadOnly _statsLock As New Object
-    Private Shared _statsStart As Long
-    Private Shared _statsWrites As Long
-    Private Shared _statsBytes As Long
-    Private Shared _statsInside As Long
-    ''' <summary>Called (on the writing thread) about every 10 s of writing with the split since the last call.</summary>
-    Public Shared Property OnWriteStats As Action(Of WriteStats)
-    Public Shared ReadOnly Property SlowWriteCount As Long
-        Get
-            Return Threading.Interlocked.Read(_slowWriteCount)
-        End Get
-    End Property
-    Public Shared ReadOnly Property SlowWriteSeconds As Double
-        Get
-            Return Threading.Interlocked.Read(_slowWriteMs) / 1000.0
-        End Get
-    End Property
-    Private Shared Sub NoteWriteTime(startTimestamp As Long, bytes As Long)
-        Dim now As Long = Diagnostics.Stopwatch.GetTimestamp()
-        Dim freq As Long = Diagnostics.Stopwatch.Frequency
-        Dim stats As WriteStats
-        Dim haveStats As Boolean = False
-        SyncLock _statsLock
-            If _statsStart = 0 Then _statsStart = startTimestamp
-            _statsWrites += 1
-            _statsBytes += bytes
-            _statsInside += now - startTimestamp
-            If (now - _statsStart) * 1000 \ freq >= WriteStatsIntervalMs Then
-                stats = New WriteStats With {.Writes = _statsWrites, .Bytes = _statsBytes,
-                    .InsideSeconds = _statsInside / CDbl(freq), .WallSeconds = (now - _statsStart) / CDbl(freq)}
-                haveStats = True
-                _statsStart = now : _statsWrites = 0 : _statsBytes = 0 : _statsInside = 0
-            End If
-        End SyncLock
-        If haveStats Then
-            Dim reportStats As Action(Of WriteStats) = OnWriteStats
-            If reportStats IsNot Nothing Then
+
+    ''' <summary>The stall count and write-time split of one drive's write. The callbacks run on the writing thread.</summary>
+    Public NotInheritable Class WriteTracker
+        Private ReadOnly _onSlowWrite As Action(Of Double)
+        Private ReadOnly _onStats As Action(Of WriteStats)
+        Private ReadOnly _gate As New Object
+        Private _slowCount As Long
+        Private _slowMs As Long
+        Private _statsStart As Long
+        Private _statsWrites As Long
+        Private _statsBytes As Long
+        Private _statsInside As Long
+
+        Public Sub New(onSlowWrite As Action(Of Double), onStats As Action(Of WriteStats))
+            _onSlowWrite = onSlowWrite
+            _onStats = onStats
+        End Sub
+
+        Public ReadOnly Property SlowWriteCount As Long
+            Get
+                SyncLock _gate
+                    Return _slowCount
+                End SyncLock
+            End Get
+        End Property
+
+        Public ReadOnly Property SlowWriteSeconds As Double
+            Get
+                SyncLock _gate
+                    Return _slowMs / 1000.0
+                End SyncLock
+            End Get
+        End Property
+
+        ''' <summary>One WRITE from startTimestamp to endTimestamp (Stopwatch ticks).</summary>
+        Friend Sub Note(startTimestamp As Long, endTimestamp As Long, bytes As Long)
+            Dim freq As Long = Diagnostics.Stopwatch.Frequency
+            Dim stats As WriteStats
+            Dim haveStats As Boolean = False
+            Dim ms As Long = (endTimestamp - startTimestamp) * 1000 \ freq
+            SyncLock _gate
+                If _statsStart = 0 Then _statsStart = startTimestamp
+                _statsWrites += 1
+                _statsBytes += bytes
+                _statsInside += endTimestamp - startTimestamp
+                If (endTimestamp - _statsStart) * 1000 \ freq >= WriteStatsIntervalMs Then
+                    stats = New WriteStats With {.Writes = _statsWrites, .Bytes = _statsBytes,
+                        .InsideSeconds = _statsInside / CDbl(freq), .WallSeconds = (endTimestamp - _statsStart) / CDbl(freq)}
+                    haveStats = True
+                    _statsStart = endTimestamp : _statsWrites = 0 : _statsBytes = 0 : _statsInside = 0
+                End If
+                If ms >= SlowWriteThresholdMs Then
+                    _slowCount += 1
+                    _slowMs += ms
+                End If
+            End SyncLock
+            If haveStats AndAlso _onStats IsNot Nothing Then
                 Try
-                    reportStats(stats)
+                    _onStats(stats)
                 Catch
                 End Try
             End If
-        End If
-        Dim ms As Long = (now - startTimestamp) * 1000 \ freq
-        If ms < SlowWriteThresholdMs Then Return
-        Threading.Interlocked.Increment(_slowWriteCount)
-        Threading.Interlocked.Add(_slowWriteMs, ms)
-        Dim report As Action(Of Double) = OnSlowWrite
-        If report IsNot Nothing Then
-            Try
-                report(ms / 1000.0)
-            Catch
-            End Try
-        End If
+            If ms >= SlowWriteThresholdMs AndAlso _onSlowWrite IsNot Nothing Then
+                Try
+                    _onSlowWrite(ms / 1000.0)
+                Catch
+                End Try
+            End If
+        End Sub
+    End Class
+
+    Private Shared ReadOnly _writeTrackers As New Dictionary(Of String, WriteTracker)(StringComparer.OrdinalIgnoreCase)
+
+    ''' <summary>Counts the WRITEs to this drive (the device path given to OpenTapeDrive) into tracker from now on.</summary>
+    Public Shared Sub StartWriteTracking(tapeDrive As String, tracker As WriteTracker)
+        If String.IsNullOrEmpty(tapeDrive) OrElse tracker Is Nothing Then Return
+        SyncLock _writeTrackers
+            _writeTrackers(tapeDrive) = tracker
+        End SyncLock
+    End Sub
+
+    ''' <summary>Stops counting into tracker; leaves the drive alone if another tracker took it over meanwhile.</summary>
+    Public Shared Sub StopWriteTracking(tapeDrive As String, tracker As WriteTracker)
+        If String.IsNullOrEmpty(tapeDrive) OrElse tracker Is Nothing Then Return
+        SyncLock _writeTrackers
+            Dim current As WriteTracker = Nothing
+            If _writeTrackers.TryGetValue(tapeDrive, current) AndAlso current Is tracker Then _writeTrackers.Remove(tapeDrive)
+        End SyncLock
+    End Sub
+
+    Private Shared Sub NoteWriteTime(handle As IntPtr, startTimestamp As Long, bytes As Long)
+        Dim endTimestamp As Long = Diagnostics.Stopwatch.GetTimestamp()
+        SyncLock _writeTrackers
+            If _writeTrackers.Count = 0 Then Return
+        End SyncLock
+        ' The handle's drive, from OpenTapeDrive's table: the tracker stays the drive's even when its handle is reopened.
+        Dim drive As String = Nothing
+        SyncLock DriveHandle
+            For Each kv As KeyValuePair(Of String, IntPtr) In DriveHandle
+                If kv.Value = handle Then
+                    drive = kv.Key
+                    Exit For
+                End If
+            Next
+        End SyncLock
+        If drive Is Nothing Then Return
+        Dim tracker As WriteTracker = Nothing
+        SyncLock _writeTrackers
+            If Not _writeTrackers.TryGetValue(drive, tracker) Then Return
+        End SyncLock
+        tracker.Note(startTimestamp, endTimestamp, bytes)
     End Sub
 
     Public Shared ReadOnly Property LastWin32Error As Integer
@@ -6931,7 +6979,7 @@ Public Class TapeUtils
                             sense = senseData
                             Return True
                         End Function)
-                NoteWriteTime(writeStart, Data.Length)
+                NoteWriteTime(handle, writeStart, Data.Length)
                 If Not succ Then
                     Dim ErrCode As Integer = LastWin32Error
                     Dim win32ex As New Win32Exception(ErrCode)
@@ -6969,7 +7017,7 @@ Public Class TapeUtils
                 Dim cdbData As Byte() = {&HA, 0, CByte(Length >> 16 And &HFF), CByte(Length >> 8 And &HFF), CByte(Length And &HFF), 0}
                 Dim writeStart As Long = Diagnostics.Stopwatch.GetTimestamp()
                 Dim succ As Boolean = TapeSCSIIOCtlUnmanaged(handle, cdbData, Data, Length, 0, 900, sense)
-                NoteWriteTime(writeStart, Length)
+                NoteWriteTime(handle, writeStart, Length)
                 If Not succ Then
                     Dim ErrCode As Integer = LastWin32Error
                     Dim win32ex As New Win32Exception(ErrCode)

@@ -90,9 +90,13 @@ class Shares:
         self.reload()
 
     def reload(self):
+        """At each job: the share list, and no folder listings from earlier jobs (2.007: a stale listing sent files
+        added or renamed since to SMB as not found)."""
         m = read_share_conf()
         m.update(self._extra)
         self.map = {k.lower(): (k, v) for k, v in m.items()}   # SMB share names ignore case
+        with self._lock:
+            self._listings.clear()
 
     def resolve(self, rel):
         parts = [p for p in rel.replace('\\', '/').split('/') if p]
@@ -409,6 +413,26 @@ def recv_exact(f, n):
     return data
 
 
+DEAD_PEER_MS = 300000                       # TCP_USER_TIMEOUT for a job connection
+
+
+def limit_dead_peer(conn):
+    """A PC that vanishes mid-write (power, cable, crash) sends no FIN or RST. Without limits the job's sender, readers
+    and read-ahead stayed until Linux gave up retransmitting (15-30 min) and the job stayed 'live' on the page (2.007).
+    Keepalive covers a quiet connection; TCP_USER_TIMEOUT one whose sent data goes unacknowledged for 5 minutes. A
+    client that is alive but not reading (its buffer full, a dialog open) still acknowledges window probes, so on this
+    DSM kernel it is not cut off; where a kernel cuts it off, the app reads the rest of the job over SMB."""
+    try:
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for name, value in (('TCP_KEEPIDLE', 60), ('TCP_KEEPINTVL', 10), ('TCP_KEEPCNT', 6)):
+            if hasattr(socket, name):
+                conn.setsockopt(socket.IPPROTO_TCP, getattr(socket, name), value)
+        if sys.platform.startswith('linux'):
+            conn.setsockopt(socket.IPPROTO_TCP, getattr(socket, 'TCP_USER_TIMEOUT', 18), DEAD_PEER_MS)
+    except OSError as e:
+        log.warning('could not set keepalive/user timeout: %s', e)
+
+
 class Service:
     def __init__(self, var, extra_shares, port=None, drop_after=0):
         self.var = var
@@ -488,6 +512,7 @@ class Service:
                 index, offset, length, plen = ENTRY.unpack(recv_exact(rf, ENTRY.size))
                 entries.append((index, recv_exact(rf, plen).decode('utf-8', 'surrogateescape'), offset, length))
             conn.settimeout(None)
+            limit_dead_peer(conn)
             self.shares.reload()
             settings = load_settings(self.var)
             job = Job(entries, self.shares, settings['window_mib'] << 20)

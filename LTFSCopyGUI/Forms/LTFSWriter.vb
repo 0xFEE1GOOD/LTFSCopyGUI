@@ -4654,22 +4654,42 @@ Public Class LTFSWriter
         SetStatusLight(LWStatus.Err)
         StopFlag = True
     End Sub
+    ' This writer's drive-stall and write-time tracker (2.007: per drive, registered for the data phase of a write).
+    Private _writeTracker As TapeUtils.WriteTracker
+    Private _writeTrackerDrive As String
+
     ''' <summary>Starts counting WRITEs the drive holds for a second or more (the tape stopped) and logs each one.</summary>
     Private Sub BeginDriveStallTracking()
-        TapeUtils.ResetSlowWrites()
-        TapeUtils.OnSlowWrite = Sub(seconds As Double)
-                                    PrintMsg($"Drive held a WRITE for {seconds:0.0} s: the tape stopped (repositioning or a speed change)", LogOnly:=True)
-                                End Sub
+        EndDriveStallTracking()
         IOManager.CheckSumBlockwiseCalculator.TakeQueueStats()
-        TapeUtils.OnWriteStats = Sub(s As TapeUtils.WriteStats)
-                                     Dim hq = IOManager.CheckSumBlockwiseCalculator.TakeQueueStats()
-                                     Dim mib As Double = s.Bytes / 1048576.0
-                                     PrintMsg($"Tape side, last {s.WallSeconds:0} s: {mib:0} MiB in {s.Writes} WRITEs = {mib / Math.Max(0.001, s.WallSeconds):0} MiB/s; inside WRITE {s.InsideSeconds:0.0} s (the drive), outside {Math.Max(0, s.WallSeconds - s.InsideSeconds):0.0} s (the app); checksum queue up to {hq.MaxBlocks} blocks, waited {hq.WaitSeconds:0.0} s for it", LogOnly:=True)
-                                 End Sub
+        _writeTrackerDrive = TapeDrive
+        _writeTracker = New TapeUtils.WriteTracker(
+            Sub(seconds As Double)
+                PrintMsg($"Drive held a WRITE for {seconds:0.0} s: the tape stopped (repositioning or a speed change)", LogOnly:=True)
+            End Sub,
+            Sub(s As TapeUtils.WriteStats)
+                Dim hq = IOManager.CheckSumBlockwiseCalculator.TakeQueueStats()
+                Dim mib As Double = s.Bytes / 1048576.0
+                PrintMsg($"Tape side, last {s.WallSeconds:0} s: {mib:0} MiB in {s.Writes} WRITEs = {mib / Math.Max(0.001, s.WallSeconds):0} MiB/s; inside WRITE {s.InsideSeconds:0.0} s (the drive), outside {Math.Max(0, s.WallSeconds - s.InsideSeconds):0.0} s (the app); checksum queue up to {hq.MaxBlocks} blocks, waited {hq.WaitSeconds:0.0} s for it", LogOnly:=True)
+            End Sub)
+        TapeUtils.StartWriteTracking(_writeTrackerDrive, _writeTracker)
     End Sub
-    ''' <summary>One line per write with the drive stalls of its data phase.</summary>
+
+    Private Sub EndDriveStallTracking()
+        If _writeTracker Is Nothing Then Return
+        TapeUtils.StopWriteTracking(_writeTrackerDrive, _writeTracker)
+        _writeTracker = Nothing
+    End Sub
+
+    ''' <summary>One line per write with the drive stalls of its data phase; tracking ends there.</summary>
     Private Sub ReportDriveStalls()
-        PrintMsg($"Drive stalls in this write: {TapeUtils.SlowWriteCount} WRITE(s) held 1 s or more, {TapeUtils.SlowWriteSeconds:0.0} s in total", LogOnly:=True)
+        If _writeTracker Is Nothing Then Return
+        PrintMsg($"Drive stalls in this write: {_writeTracker.SlowWriteCount} WRITE(s) held 1 s or more, {_writeTracker.SlowWriteSeconds:0.0} s in total", LogOnly:=True)
+        EndDriveStallTracking()
+    End Sub
+
+    Private Sub DriveStallTracking_Closed(sender As Object, e As FormClosedEventArgs) Handles MyBase.FormClosed
+        EndDriveStallTracking()
     End Sub
     Public Sub OnWriteFinished()
         ReportDriveStalls()

@@ -15,11 +15,18 @@ Partial Class LTFSWriter
         Dim at As Integer = StatusStrip2.Items.IndexOf(ToolStripStatusLabelS6)
         StatusStrip2.Items.Insert(If(at < 0, StatusStrip2.Items.Count, at + 1), _nasLight)
         AddHandler _nasLight.Click, Sub() NasLightCheck()
-        _nasTimer = New Timer With {.Interval = 20000}
-        AddHandler _nasTimer.Tick, Sub() NasLightCheck()
+        _nasTimer = New Timer With {.Interval = NasCheckMs}
+        ' Not while writing (2.007): the write's own connection to the reader shows whether it works, and the light
+        ' keeps the state from before the write.
+        AddHandler _nasTimer.Tick, Sub() If Not IsWriting Then NasLightCheck()
         _nasTimer.Start()
         NasLightCheck()
     End Sub
+
+    ' Every 20 s; every 10 min after the NAS refused the key (2.007), since each check adds a "wrong key" event on the
+    ' NAS page and pushes real events out of its list. A click checks at once, and a check that passes returns to 20 s.
+    Private Const NasCheckMs As Integer = 20000
+    Private Const NasCheckRefusedMs As Integer = 600000
 
     Private Sub NasLight_Closed(sender As Object, e As FormClosedEventArgs) Handles MyBase.FormClosed
         If _nasTimer IsNot Nothing Then _nasTimer.Stop()
@@ -38,7 +45,10 @@ Partial Class LTFSWriter
                     BeginInvoke(Sub()
                                     If _nasLight Is Nothing Then Return
                                     _nasLight.ForeColor = If(r.State = 1, Color.Blue, If(r.State = 0, Color.Gray, Color.Red))
-                                    _nasLight.ToolTipText = NasLightLegend & vbCrLf & r.Text & vbCrLf & "checked " & Now.ToString("HH:mm:ss") & " (click to check now)"
+                                    Dim interval As Integer = If(r.KeyRefused, NasCheckRefusedMs, NasCheckMs)
+                                    If _nasTimer IsNot Nothing AndAlso _nasTimer.Interval <> interval Then _nasTimer.Interval = interval
+                                    _nasLight.ToolTipText = NasLightLegend & vbCrLf & r.Text & vbCrLf & "checked " & Now.ToString("HH:mm:ss") &
+                                        If(r.KeyRefused, " (next check in 10 min; click to check now)", " (click to check now)")
                                 End Sub)
                 Catch ex As InvalidOperationException
                     ' the window closed meanwhile

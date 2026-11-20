@@ -45,6 +45,8 @@ Friend NotInheritable Class NasSource
     Private ReadOnly _head As Byte() = New Byte(12) {}
     Private _next As Integer                              ' position in _order of the entry the stream is at
     Private _dead As Integer
+    Private _summaryLogged As Integer
+    Private _lost As Boolean                              ' the connection was lost (not closed because the write stopped)
     Private _served As Integer
     Private _notServed As Integer
     Private ReadOnly _problems As New List(Of String)
@@ -62,12 +64,22 @@ Friend NotInheritable Class NasSource
     ''' Connects, proves the key both ways and sends the list of files that are on that NAS; Nothing (logged) when the
     ''' setting is empty, no file is on that NAS, or the NAS cannot be reached - the provider then reads over the share.
     ''' </summary>
-    ''' <summary>"host" or "host:port" -> host and port (7171 by default).</summary>
+    ''' <summary>"host", "host:port", "[IPv6]" or "[IPv6]:port" -> host and port (7171 by default). A bare IPv6 address
+    ''' has no port (its colons are not a port separator).</summary>
     Private Shared Sub ParseEndpoint(setting As String, ByRef host As String, ByRef port As Integer)
         host = setting
         port = DefaultPort
+        If setting.StartsWith("[") Then
+            Dim close As Integer = setting.IndexOf("]"c)
+            If close > 0 Then
+                host = setting.Substring(1, close - 1)
+                If close + 1 < setting.Length AndAlso setting(close + 1) = ":"c AndAlso
+                   Not Integer.TryParse(setting.Substring(close + 2), port) Then port = DefaultPort
+            End If
+            Return
+        End If
         Dim colon As Integer = setting.LastIndexOf(":"c)
-        If colon > 0 AndAlso Integer.TryParse(setting.Substring(colon + 1), port) Then
+        If colon > 0 AndAlso setting.IndexOf(":"c) = colon AndAlso Integer.TryParse(setting.Substring(colon + 1), port) Then
             host = setting.Substring(0, colon)
         Else
             port = DefaultPort
@@ -92,7 +104,9 @@ Friend NotInheritable Class NasSource
         client = New TcpClient() With {.NoDelay = True}
         If Not client.ConnectAsync(host, port).Wait(connectMs) Then Throw New TimeoutException($"no answer within {connectMs \ 1000} s")
         Dim ns As NetworkStream = client.GetStream()
-        ns.ReadTimeout = 30000
+        ' The service answers the handshake at once; 5 s (was 30) bounds how long a NAS that takes the connection but
+        ' hangs can hold up the start of a write before it falls back to the share (2.007). TryOpen raises it afterwards.
+        ns.ReadTimeout = 5000
         ns.WriteTimeout = 60000
         Dim input As New BufferedStream(ns, 1 << 20)
         Dim hello As Byte() = ReadExact(input, 22)
@@ -115,6 +129,8 @@ Friend NotInheritable Class NasSource
     Public Structure ProbeResult
         Public State As Integer
         Public Text As String
+        ''' <summary>The NAS refused the key: checking again soon only adds "wrong key" events on the NAS page.</summary>
+        Public KeyRefused As Boolean
     End Structure
 
     ''' <summary>Is the NAS reader there and does it take the key? Sends no job (a ping); never throws.</summary>
@@ -145,7 +161,8 @@ Friend NotInheritable Class NasSource
                                          If(shares.Length > 0, $"; it can read {shares}", "")}
         Catch ex As Exception
             Dim reason As String = If(TypeOf ex Is AggregateException AndAlso ex.InnerException IsNot Nothing, ex.InnerException.Message, ex.Message)
-            Return New ProbeResult With {.State = 2, .Text = $"{host}:{port}: not ready: {reason}"}
+            Dim refused As Boolean = TypeOf ex Is UnauthorizedAccessException OrElse reason.Contains("refused the key")
+            Return New ProbeResult With {.State = 2, .Text = $"{host}:{port}: not ready: {reason}", .KeyRefused = refused}
         Finally
             If client IsNot Nothing Then client.Close()
         End Try
@@ -191,7 +208,10 @@ Friend NotInheritable Class NasSource
             If path.Length > UShort.MaxValue Then Continue For
             w.Write(CUInt(i))
             w.Write(CULng(If(small, 0L, fr.FileOffset)))
-            w.Write(CULng(If(small, fr.File.length, fr.SegmentLength)))
+            ' A whole small file is asked for with one byte more than listed (2.007): the NAS sends what is there, so a
+            ' byte past the listed length means the file grew since the list was made. TryReadAll then leaves it to the
+            ' share read, which reports the changed length; before, a grown file went to tape cut to its old length.
+            w.Write(CULng(If(small, fr.File.length + 1, fr.SegmentLength)))
             w.Write(CUShort(path.Length))
             w.Write(path)
             order.Add(i)
@@ -248,10 +268,18 @@ Friend NotInheritable Class NasSource
         Return Volatile.Read(_dead) = 0 AndAlso _covered.Contains(index)
     End Function
 
+    ''' <summary>False once the connection was lost or closed: everything from then on is read over the share.</summary>
+    Public ReadOnly Property IsUp As Boolean
+        Get
+            Return Volatile.Read(_dead) = 0
+        End Get
+    End Property
+
     ''' <summary>A small file's bytes, or Nothing: then read it over the share. A file that is shorter now comes back
-    ''' shorter, so the caller's length check reports it as for a share read.</summary>
+    ''' shorter, so the caller's length check reports it as for a share read. One that grew (the NAS sent the extra byte
+    ''' TryOpen asked for) gives Nothing, so the share read reports it.</summary>
     Public Function TryReadAll(index As Integer, expected As Long) As Byte()
-        Dim data(CInt(expected) - 1) As Byte
+        Dim data(CInt(expected)) As Byte                   ' expected + 1 bytes: room for the byte that shows growth
         Dim got As Integer = 0
         Dim r As Outcome = ReadAsync(index, Function(buf, n)
                                                 Dim take As Integer = Math.Min(n, data.Length - got)
@@ -260,6 +288,12 @@ Friend NotInheritable Class NasSource
                                                 Return Task.FromResult(True)
                                             End Function).GetAwaiter().GetResult()
         If r.Status <> 0 Then Return Nothing
+        If got > expected Then
+            _served -= 1
+            _notServed += 1
+            If _problems.Count < 20 Then _problems.Add($"#{index}: larger than when the list was made")
+            Return Nothing
+        End If
         If got < data.Length Then Array.Resize(data, got)
         Return data
     End Function
@@ -383,6 +417,7 @@ Friend NotInheritable Class NasSource
     Private Sub GiveUp(reason As String, inner As Exception)
         If Interlocked.Exchange(_dead, 1) <> 0 Then Return
         If reason <> "the write stopped" Then
+            _lost = True
             Log.Warning(inner, "NAS reader {Endpoint}: connection lost after {Served} files ({Reason}); the rest is read over the share.", Endpoint, _served, reason)
         End If
         Try
@@ -397,9 +432,13 @@ Friend NotInheritable Class NasSource
             _client.Close()
         Catch
         End Try
-        If wasUp OrElse _served > 0 Then
-            Log.Information("NAS reader {Endpoint}: {Served} files read by the NAS, {NotServed} read over the share instead{Problems}.",
-                            Endpoint, _served, _notServed, If(_problems.Count = 0, "", " (" & String.Join("; ", _problems) & ")"))
+        ' Once: the provider disposes from both Cancel() and its completion, which logged the summary twice (2.007).
+        ' After a lost connection the rest of the list went over the share too, not only the files the NAS sent back.
+        If (wasUp OrElse _served > 0) AndAlso Interlocked.Exchange(_summaryLogged, 1) = 0 Then
+            Log.Information("NAS reader {Endpoint}: {Served} of {Covered} files read by the NAS, {NotServed} sent back to the share by the NAS{Lost}{Problems}.",
+                            Endpoint, _served, _order.Length, _notServed,
+                            If(_lost, $"; the connection was lost, so the other {_order.Length - _served - _notServed} were read over the share", ""),
+                            If(_problems.Count = 0, "", " (" & String.Join("; ", _problems) & ")"))
         End If
     End Sub
 End Class

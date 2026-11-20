@@ -67,6 +67,7 @@ Public Class FileDataProvider
     Private Const LaneMinBytes As Long = 2L * LaneChunkBytes
     Private _preloadNext As Integer = -1
     Private _preloadCached As Integer = 0
+    Private _preloadRestarted As Integer = 0
     ' One set of lane buffers for the whole job: the producer streams one file at a time and every read of a file has
     ' finished before the next file starts, so they are reused instead of putting 8 MiB arrays on the LOH per file.
     Private _laneBuffers As Byte()() = Nothing
@@ -378,6 +379,13 @@ Public Class FileDataProvider
                             End Using
                         End Using
                     End Using
+                End If
+
+                ' The NAS connection is gone: the read-ahead skipped the files the NAS was to send, so start it again from
+                ' here and they are read ahead over the share like any other (2.007; before, they were read one by one).
+                If _nas IsNot Nothing AndAlso Not _nas.IsUp AndAlso Not _cts.IsCancellationRequested AndAlso
+                   Interlocked.Exchange(_preloadRestarted, 1) = 0 Then
+                    RestartPreloadFrom(nextIdx)
                 End If
 
                 If isSmallFile Then
@@ -802,6 +810,14 @@ Public Class FileDataProvider
         End While
         Return got
     End Function
+
+    ''' <summary>Points the read-ahead at the files after <paramref name="index"/> again, and starts its workers again if
+    ''' they had finished (they run to the end of the list at once when the NAS sends most files).</summary>
+    Private Sub RestartPreloadFrom(index As Integer)
+        Interlocked.Exchange(_preloadNext, index)
+        If _preloadTask Is Nothing OrElse _preloadTask.IsCompleted Then _preloadTask = Task.Run(AddressOf PreloadSmallFilesAsync)
+        Log.Information("NAS reader gone: small-file read-ahead restarted after file {Index}; the rest is read over the share.", index)
+    End Sub
 
     Private Function IsSmallRecord(fr As LTFSWriter.FileRecord) As Boolean
         Return fr IsNot Nothing AndAlso fr.File IsNot Nothing AndAlso fr.File.length < _smallThreshold AndAlso
