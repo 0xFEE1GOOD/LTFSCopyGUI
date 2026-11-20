@@ -1262,22 +1262,22 @@ Public Class IOManager
         End Sub
 
         Public Sub PropagateAsync(block As Byte(), Optional ByVal Len As Integer = -1, Optional ByVal OnFinished As Action(Of Byte()) = Nothing)
-            SyncLock Lock
-                If Not thStarted Then
-                    thHashAsync.Start()
-                    thStarted = True
-                End If
-            End SyncLock
             If Len = -1 Then Len = block.Length
             While q.Count > 1024
                 DeQSig.WaitOne(10)
             End While
-            SyncLock Lock
-                SyncLock q
-                    q.Enqueue(New QueueBlock With {.block = block, .Len = Len, .OnFinished = OnFinished})
-                    EnQSig.Set()
-                End SyncLock
+            ' Only the queue's own lock here. The hash thread holds Lock while it drains the queue, so taking
+            ' Lock made every WRITE wait until the previous block was hashed: SCSI time + SHA-1 time per block
+            ' (~370 MiB/s with SHA-1 on an E-core) instead of whichever is slower. Order is kept (one consumer,
+            ' FIFO); Propagate/ProcessFinalBlock wait for the queue to empty and then take Lock, as before.
+            SyncLock q
+                If Not thStarted Then
+                    thHashAsync.Start()
+                    thStarted = True
+                End If
+                q.Enqueue(New QueueBlock With {.block = block, .Len = Len, .OnFinished = OnFinished})
             End SyncLock
+            EnQSig.Set()
         End Sub
 
         Public Sub ProcessFinalBlock()

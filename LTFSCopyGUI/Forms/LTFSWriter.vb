@@ -4654,7 +4654,19 @@ Public Class LTFSWriter
         SetStatusLight(LWStatus.Err)
         StopFlag = True
     End Sub
+    ''' <summary>Starts counting WRITEs the drive holds for a second or more (the tape stopped) and logs each one.</summary>
+    Private Sub BeginDriveStallTracking()
+        TapeUtils.ResetSlowWrites()
+        TapeUtils.OnSlowWrite = Sub(seconds As Double)
+                                    PrintMsg($"Drive held a WRITE for {seconds:0.0} s: the tape stopped (repositioning or a speed change)", LogOnly:=True)
+                                End Sub
+    End Sub
+    ''' <summary>One line per write with the drive stalls of its data phase.</summary>
+    Private Sub ReportDriveStalls()
+        PrintMsg($"Drive stalls in this write: {TapeUtils.SlowWriteCount} WRITE(s) held 1 s or more, {TapeUtils.SlowWriteSeconds:0.0} s in total", LogOnly:=True)
+    End Sub
     Public Sub OnWriteFinished()
+        ReportDriveStalls()
         If WA0ToolStripMenuItem.Checked Then Exit Sub
         If WA1ToolStripMenuItem.Checked Then
             Dim SilentBefore As Boolean = SilentMode
@@ -9283,7 +9295,7 @@ Public Class LTFSWriter
                     ResetFastReaderBufferWait()
                     PrintMsg("", True)
                     PrintMsg($"Position = {GetPos.ToString()}", LogOnly:=True)
-                    PrintMsg(My.Resources.ResText_PrepW)
+                    PrintMsg(My.Resources.ResText_PrepW) : BeginDriveStallTracking()
                     TapeUtils.ReserveUnit(driveHandle)
                     tapeUnitReserved = True
                     TapeUtils.PreventMediaRemoval(driveHandle)
@@ -15505,7 +15517,7 @@ Public Class LTFSWriter
                     Dim StartTime As Date = Now
                     PrintMsg("", True)
                     PrintMsg($"Position = {GetPos.ToString()}", LogOnly:=True)
-                    PrintMsg(My.Resources.ResText_PrepW)
+                    PrintMsg(My.Resources.ResText_PrepW) : BeginDriveStallTracking()
                     TapeUtils.ReserveUnit(driveHandle)
                     tapeUnitReserved = True
                     TapeUtils.PreventMediaRemoval(driveHandle)
@@ -17765,7 +17777,7 @@ Public Class LTFSWriter
                          StartTime = Now
                          PipePause = False
                          PrintMsg($"Position = {GetPos.ToString()}", LogOnly:=True)
-                         PrintMsg(My.Resources.ResText_PrepW)
+                         PrintMsg(My.Resources.ResText_PrepW) : BeginDriveStallTracking()
                          TapeUtils.ReserveUnit(driveHandle)
                          tapeUnitReserved = True
                          TapeUtils.PreventMediaRemoval(driveHandle)

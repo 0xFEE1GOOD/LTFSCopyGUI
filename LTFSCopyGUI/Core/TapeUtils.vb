@@ -11,6 +11,41 @@ Public Class TapeUtils
     <ThreadStatic>
     Private Shared _lastWin32Error As Integer
 
+    ' Drive stalls: a streaming drive takes a 512 KiB WRITE in about a millisecond. A WRITE it holds for a second
+    ' or more means the tape was not moving (repositioning or a speed change), so these are counted and reported.
+    Public Const SlowWriteThresholdMs As Long = 1000
+    Private Shared _slowWriteCount As Long
+    Private Shared _slowWriteMs As Long
+    ''' <summary>Called (on the writing thread) with the seconds a WRITE was held, for each slow WRITE.</summary>
+    Public Shared Property OnSlowWrite As Action(Of Double)
+    Public Shared Sub ResetSlowWrites()
+        Threading.Interlocked.Exchange(_slowWriteCount, 0)
+        Threading.Interlocked.Exchange(_slowWriteMs, 0)
+    End Sub
+    Public Shared ReadOnly Property SlowWriteCount As Long
+        Get
+            Return Threading.Interlocked.Read(_slowWriteCount)
+        End Get
+    End Property
+    Public Shared ReadOnly Property SlowWriteSeconds As Double
+        Get
+            Return Threading.Interlocked.Read(_slowWriteMs) / 1000.0
+        End Get
+    End Property
+    Private Shared Sub NoteWriteTime(startTimestamp As Long)
+        Dim ms As Long = (Diagnostics.Stopwatch.GetTimestamp() - startTimestamp) * 1000 \ Diagnostics.Stopwatch.Frequency
+        If ms < SlowWriteThresholdMs Then Return
+        Threading.Interlocked.Increment(_slowWriteCount)
+        Threading.Interlocked.Add(_slowWriteMs, ms)
+        Dim report As Action(Of Double) = OnSlowWrite
+        If report IsNot Nothing Then
+            Try
+                report(ms / 1000.0)
+            Catch
+            End Try
+        End If
+    End Sub
+
     Public Shared ReadOnly Property LastWin32Error As Integer
         Get
             Return _lastWin32Error
@@ -6829,12 +6864,14 @@ Public Class TapeUtils
                     sense = TapeImage.SenseData.NoSense
                 End If
             Case Else
+                Dim writeStart As Long = Diagnostics.Stopwatch.GetTimestamp()
                 Dim succ As Boolean =
             SendSCSICommandUnmanaged(handle, {&HA, 0, CByte((Data.Length >> 16) And &HFF), CByte((Data.Length >> 8) And &HFF), CByte(Data.Length And &HFF), 0}, Data, 0,
                         Function(senseData As Byte()) As Boolean
                             sense = senseData
                             Return True
                         End Function)
+                NoteWriteTime(writeStart)
                 If Not succ Then
                     Dim ErrCode As Integer = LastWin32Error
                     Dim win32ex As New Win32Exception(ErrCode)
@@ -6870,7 +6907,9 @@ Public Class TapeUtils
                 End If
             Case Else
                 Dim cdbData As Byte() = {&HA, 0, CByte(Length >> 16 And &HFF), CByte(Length >> 8 And &HFF), CByte(Length And &HFF), 0}
+                Dim writeStart As Long = Diagnostics.Stopwatch.GetTimestamp()
                 Dim succ As Boolean = TapeSCSIIOCtlUnmanaged(handle, cdbData, Data, Length, 0, 900, sense)
+                NoteWriteTime(writeStart)
                 If Not succ Then
                     Dim ErrCode As Integer = LastWin32Error
                     Dim win32ex As New Win32Exception(ErrCode)
