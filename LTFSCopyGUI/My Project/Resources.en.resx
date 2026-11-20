@@ -996,6 +996,9 @@ Enable only when memory usage is abnormally high</value>
   <data name="PropertyDescription_LTFSWriter_PackSmallFiles" xml:space="preserve">
     <value>Pack small files into shared tape blocks (many small files per 512 KiB write; much faster for small files). Readable by any LTFS reader.</value>
   </data>
+  <data name="PropertyDescription_LTFSWriter_VerifyOnRestore" xml:space="preserve">
+    <value>Check every restored file against the checksum written to tape with it (SHA-1, or another standard checksum the index holds). A file whose data does not match is reported as not restored and is not left under its name. The check runs beside the restore on its own thread and does not slow it down. Files without a checksum in the index are restored unchecked. Off = no check.</value>
+  </data>
   <data name="PropertyDescription_LTFSWriter_EnrichTarMetadata" xml:space="preserve">
     <value>Write tar metadata index</value>
   </data>

@@ -303,6 +303,10 @@ Public Class LTFSWriter
     'index; track it here so it can neither become a dedupe source nor
     'publish content hashes.
     Private ReadOnly _degradedWriteFiles As New HashSet(Of ltfsindex.file)
+    ' 2.010: written files the index must not name - a block ignored after a write error, or written after a tape
+    ' position mismatch. They are queued again after the write, also with LTFSWriter_KeepUnwrittenFilesOnAbort off
+    ' (which empties the write list after a stopped write).
+    Private ReadOnly _refusedWriteRecords As New List(Of FileRecord)
     ' Set when a WRITE reports the early-warning (EOM) zone; the write loop stops at the next file boundary.
     Private EarlyWarningSeen As Boolean
     Private ReadOnly _validationColorCacheLock As New Object()
@@ -1786,6 +1790,7 @@ Public Class LTFSWriter
         SyncLock _writeCompletionLock
             _completedWriteFiles.Clear()
             _degradedWriteFiles.Clear()
+            _refusedWriteRecords.Clear()
         End SyncLock
     End Sub
 
@@ -1810,10 +1815,10 @@ Public Class LTFSWriter
         If file Is Nothing Then Return
         SyncLock _writeCompletionLock
             If Not _degradedWriteFiles.Add(file) Then Return
-            ' Persist it: the in-memory set is lost after the session, and the file is still indexed full-length.
+            ' Persisted in case the copy is indexed after all (2.010: the writers no longer index such a copy).
             file.SetXattr(ltfsindex.file.xattr.ApplicationSpecific.WriteDegraded, "1")
         End SyncLock
-        PrintMsg($"{file.name}: a block was ignored after a write error - the copy on tape is damaged", IsWarn:=True)
+        PrintMsg($"{file.name}: a block was ignored after a write error - this copy on tape is damaged and is not indexed", IsWarn:=True)
     End Sub
 
     Private Function IsWriteDegraded(file As ltfsindex.file) As Boolean
@@ -1832,6 +1837,12 @@ Public Class LTFSWriter
         For Each record As FileRecord In records
             If record Is Nothing OrElse record.ParentDirectory Is Nothing OrElse record.File Is Nothing Then Continue For
             If Not seenFiles.Add(record.File) Then Continue For
+            ' 2.010: a direct tape copy replaces the existing file only now. It was removed when the copy finished
+            ' writing, so a copy then kept out of the index (a position mismatch) took the existing file with it.
+            If record.IsDirectTapeCopy AndAlso record.DirectCopyExistingFile IsNot Nothing Then
+                record.ParentDirectory.RemoveFile(record.DirectCopyExistingFile)
+                record.DirectCopyExistingFile = Nothing
+            End If
             MarkWriteFileCompleted(record.File)
             Dim files As List(Of ltfsindex.file) = Nothing
             If Not filesByDirectory.TryGetValue(record.ParentDirectory, files) Then
@@ -5506,6 +5517,7 @@ Public Class LTFSWriter
         Public Property Failed As Boolean
         Public Property Direct As Boolean ' written straight to its name, no temporary file
         Public Property CopyOf As ExtractionFileWork ' same tape data as this earlier file: copied on disk, not read again
+        Public Property Check As RestoreCheck ' 2.010: the checksum check of the restored data (Nothing = not checked)
     End Class
 
     Private Class ExtractionExtentWork
@@ -6270,6 +6282,7 @@ Public Class LTFSWriter
 
     Private _extractPlan As List(Of ExtractionExtentWork)
     Private _extractReader As ExtractionReadAhead
+    Private _restoreChecker As RestoreChecker ' 2.010: checksum checks of the restored files, on their own thread
     Private _extractRecord As ExtractionReadAhead.Record ' last record taken: packed small files share one
     Private _extractIgnoredPartition As Byte              ' record the user chose to Ignore after a read error
     Private _extractIgnoredBlock As Long = -1
@@ -6480,6 +6493,9 @@ Public Class LTFSWriter
                     output.Write(data, CInt(extent.byteoffset), CInt(extent.bytecount))
                 End Using
             End If
+            If work.FileWork.Check IsNot Nothing AndAlso _restoreChecker IsNot Nothing Then
+                _restoreChecker.Add(work.FileWork.Check, data, CInt(extent.byteoffset), CInt(extent.bytecount), extent.fileoffset)
+            End If
             Threading.Interlocked.Add(TotalBytesProcessed, extent.bytecount)
             Threading.Interlocked.Add(CurrentBytesProcessed, extent.bytecount)
             Return
@@ -6489,6 +6505,8 @@ Public Class LTFSWriter
         Dim remaining As Long = extent.bytecount
         Dim byteOffset As Long = extent.byteoffset
         Dim block As Long = extent.startblock
+        Dim check As RestoreCheck = If(_restoreChecker Is Nothing, Nothing, work.FileWork.Check)
+        Dim filePos As Long = extent.fileoffset
         Using output As New IO.FileStream(work.FileWork.TempPath,
                                           IO.FileMode.Open,
                                           IO.FileAccess.ReadWrite,
@@ -6540,6 +6558,8 @@ Public Class LTFSWriter
                                                       $"remaining {remaining - writeLength} bytes")
                 End If
                 output.Write(data, CInt(byteOffset), CInt(writeLength))
+                If check IsNot Nothing Then _restoreChecker.Add(check, data, CInt(byteOffset), CInt(writeLength), filePos)
+                filePos += writeLength
                 remaining -= writeLength
                 Threading.Interlocked.Add(TotalBytesProcessed, writeLength)
                 Threading.Interlocked.Add(CurrentBytesProcessed, writeLength)
@@ -6691,6 +6711,7 @@ Public Class LTFSWriter
         Dim plan As New List(Of ExtractionExtentWork)
         If requests Is Nothing Then Return plan
         Dim blockSize As Long = GetValidationBlockSize()
+        Dim verifyRestore As Boolean = My.Settings.LTFSWriter_VerifyOnRestore
         Dim sameData As New Dictionary(Of String, ExtractionFileWork)(StringComparer.Ordinal)
         For Each request As ExtractionFileRequest In requests
             If StopFlag Then Exit For
@@ -6713,6 +6734,11 @@ Public Class LTFSWriter
             End If
             If signature IsNot Nothing AndAlso first Is Nothing Then sameData(signature) = fileWork
             If fileWork.AlreadyComplete Then Continue For
+            ' 2.010: checked against the checksum written with it (a copy of another file is checked through that file;
+            ' part of a file split over tapes cannot be).
+            If verifyRestore AndAlso Not IsExtractionFileFragment(request.FileIndex) Then
+                fileWork.Check = RestoreCheck.ForFile(request.FileIndex)
+            End If
             Dim extents As List(Of ltfsindex.file.extent) = GetExtractionExtents(request.FileIndex)
             If extents.Count = 0 Then Throw New IO.InvalidDataException($"{request.FileIndex.name}: file has no extents")
             For i As Integer = 0 To extents.Count - 1
@@ -6762,6 +6788,59 @@ Public Class LTFSWriter
         failedFiles += 1
         PrintMsg($"{My.Resources.ResText_RestoreErr} {fileWork.Request.FileName}: {ex.Message}", IsWarn:=True)
         Try : IO.File.Delete(fileWork.TempPath) : Catch : End Try
+    End Sub
+
+    ''' <summary>
+    ''' 2.010: the files whose checksum check is in, in the order they were finished. A match is committed (a file
+    ''' written straight to its name already is). A mismatch fails the file: its temporary copy is dropped, or a file
+    ''' written straight to its name - never one that existed before the restore - is deleted again. A file that could
+    ''' not be checked is kept and logged. With wait, waits for every check.
+    ''' </summary>
+    Private Sub FinishRestoreChecks(pending As Queue(Of ExtractionFileWork), wait As Boolean, ByRef failedFiles As Integer, counts As Integer())
+        While pending.Count > 0 AndAlso Not StopFlag
+            Dim w As ExtractionFileWork = pending.Peek()
+            If Not w.Check.IsDone Then
+                If Not wait Then Exit While
+                w.Check.WaitDone()
+            End If
+            pending.Dequeue()
+            Try
+                ' Pieces out of file order: hash the restored copy instead.
+                If w.Check.Result = RestoreCheck.Outcome.Pending Then
+                    w.Check.HashFile(If(w.Direct, NormalizeExtractionPath(w.Request.FileName), w.TempPath))
+                End If
+                Select Case w.Check.Result
+                    Case RestoreCheck.Outcome.Match
+                        counts(0) += 1
+                    Case RestoreCheck.Outcome.Mismatch
+                        counts(1) += 1
+                        If w.Direct Then DeleteDirectExtractedFile(w)
+                        Throw New IO.InvalidDataException(w.Check.Reason)
+                    Case Else
+                        counts(2) += 1
+                        PrintMsg($"{w.Request.FileName}: restored without the checksum check - {w.Check.Reason}", IsWarn:=True, LogOnly:=True)
+                End Select
+                If Not w.Direct Then CommitExtractionFile(w)
+            Catch ex As Exception When Not StopFlag AndAlso IsPerFileRestoreError(ex)
+                MarkExtractionFileFailed(w, ex, failedFiles)
+            End Try
+        End While
+    End Sub
+
+    ''' <summary>Removes a file written straight to its name (there was no file of that name) after it failed its check.</summary>
+    Private Sub DeleteDirectExtractedFile(w As ExtractionFileWork)
+        Dim path As String = NormalizeExtractionPath(w.Request.FileName)
+        Try
+            If IO.File.Exists(path) Then
+                IO.File.SetAttributes(path, IO.FileAttributes.Normal)
+                IO.File.Delete(path)
+            End If
+        Catch ex As Exception
+            PrintMsg($"{path}: cannot remove the copy that failed its check: {ex.Message}", IsWarn:=True)
+        End Try
+        w.Committed = False
+        Threading.Interlocked.Decrement(CurrentFilesProcessed)
+        Threading.Interlocked.Decrement(TotalFilesProcessed)
     End Sub
 
     ''' <summary>End of a tape-order restore: Succ only when every file came back. Returns True for that case.
@@ -6818,10 +6897,15 @@ Public Class LTFSWriter
         _extractRecord = Nothing
         _extractIgnoredBlock = -1
         RestorePosition = Nothing ' the read-ahead thread moves the tape
+        ' 2.010: files with a checksum in the index are committed once their check is in, in the order they finished.
+        Dim pendingChecks As New Queue(Of ExtractionFileWork)
+        Dim checkCounts(2) As Integer ' matched, did not match, could not be checked
+        If fileWorks.Exists(Function(w) w.Check IsNot Nothing) Then _restoreChecker = New RestoreChecker()
         If plan.Count > 0 Then _extractReader = New ExtractionReadAhead(Me, plan, 0, 0)
         Try
             For planIndex As Integer = 0 To plan.Count - 1
                 If StopFlag Then Exit For
+                If pendingChecks.Count > 0 Then FinishRestoreChecks(pendingChecks, False, failedFiles, checkCounts)
                 Dim extentWork As ExtractionExtentWork = plan(planIndex)
                 Dim extractionFileNumber As Long = 0
                 If Not extractionFileNumbers.TryGetValue(extentWork.FileWork, extractionFileNumber) Then
@@ -6847,14 +6931,30 @@ Public Class LTFSWriter
                     Dim lastExtentIndex As Integer = -1
                     If lastExtentByFile.TryGetValue(extentWork.FileWork, lastExtentIndex) AndAlso
                        lastExtentIndex = planIndex Then
-                        CommitExtractionFile(extentWork.FileWork)
+                        If extentWork.FileWork.Check IsNot Nothing AndAlso _restoreChecker IsNot Nothing Then
+                            _restoreChecker.Finish(extentWork.FileWork.Check)
+                            pendingChecks.Enqueue(extentWork.FileWork)
+                        Else
+                            CommitExtractionFile(extentWork.FileWork)
+                        End If
                     End If
                 Catch ex As Exception When Not StopFlag AndAlso IsPerFileRestoreError(ex)
                     ' One bad file must not abort the rest: drop its temp copy, skip its other extents.
                     MarkExtractionFileFailed(extentWork.FileWork, ex, failedFiles)
                 End Try
             Next
+            ' Before the copies on disk below: a copy of a file that failed its check fails too.
+            FinishRestoreChecks(pendingChecks, True, failedFiles, checkCounts)
         Finally
+            If _restoreChecker IsNot Nothing Then
+                _restoreChecker.Dispose()
+                Dim noChecksum As Integer = fileWorks.Where(Function(w) w.Check Is Nothing AndAlso w.CopyOf Is Nothing AndAlso
+                                                                         Not w.AlreadyComplete AndAlso w.Request.FileIndex.length > 0).Count()
+                PrintMsg($"Checksum check: {checkCounts(0)} file(s) match the checksum written to tape with them, {checkCounts(1)} do not, " &
+                         $"{checkCounts(2)} could not be checked, {noChecksum} have no checksum in the index; " &
+                         $"the restore waited {_restoreChecker.WaitSeconds:0.0} s for the checks", LogOnly:=checkCounts(1) = 0)
+                _restoreChecker = Nothing
+            End If
             If _extractReader IsNot Nothing Then
                 _extractReader.Dispose()
                 PrintMsg($"Restore read-ahead: {_extractReader.Records} records, buffer {_extractReader.Capacity >> 20} MiB, paused {_extractReader.Pauses} time(s) when full; drive held {_extractReader.SlowReads} READ(s) 1 s or more, {_extractReader.SlowReadSeconds:0.0} s in total", LogOnly:=True)
@@ -9025,22 +9125,59 @@ Public Class LTFSWriter
         Dim keep As Integer = Math.Max(0, Math.Min(verifiedCount, records.Count))
         Dim dropped As Integer = records.Count - keep
         For i As Integer = keep To records.Count - 1
-            Dim f As ltfsindex.file = records(i).File
-            If f Is Nothing Then Continue For
-            SyncLock _writeCompletionLock
-                _completedWriteFiles.Remove(f)
-            End SyncLock
-            If f.extentinfo IsNot Nothing Then f.extentinfo.Clear()
-            f.WrittenBytes = 0
-            f.MarkLazyRecordDirty()
+            RefuseWrittenFile(records(i))
         Next
         records.RemoveRange(keep, dropped)
+        ' 2.010: the next write positions the tape at CurrentHeight; the count is past the real end of the data.
+        If drivePos IsNot Nothing AndAlso drivePos.PartitionNumber = DataPartition Then CurrentHeight = CLng(drivePos.BlockNumber)
         PrintMsg($"Tape position mismatch: the writer expected {p}, the drive reports {If(drivePos Is Nothing, "no position", drivePos.ToString())}. " &
                  $"{dropped} file(s) written since the last position check are not indexed and stay in the write list; write again to put them on tape.",
                  IsWarn:=True, ShowOnWarningLabel:=True)
         StopFlag = True
         SetStatusLight(LWStatus.Err)
         Return False
+    End Function
+
+    ''' <summary>
+    ''' 2.010: a written file the index must not name: its extents are cleared and it is queued again after the write
+    ''' (RequeueRefusedWriteRecords), so the next write puts it on tape whole.
+    ''' </summary>
+    Private Sub RefuseWrittenFile(fr As FileRecord)
+        If fr Is Nothing OrElse fr.File Is Nothing Then Return
+        Dim f As ltfsindex.file = fr.File
+        SyncLock _writeCompletionLock
+            _completedWriteFiles.Remove(f)
+            _refusedWriteRecords.Add(fr) ' once per file: a refused damaged file never reaches completedWriteRecords
+        End SyncLock
+        If f.extentinfo IsNot Nothing Then f.extentinfo.Clear()
+        f.WrittenBytes = 0
+        f.RemoveXattr(ltfsindex.file.xattr.ApplicationSpecific.WriteDegraded) ' the next copy is whole
+        f.MarkLazyRecordDirty()
+    End Sub
+
+    ''' <summary>
+    ''' 2.010: end of a write. Files refused by RefuseWrittenFile are still in the write list unless the list was just
+    ''' emptied (LTFSWriter_KeepUnwrittenFilesOnAbort off after a stopped write); then they are put back. Returns how
+    ''' many there were.
+    ''' </summary>
+    Private Function RequeueRefusedWriteRecords(listWasCleared As Boolean) As Integer
+        Dim refused As List(Of FileRecord)
+        SyncLock _writeCompletionLock
+            refused = New List(Of FileRecord)(_refusedWriteRecords)
+            _refusedWriteRecords.Clear()
+        End SyncLock
+        If listWasCleared Then
+            For Each fr As FileRecord In refused
+                If fr.ParentDirectory Is Nothing OrElse fr.File Is Nothing Then Continue For
+                If fr.ParentDirectory.UnwrittenFiles IsNot Nothing Then
+                    SyncLock fr.ParentDirectory.UnwrittenFiles
+                        If Not fr.ParentDirectory.UnwrittenFiles.Contains(fr.File) Then fr.ParentDirectory.UnwrittenFiles.Add(fr.File)
+                    End SyncLock
+                End If
+                AddPendingRecord(fr)
+            Next
+        End If
+        Return refused.Count
     End Function
 
     Private Function WriteFileFromFastReader(fastProvider As IFastReaderConsumer,
@@ -9459,6 +9596,7 @@ Public Class LTFSWriter
         Dim th As New Threading.Thread(
             Sub()
                 Dim OnWriteFinishMessage As String = ""
+                Dim refusedFiles As Integer = 0 ' 2.010: written but kept out of the index, queued again
                 Dim writerCancellation As CancellationTokenSource = Nothing
                 Dim provider As FileDataProvider = Nothing
                 Dim fastProvider As IFastReaderConsumer = Nothing
@@ -10525,11 +10663,15 @@ Public Class LTFSWriter
                                             filesSincePosCheck = 0
                                             Dim drivePos As New TapeUtils.PositionData(driveHandle)
                                             If Not IsIndexPartition AndAlso (drivePos.BlockNumber <> p.BlockNumber OrElse drivePos.PartitionNumber <> p.PartitionNumber) Then
-                                                StopFlag = True ' no index may be written from extents that could be wrong
-                                                Throw New IO.IOException($"Tape position mismatch: expected {p}, drive reports {drivePos}")
+                                                ' 2.010: stop as the capacity check does, without an error box; p is left
+                                                ' as counted, so the check after the loop sees the mismatch and keeps the
+                                                ' files since the last confirmed point out of the index.
+                                                PrintMsg($"Tape position mismatch at the periodic check: the writer expected {p}, the drive reports {drivePos}", IsWarn:=True, LogOnly:=True)
+                                                StopFlag = True
+                                            Else
+                                                p = drivePos
+                                                positionVerifiedHere = True ' this file and those before it are confirmed
                                             End If
-                                            p = drivePos
-                                            positionVerifiedHere = True ' this file and those before it are confirmed
                                         End If
                                         If Not IsIndexPartition Then
                                             ' Copy, never alias: p is mutated in place under SyncLock p.
@@ -10569,17 +10711,19 @@ Public Class LTFSWriter
                                     StopFlag = True
                                     Exit For
                                 End If
-                                If tarScanner IsNot Nothing AndAlso Not StopFlag Then
+                                ' 2.010: a file with a block ignored after a write error is not indexed (it was, flagged
+                                ' WriteDegraded, and a restore refused it). It stays in the write list, so the next write
+                                ' puts a whole copy on tape; this write goes on with the next file.
+                                Dim refusedThisFile As Boolean = Not packedThisFile AndAlso IsWriteDegraded(fr.File)
+                                If refusedThisFile Then RefuseWrittenFile(fr)
+                                If tarScanner IsNot Nothing AndAlso Not StopFlag AndAlso Not refusedThisFile Then
                                     CommitTarMetadata(fr, tarScanner)
                                 End If
-                                If fr.IsDirectTapeCopy AndAlso fr.DirectCopyExistingFile IsNot Nothing Then
-                                    fr.ParentDirectory.RemoveFile(fr.DirectCopyExistingFile)
-                                    fr.DirectCopyExistingFile = Nothing
-                                End If
+                                ' (2.010: a direct tape copy replaces the existing file in CommitWrittenFiles, once it is committed.)
                                 'Commit several completed files together.  The
                                 'lazy schema store can then update one mutation
                                 'and propagate one aggregate count per parent.
-                                Dim packedPending As Boolean = packedThisFile ' committed by flushPack instead
+                                Dim packedPending As Boolean = packedThisFile OrElse refusedThisFile ' packed: committed by flushPack
                                 If Not packedPending Then MarkWriteFileCompleted(fr.File)
                                 Threading.Interlocked.Increment(TotalFilesProcessed)
                                 Threading.Interlocked.Increment(CurrentFilesProcessed)
@@ -10737,7 +10881,9 @@ Public Class LTFSWriter
                             ' After an early-warning stop keep the rest queued for the next tape.
                             If Not My.Settings.LTFSWriter_KeepUnwrittenFilesOnAbort AndAlso Not EarlyWarningSeen Then
                                 ClearPendingWriteQueues()
+                                refusedFiles = RequeueRefusedWriteRecords(True) ' 2.010: files kept out of the index stay queued
                             Else
+                                refusedFiles = RequeueRefusedWriteRecords(False)
                                 UnwrittenSizeOverrideValue = UnwrittenSize
                                 UnwrittenCountOverrideValue = UnwrittenCount
                             End If
@@ -10754,6 +10900,9 @@ Public Class LTFSWriter
                         If StopFlag Then OnWriteFinishMessage = My.Resources.ResText_DPIWFailed ' index update failed
                     Else
                         OnWriteFinishMessage = (My.Resources.ResText_WCnd)
+                    End If
+                    If refusedFiles > 0 Then
+                        OnWriteFinishMessage &= $" - {refusedFiles} file(s) not indexed (see the warnings) and still in the write list: write again to put them on tape"
                     End If
                 Catch ex As OperationCanceledException When StopFlag
                     Using sourceContextScope As IDisposable = LogContext.PushProperty("SourceContext", NameOf(LTFSWriter))
@@ -10921,8 +11070,8 @@ Public Class LTFSWriter
                            If Not StopFlag AndAlso WA0ToolStripMenuItem.Checked AndAlso MessageBox.Show(New Form With {.TopMost = True}, My.Resources.ResText_WFUp, My.Resources.ResText_OpSucc, MessageBoxButtons.OKCancel) = DialogResult.OK Then
                                更新数据区索引ToolStripMenuItem_Click(sender, e)
                            End If
-                           PrintMsg(OnWriteFinishMessage)
-                           SetStatusLight(If(StopFlag, LWStatus.Err, LWStatus.Succ))
+                           PrintMsg(OnWriteFinishMessage, IsWarn:=refusedFiles > 0, ShowOnWarningLabel:=refusedFiles > 0)
+                           SetStatusLight(If(StopFlag OrElse refusedFiles > 0, LWStatus.Err, LWStatus.Succ))
                            RaiseEvent WriteFinished()
                        End Sub)
                 IsWriting = False
@@ -18450,8 +18599,16 @@ Public Class LTFSWriter
                              PrintMsg($"Position = {p.ToString()}", LogOnly:=True)
 
 
-                             'mark as written, unless the image was cut short (Cancel or volume overflow)
-                             If DiscardIfIncomplete(newfile, newfile.length, cfg.DrivePath) Then
+                             'mark as written, unless the image was cut short (Cancel or volume overflow), or a block
+                             'of it was ignored after a write error (2.010: such an image was indexed, flagged WriteDegraded)
+                             If IsWriteDegraded(newfile) Then
+                                 If newfile.extentinfo IsNot Nothing Then newfile.extentinfo.Clear()
+                                 newfile.WrittenBytes = 0
+                                 newfile.RemoveXattr(ltfsindex.file.xattr.ApplicationSpecific.WriteDegraded)
+                                 newfile.MarkLazyRecordDirty()
+                                 PrintMsg($"{newfile.name}: not indexed - a block was ignored after a write error; write the image again", IsWarn:=True, ShowOnWarningLabel:=True)
+                                 StopFlag = True
+                             ElseIf DiscardIfIncomplete(newfile, newfile.length, cfg.DrivePath) Then
                                  StopFlag = True
                              Else
                                  MarkWriteFileCompleted(newfile)

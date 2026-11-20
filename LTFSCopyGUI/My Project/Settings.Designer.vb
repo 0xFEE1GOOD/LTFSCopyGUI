@@ -604,6 +604,21 @@ Namespace My
         End Property
 
         <Global.System.Configuration.UserScopedSettingAttribute(),
+         Global.System.Configuration.SettingsDescriptionAttribute("Check restored files against their checksum"),
+         Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
+         Global.System.Configuration.DefaultSettingValueAttribute("True"),
+         Category("LTFSWriter"),
+         LocalizedDescription("PropertyDescription_LTFSWriter_VerifyOnRestore")>
+        Public Property LTFSWriter_VerifyOnRestore() As Boolean
+            Get
+                Return CType(Me("LTFSWriter_VerifyOnRestore"), Boolean)
+            End Get
+            Set(Value As Boolean)
+                Me("LTFSWriter_VerifyOnRestore") = Value
+            End Set
+        End Property
+
+        <Global.System.Configuration.UserScopedSettingAttribute(),
          Global.System.Configuration.SettingsDescriptionAttribute("Source reads kept in flight"),
          Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
          Global.System.Configuration.DefaultSettingValueAttribute("4"),

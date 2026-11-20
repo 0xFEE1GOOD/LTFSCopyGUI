@@ -89,6 +89,9 @@
     <Setting Name="LTFSWriter_PackSmallFiles" Description="Pack small files into shared tape blocks" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">False</Value>
     </Setting>
+    <Setting Name="LTFSWriter_VerifyOnRestore" Description="Check restored files against their checksum" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
     <Setting Name="LTFSWriter_ParallelSourceReads" Description="Source reads kept in flight" Type="System.Int32" Scope="User">
       <Value Profile="(Default)">4</Value>
     </Setting>

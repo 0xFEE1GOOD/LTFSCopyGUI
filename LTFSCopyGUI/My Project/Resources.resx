@@ -1007,6 +1007,9 @@ P0Size和P1Size如果都不为65535，则两者总和不得超过磁带容量</v
   <data name="PropertyDescription_LTFSWriter_PackSmallFiles" xml:space="preserve">
     <value>小文件打包写入共享磁带块（多个小文件合并为一次写入，可提升小文件写入速度）</value>
   </data>
+  <data name="PropertyDescription_LTFSWriter_VerifyOnRestore" xml:space="preserve">
+    <value>恢复时用写入磁带时记录的校验值（SHA-1 或索引中的其他标准校验值）检查每个恢复的文件。数据不一致的文件报告为未恢复，不会以原文件名保留。检查在单独的线程中与恢复同时进行，不会减慢恢复。索引中没有校验值的文件不经检查直接恢复。关闭 = 不检查。</value>
+  </data>
   <data name="PropertyDescription_LTFSWriter_EnrichTarMetadata" xml:space="preserve">
     <value>写入 tar 元数据索引</value>
   </data>
