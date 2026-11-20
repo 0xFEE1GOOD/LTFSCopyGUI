@@ -10636,8 +10636,22 @@ Public Class LTFSWriter
                                         SetStatusLight(LWStatus.Busy)
                                     End If
                                 End If
-                                If CapacityRefreshInterval > 0 AndAlso (Now - LastRefresh).TotalSeconds > CapacityRefreshInterval Then
-                                    p = New TapeUtils.PositionData(driveHandle)
+                                ' 2.008: the drive is compared with the tracked position, never copied over it. Copying
+                                ' hid a block the drive had not taken: the files written before the refresh kept wrong
+                                ' start blocks and the next check passed. A mismatch stops the write, and the check after
+                                ' the loop keeps the files since the last confirmed point out of the index.
+                                Dim refreshPos As TapeUtils.PositionData = Nothing
+                                If CapacityRefreshInterval > 0 AndAlso (Now - LastRefresh).TotalSeconds > CapacityRefreshInterval AndAlso Not StopFlag Then
+                                    If IsIndexPartition Then
+                                        p = New TapeUtils.PositionData(driveHandle)
+                                    ElseIf TrackedPositionMatchesDrive(p, refreshPos) Then
+                                        verifiedCount = completedWriteRecords.Count ' confirmed up to and including this file
+                                    Else
+                                        PrintMsg($"Tape position mismatch at the capacity check: the writer expected {p}, the drive reports {refreshPos}", IsWarn:=True, LogOnly:=True)
+                                        StopFlag = True
+                                    End If
+                                End If
+                                If CapacityRefreshInterval > 0 AndAlso (Now - LastRefresh).TotalSeconds > CapacityRefreshInterval AndAlso Not StopFlag Then
                                     Dim capValue As Long() = RefreshCapacity()
                                     fr.File.SetXattr(ltfsindex.file.xattr.ApplicationSpecific.CapacityRemain, CStr(capValue(p.PartitionNumber * 2)))
                                     Dim p2 As New TapeUtils.PositionData(driveHandle)
