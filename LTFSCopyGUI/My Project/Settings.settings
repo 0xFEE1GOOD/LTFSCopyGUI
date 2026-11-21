@@ -104,6 +104,9 @@
     <Setting Name="LTFSWriter_SourceServerAliases" Description="Other names for a network source's server" Type="System.String" Scope="User">
       <Value Profile="(Default)">auto</Value>
     </Setting>
+    <Setting Name="LTFSWriter_AddListThreads" Description="Folders listed at once when adding from a network share" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">8</Value>
+    </Setting>
     <Setting Name="LTFSWriter_NasReader" Description="LTFS NAS Reader host[:port]" Type="System.String" Scope="User">
       <Value Profile="(Default)" />
     </Setting>

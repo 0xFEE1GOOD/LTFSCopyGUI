@@ -1185,6 +1185,12 @@ Public Class LTFSWriter
         Public Sub New(FileInfo As IO.FileInfo, ParentDir As ltfsindex.directory, XattrPath As String, Optional fromListing As Boolean = False)
             Initialize(FileInfo, ParentDir, XattrPath, fromListing)
         End Sub
+        ''' <summary>2.019: a file from an Add listing (AddListing); the same record a listed FileInfo gives.</summary>
+        Friend Sub New(entry As ListedEntry, ParentDir As ltfsindex.directory, XattrPath As String)
+            InitializeCore(entry.FullName, entry.Name, entry.Length, entry.Attributes,
+                           Function() entry.CreationTimeUtc, Function() entry.LastWriteTimeUtc, Function() entry.LastAccessTimeUtc,
+                           ParentDir, XattrPath, fromListing:=True)
+        End Sub
         Public Sub New(FileInfo As IO.FileInfo, ParentDir As ltfsindex.directory)
             Dim resolvedPath As String = ExtendedPath(FileSystemPathResolver.ResolveExistingFilePath(FileInfo.FullName))
             Dim xattrPath As String = Nothing
@@ -1208,34 +1214,45 @@ Public Class LTFSWriter
                 Dim resolvedPath As String = FileSystemPathResolver.ResolveExistingFilePath(finf.FullName)
                 finf = New IO.FileInfo(ExtendedPath(resolvedPath))
             End If
+            Dim fi As IO.FileInfo = finf
+            InitializeCore(fi.FullName, fi.Name, fi.Length, fi.Attributes,
+                           Function() fi.CreationTimeUtc, Function() fi.LastWriteTimeUtc, Function() fi.LastAccessTimeUtc,
+                           ParentDir, xattrPath, fromListing)
+        End Sub
+
+        ''' <summary>2.019: the record from a file's path, name, length, attributes and times (a FileInfo or an Add
+        ''' listing entry). A time that throws when read falls back as before.</summary>
+        Private Sub InitializeCore(fullName As String, name As String, length As Long, attributes As IO.FileAttributes,
+                                   creationUtc As Func(Of DateTime), lastWriteUtc As Func(Of DateTime), lastAccessUtc As Func(Of DateTime),
+                                   ParentDir As ltfsindex.directory, xattrPath As String, fromListing As Boolean)
             ParentDirectory = ParentDir
             'The FileInfo was created from the resolved path above.  Assign the
             'backing field directly so SourcePath does not resolve the same path
             'a second time for every added file.
-            _sourcePath = ExtendedPath(finf.FullName)
+            _sourcePath = ExtendedPath(fullName)
             ' 2.012: the read-only flag is kept (it was always written as False, so a read-only file came back writable;
             ' restore applies it). From the listing's attributes, no extra round trip.
             File = New ltfsindex.file With {
-                .name = finf.Name,
+                .name = name,
                 .fileuid = -1,
-                .length = finf.Length,
-                .readonly = (finf.Attributes And IO.FileAttributes.ReadOnly) <> 0,
+                .length = length,
+                .readonly = (attributes And IO.FileAttributes.ReadOnly) <> 0,
                 .openforwrite = False}
             FileOffset = 0
-            SegmentLength = finf.Length
+            SegmentLength = length
             With File
                 Try
-                    .creationtime = finf.CreationTimeUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
+                    .creationtime = creationUtc().ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
                 Catch ex As Exception
                     .creationtime = Now.ToUniversalTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
                 End Try
                 Try
-                    .modifytime = finf.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
+                    .modifytime = lastWriteUtc().ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
                 Catch ex As Exception
                     .modifytime = .creationtime
                 End Try
                 Try
-                    .accesstime = finf.LastAccessTimeUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
+                    .accesstime = lastAccessUtc().ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
                 Catch ex As Exception
                     .accesstime = .creationtime
                 End Try
@@ -4785,6 +4802,31 @@ Public Class LTFSWriter
     <Category("LTFSWriter")>
     Public Property ParallelAdd As Boolean = False
     Public ExplorerComparer As New ExplorerUtils()
+    ''' <summary>2.019: IsSameFile for an Add listing entry (same checks, same log line).</summary>
+    Friend Function IsSameFile(e As ListedEntry, f0 As ltfsindex.file) As Boolean
+        Dim Result As Boolean = True
+        If e.Name <> f0.name Then
+            Result = False
+        ElseIf e.Length <> f0.length Then
+            Result = False
+        End If
+        Dim validtime As String = ""
+        Try
+            validtime = e.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
+            If validtime <> f0.modifytime Then
+                Result = False
+            End If
+        Catch ex As Exception
+            validtime = e.CreationTimeUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z")
+            If validtime <> f0.modifytime Then
+                Result = False
+            End If
+        End Try
+        If Not Result Then
+            PrintMsg($"Different File: {f0.name}|{f0.length}|{f0.modifytime}->{e.Name}|{e.Length}|{validtime}", LogOnly:=True)
+        End If
+        Return Result
+    End Function
     Public Function IsSameFile(f As IO.FileInfo, f0 As ltfsindex.file) As Boolean
         Dim Result As Boolean = True
         If f.Name <> f0.name Then
@@ -4851,6 +4893,43 @@ Public Class LTFSWriter
             Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"{ex.ToString()}{vbCrLf}{ex.StackTrace}"))
         End Try
     End Sub
+
+    ''' <summary>
+    ''' 2.019: AddFile for an entry of an Add listing (with the checks of the former AddSourceFile), in the same order, with the
+    ''' sidecar already looked up in the listing (<paramref name="xattrPath"/> "" = none).
+    ''' </summary>
+    Private Sub AddListedFile(e As ListedEntry, d As ltfsindex.directory, OverWrite As Boolean, exceptExtention As String(),
+                              xattrPath As String)
+        Try
+            If StopFlag OrElse e.Name.EndsWith(".xattr", StringComparison.OrdinalIgnoreCase) Then Exit Sub
+            If exceptExtention IsNot Nothing Then
+                Dim fullName As String = e.FullName
+                For Each ext As String In exceptExtention
+                    If fullName.EndsWith(ext, StringComparison.OrdinalIgnoreCase) Then Exit Sub
+                Next
+            End If
+            If _addSkipSymlink AndAlso ((e.Attributes And IO.FileAttributes.ReparsePoint) <> 0) Then Exit Sub
+            Dim FileExist As Boolean = False
+            Dim SameFile As Boolean = False
+            For Each oldf As ltfsindex.file In GetExistingFilesForAdd(d, e.Name)
+                If String.Equals(oldf.name, e.Name, StringComparison.Ordinal) Then
+                    SameFile = IsSameFile(e, oldf)
+                    If OverWrite AndAlso Not SameFile Then
+                        d.RemoveFile(oldf)
+                        RemoveExistingFileFromAddLookup(d, oldf)
+                    End If
+                    FileExist = True
+                End If
+            Next
+            If FileExist And (SameFile OrElse Not OverWrite) Then Exit Sub
+            If Not FileExist Then
+                FileExist = RemovePendingByName(d, e.Name)
+            End If
+            AddPendingRecord(New FileRecord(e, d, If(String.IsNullOrEmpty(xattrPath), Nothing, xattrPath)))
+        Catch ex As Exception
+            Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"{ex}{vbCrLf}{ex.StackTrace}"))
+        End Try
+    End Sub
     Private Sub AddDirectorySinglePass(dnew1 As IO.DirectoryInfo,
                                        d1 As ltfsindex.directory,
                                        OverWrite As Boolean,
@@ -4878,15 +4957,29 @@ Public Class LTFSWriter
 
     Private Function GetOrCreateTargetDirectory(sourceDirectory As IO.DirectoryInfo,
                                                  parent As ltfsindex.directory) As ltfsindex.directory
-        Dim target As ltfsindex.directory = parent.FindDirectoryByName(sourceDirectory.Name)
+        Return GetOrCreateTargetDirectory(sourceDirectory.Name, Function() sourceDirectory.CreationTimeUtc,
+                                          Function() sourceDirectory.LastAccessTimeUtc, Function() sourceDirectory.LastWriteTimeUtc, parent)
+    End Function
+
+    Private Function GetOrCreateTargetDirectory(sourceDirectory As ListedEntry,
+                                                 parent As ltfsindex.directory) As ltfsindex.directory
+        Return GetOrCreateTargetDirectory(sourceDirectory.Name, Function() sourceDirectory.CreationTimeUtc,
+                                          Function() sourceDirectory.LastAccessTimeUtc, Function() sourceDirectory.LastWriteTimeUtc, parent)
+    End Function
+
+    ''' <summary>The index folder for a source folder: the existing one of that name, else a new one with the source's
+    ''' times (read only then, as before 2.019).</summary>
+    Private Function GetOrCreateTargetDirectory(name As String, creationUtc As Func(Of DateTime), lastAccessUtc As Func(Of DateTime),
+                                                 lastWriteUtc As Func(Of DateTime), parent As ltfsindex.directory) As ltfsindex.directory
+        Dim target As ltfsindex.directory = parent.FindDirectoryByName(name)
         If target IsNot Nothing Then Return target
 
         target = New ltfsindex.directory With {
-            .name = sourceDirectory.Name,
-            .creationtime = sourceDirectory.CreationTimeUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z"),
+            .name = name,
+            .creationtime = creationUtc().ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z"),
             .fileuid = schema.highestfileuid + 1,
-            .accesstime = sourceDirectory.LastAccessTimeUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z"),
-            .modifytime = sourceDirectory.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z"),
+            .accesstime = lastAccessUtc().ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z"),
+            .modifytime = lastWriteUtc().ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z"),
             .changetime = .modifytime,
             .backuptime = Now.ToUniversalTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffff00Z"),
             .readonly = False}
@@ -4895,23 +4988,6 @@ Public Class LTFSWriter
         Return target
     End Function
 
-    Private Sub AddSourceFile(file As IO.FileInfo,
-                              targetDirectory As ltfsindex.directory,
-                              OverWrite As Boolean,
-                              exceptExtention As String(),
-                              xattrPath As String)
-        Try
-            If StopFlag OrElse file Is Nothing OrElse file.Extension.Equals(".xattr", StringComparison.OrdinalIgnoreCase) Then Exit Sub
-            If exceptExtention IsNot Nothing Then
-                For Each ext As String In exceptExtention
-                    If file.FullName.EndsWith(ext, StringComparison.OrdinalIgnoreCase) Then Exit Sub
-                Next
-            End If
-            AddFile(file, targetDirectory, OverWrite, XattrPath:=xattrPath, fromListing:=True)
-        Catch ex As Exception
-            Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True}, $"{ex}{vbCrLf}{ex.StackTrace}"))
-        End Try
-    End Sub
 
     ' 2.014: folders an add could not read; reported once at its end (ReportUnreadableAddFolders).
     Private ReadOnly _addUnreadableFolders As New List(Of String)
@@ -4923,7 +4999,20 @@ Public Class LTFSWriter
         PrintMsg($"Folder not added, it cannot be read: {path} ({reason})", IsWarn:=True, LogOnly:=True)
     End Sub
 
-    ''' <summary>End of an add: one warning (and one box) for the folders that could not be read, red light.</summary>
+    ''' <summary>2.019: a listed name .NET paths cannot hold (a Mac's "Icon\r", a name with &lt; &gt; | "): left out of the add
+    ''' and reported at its end with the unreadable folders. The write could not open such a file either.</summary>
+    Private Sub NoteUnusableAddName(e As ListedEntry)
+        Dim what As String = If(e.IsDirectory, "folder", "file")
+        Dim reason As String = $"{what} not added, its name has a character Windows paths cannot hold ({AddListing.BadCharacters(e.Name)})"
+        Dim shown As String = AddListing.JoinPath(e.ParentPath, AddListing.VisibleName(e.Name))
+        SyncLock _addUnreadableFolders
+            _addUnreadableFolders.Add($"{shown}: {reason}")
+        End SyncLock
+        PrintMsg($"Not added: {shown} ({reason})", IsWarn:=True, LogOnly:=True)
+    End Sub
+
+    ''' <summary>End of an add: one warning (and one box) for the folders that could not be read and the names that
+    ''' could not be used, red light.</summary>
     Private Sub ReportUnreadableAddFolders()
         Dim items As List(Of String)
         SyncLock _addUnreadableFolders
@@ -4931,16 +5020,19 @@ Public Class LTFSWriter
             _addUnreadableFolders.Clear()
         End SyncLock
         If items.Count = 0 Then Return
-        PrintMsg($"{items.Count} folder(s) could not be read and were not added; everything else was added - see the log", IsWarn:=True, ShowOnWarningLabel:=True)
+        PrintMsg($"{items.Count} folder(s) or file(s) were not added (unreadable, or a name Windows cannot use); everything else was added - see the log", IsWarn:=True, ShowOnWarningLabel:=True)
         SetStatusLight(LWStatus.Err)
         Dim shown As String = String.Join(vbCrLf, items.Take(10)) & If(items.Count > 10, $"{vbCrLf}... and {items.Count - 10} more (see the log)", "")
         Try
             Invoke(Sub() MessageBox.Show(New Form With {.TopMost = True},
-                                         $"{items.Count} folder(s) could not be read and were not added; everything else was added.{vbCrLf}{vbCrLf}{shown}",
+                                         $"{items.Count} folder(s) or file(s) were not added; everything else was added.{vbCrLf}{vbCrLf}{shown}",
                                          My.Resources.ResText_Warning, MessageBoxButtons.OK, MessageBoxIcon.Warning))
         Catch
         End Try
     End Sub
+
+    ' 2.019: LTFSWriter_SkipSymlink read once per added folder tree (it was read from My.Settings for every file).
+    Private _addSkipSymlink As Boolean
 
     Private Sub AddScannedDirectory(sourceDirectory As IO.DirectoryInfo,
                                     parent As ltfsindex.directory,
@@ -4954,36 +5046,68 @@ Public Class LTFSWriter
         ' end of the add. Before, it stopped the rest of the add with an error box while the files added before it
         ' stayed in the write list, so a write then took part of the folder without saying so. Listed before its
         ' entry in the index is made, so no empty folder is added for it.
-        Dim entries As IO.FileSystemInfo()
+        ' 2.019: listed by AddListing: a name .NET cannot hold no longer ends the add of the whole tree, and on a share the
+        ' folders the add reaches next are listed ahead by several threads (the add still walks them in the same order).
+        _addSkipSymlink = My.Settings.LTFSWriter_SkipSymlink
+        Dim skipSymlink As Boolean = _addSkipSymlink
+        Using lister As New AddListing(sourceDirectory.FullName, My.Settings.LTFSWriter_AddListThreads, My.Settings.LTFSWriter_SourceServerAliases,
+                                       Function(e As ListedEntry) Not (skipSymlink AndAlso (e.Attributes And IO.FileAttributes.ReparsePoint) <> 0))
+            Dim listing As AddListing.FolderListing
+            Dim targetDirectory As ltfsindex.directory
+            Try
+                If skipSymlink AndAlso ((sourceDirectory.Attributes And IO.FileAttributes.ReparsePoint) <> 0) Then Exit Sub
+                listing = lister.ListRoot()
+                targetDirectory = GetOrCreateTargetDirectory(sourceDirectory, parent)
+            Catch ex As Exception When TypeOf ex Is IO.IOException OrElse TypeOf ex Is UnauthorizedAccessException OrElse
+                                       TypeOf ex Is Security.SecurityException
+                NoteUnreadableAddFolder(sourceDirectory.FullName, ex.Message)
+                Exit Sub
+            End Try
+            AddListedEntries(listing, targetDirectory, OverWrite, exceptExtention, lister)
+            lister.LogSummary()
+        End Using
+    End Sub
+
+    ''' <summary>2.019: a subfolder of an added tree (AddScannedDirectory's walk, one level down).</summary>
+    Private Sub AddListedDirectory(folder As ListedEntry, parent As ltfsindex.directory, OverWrite As Boolean,
+                                   exceptExtention As String(), lister As AddListing)
+        If StopFlag Then Exit Sub
+        Dim listing As AddListing.FolderListing
         Dim targetDirectory As ltfsindex.directory
         Try
-            If My.Settings.LTFSWriter_SkipSymlink AndAlso ((sourceDirectory.Attributes And IO.FileAttributes.ReparsePoint) <> 0) Then Exit Sub
-            entries = sourceDirectory.GetFileSystemInfos()
-            targetDirectory = GetOrCreateTargetDirectory(sourceDirectory, parent)
+            If _addSkipSymlink AndAlso ((folder.Attributes And IO.FileAttributes.ReparsePoint) <> 0) Then Exit Sub
+            listing = lister.Take(folder)
+            targetDirectory = GetOrCreateTargetDirectory(folder, parent)
         Catch ex As Exception When TypeOf ex Is IO.IOException OrElse TypeOf ex Is UnauthorizedAccessException OrElse
                                    TypeOf ex Is Security.SecurityException
-            NoteUnreadableAddFolder(sourceDirectory.FullName, ex.Message)
+            NoteUnreadableAddFolder(folder.FullName, ex.Message)
             Exit Sub
         End Try
+        AddListedEntries(listing, targetDirectory, OverWrite, exceptExtention, lister)
+    End Sub
+
+    ''' <summary>2.019: queues a listed folder's files and walks its subfolders, in listing order.</summary>
+    Private Sub AddListedEntries(listing As AddListing.FolderListing, targetDirectory As ltfsindex.directory, OverWrite As Boolean,
+                                 exceptExtention As String(), lister As AddListing)
+        If listing.Skipped IsNot Nothing Then
+            For Each unusable As ListedEntry In listing.Skipped
+                NoteUnusableAddName(unusable)
+            Next
+        End If
         Dim sidecars As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
-        For Each entry As IO.FileSystemInfo In entries
-            If TypeOf entry Is IO.FileInfo AndAlso entry.Name.EndsWith(".xattr", StringComparison.OrdinalIgnoreCase) Then
+        For Each entry As ListedEntry In listing.Entries
+            If Not entry.IsDirectory AndAlso entry.Name.EndsWith(".xattr", StringComparison.OrdinalIgnoreCase) Then
                 sidecars(entry.Name) = entry.FullName
             End If
         Next
-        For Each entry As IO.FileSystemInfo In entries
+        For Each entry As ListedEntry In listing.Entries
             If StopFlag Then Exit For
-            Dim sourceFile As IO.FileInfo = TryCast(entry, IO.FileInfo)
-            If sourceFile IsNot Nothing Then
+            If entry.IsDirectory Then
+                AddListedDirectory(entry, targetDirectory, OverWrite, exceptExtention, lister)
+            Else
                 Dim sidecar As String = Nothing
-                If Not sidecars.TryGetValue(sourceFile.Name & ".xattr", sidecar) Then sidecar = ""
-                AddSourceFile(sourceFile, targetDirectory, OverWrite, exceptExtention, sidecar)
-                Continue For
-            End If
-
-            Dim childDirectory As IO.DirectoryInfo = TryCast(entry, IO.DirectoryInfo)
-            If childDirectory IsNot Nothing Then
-                AddScannedDirectory(childDirectory, targetDirectory, OverWrite, exceptExtention)
+                If Not sidecars.TryGetValue(entry.Name & ".xattr", sidecar) Then sidecar = ""
+                AddListedFile(entry, targetDirectory, OverWrite, exceptExtention, sidecar)
             End If
         Next
     End Sub

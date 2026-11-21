@@ -957,11 +957,19 @@ Friend NotInheritable Class SourceRoutes
         If _setting.Length = 0 OrElse slot < 0 Then Return path
         Dim server As String = Nothing, share As String = Nothing, rest As String = Nothing
         If Not SplitNetworkPath(path, server, share, rest) Then Return path
-        Dim names As String() = _names.GetOrAdd(server & "\" & share, Function(key) FindNames(server, share))
+        Dim names As String() = _names.GetOrAdd(server & "\" & share, Function(key) GetNames(server, share))
         If names.Length < 2 Then Return path
         Dim pick As Integer = slot Mod names.Length
         If pick = 0 Then Return path
         Return "\\?\UNC\" & names(pick) & "\" & share & rest
+    End Function
+
+    ''' <summary>2.019: how many names this path's share is read under (1 when local, off or not looked up yet).</summary>
+    Friend Function NameCount(path As String) As Integer
+        Dim server As String = Nothing, share As String = Nothing, rest As String = Nothing
+        If _setting.Length = 0 OrElse Not SplitNetworkPath(path, server, share, rest) Then Return 1
+        Dim names As String() = Nothing
+        Return If(_names.TryGetValue(server & "\" & share, names), names.Length, 1)
     End Function
 
     ''' <summary>Splits \\?\UNC\, \\server\ and mapped-drive paths into server, share and the rest ("\dir\file").</summary>
@@ -1003,6 +1011,24 @@ Friend NotInheritable Class SourceRoutes
                                 End Function)
     End Function
 
+    ' 2.019: names found for a share, kept for the whole program for 10 minutes (key: setting|server\share). Finding them
+    ' takes seconds (DS3615xs from TapeServer: reverse DNS of 192.168.3.5 4.1 s, then about 1 s per name probed), and
+    ' every write and every added folder tree makes its own SourceRoutes.
+    Private Shared ReadOnly FoundNames As New ConcurrentDictionary(Of String, Tuple(Of String(), DateTime))(StringComparer.OrdinalIgnoreCase)
+
+    Private Function GetNames(server As String, share As String) As String()
+        Dim cacheKey As String = _setting & "|" & server & "\" & share
+        Dim found As Tuple(Of String(), DateTime) = Nothing
+        If FoundNames.TryGetValue(cacheKey, found) AndAlso (DateTime.UtcNow - found.Item2).TotalMinutes < 10 Then
+            Log.Information("Source reads from \\{Server:l}\{Share:l} use {Count} network connection(s): {Names:l} (names found {Minutes:0.0} min ago).",
+                            server, share, found.Item1.Length, String.Join(", ", found.Item1), (DateTime.UtcNow - found.Item2).TotalMinutes)
+            Return found.Item1
+        End If
+        Dim names As String() = FindNames(server, share)
+        FoundNames(cacheKey) = Tuple.Create(names, DateTime.UtcNow)
+        Return names
+    End Function
+
     Private Function FindNames(server As String, share As String) As String()
         Dim candidates As New List(Of String)
         If _setting.Equals("auto", StringComparison.OrdinalIgnoreCase) Then
@@ -1017,12 +1043,18 @@ Friend NotInheritable Class SourceRoutes
             candidates.AddRange(_setting.Split({","c, ";"c}, StringSplitOptions.RemoveEmptyEntries).Select(Function(s) s.Trim()))
         End If
         Dim names As New List(Of String) From {server}
-        For Each name As String In candidates
-            If name.Length = 0 OrElse names.Contains(name, StringComparer.OrdinalIgnoreCase) Then Continue For
-            Dim probe As Task(Of Boolean) = Task.Run(Function() Directory.Exists("\\" & name & "\" & share & "\"))
-            If probe.Wait(10000) AndAlso probe.Result Then names.Add(name)
+        ' 2.019: all names probed at once (each first connection takes about a second), 10 s for all of them.
+        Dim others As List(Of String) = candidates.Where(Function(n) n.Length > 0 AndAlso Not n.Equals(server, StringComparison.OrdinalIgnoreCase)).
+                                                   Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+        Dim probes As Task(Of Boolean)() = others.Select(Function(name) Task.Run(Function() Directory.Exists("\\" & name & "\" & share & "\"))).ToArray()
+        Try
+            Task.WaitAll(probes, 10000)
+        Catch
+        End Try
+        For i As Integer = 0 To others.Count - 1
+            If probes(i).Status = TaskStatus.RanToCompletion AndAlso probes(i).Result Then names.Add(others(i))
         Next
-        Log.Information("Source reads from \\{Server}\{Share} use {Count} network connection(s): {Names}.", server, share, names.Count, String.Join(", ", names))
+        Log.Information("Source reads from \\{Server:l}\{Share:l} use {Count} network connection(s): {Names:l}.", server, share, names.Count, String.Join(", ", names))
         Return names.ToArray()
     End Function
 End Class

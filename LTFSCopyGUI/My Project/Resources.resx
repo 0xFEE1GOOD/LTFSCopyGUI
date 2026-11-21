@@ -998,6 +998,9 @@ P0Size和P1Size如果都不为65535，则两者总和不得超过磁带容量</v
   <data name="PropertyDescription_LTFSWriter_SourceServerAliases" xml:space="preserve">
     <value>网络源服务器（NAS）的其他名称，逗号分隔，用于通过多个网络连接同时读取源文件（Windows 每个服务器名称一个连接，Samba NAS 每个连接一次只读一个文件）。auto = 服务器自身的名称；留空 = 单个连接。</value>
   </data>
+  <data name="PropertyDescription_LTFSWriter_AddListThreads" xml:space="preserve">
+    <value>添加网络共享上的文件夹时，同时列出这么多个子文件夹（总是添加过程接下来要用到的那些），并且也通过服务器的其他名称（见 LTFSWriter_SourceServerAliases）：Samba NAS 每个连接一次只处理一个请求，而 Windows 每个服务器名称只开一个连接。添加过程仍然逐个处理文件夹，因此文件加入队列的顺序与设为 1 时相同。NAS 上 16,901 个文件夹、108,633 个文件：逐个列出 17.4 秒，通过三个名称同时列出 8 个 2.8 秒。1 = 逐个列出（2.019 之前的方式）；最多 16。本地磁盘上的文件夹总是逐个列出。</value>
+  </data>
   <data name="PropertyDescription_LTFSWriter_NasReader" xml:space="preserve">
     <value>通过 NAS 上的 LTFS NAS Reader 套件读取源文件（主机或 主机:端口，默认端口 7171），例如 192.168.3.5。文件列表仍通过网络共享获取；NAS 按写入顺序发送文件内容，并在其磁盘上同时进行多个读取。其他服务器上的文件以及 NAS 无法发送的文件仍通过共享读取。留空 = 关闭。</value>
   </data>

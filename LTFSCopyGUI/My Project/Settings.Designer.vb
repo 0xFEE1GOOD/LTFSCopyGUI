@@ -679,6 +679,21 @@ Namespace My
         End Property
 
         <Global.System.Configuration.UserScopedSettingAttribute(),
+         Global.System.Configuration.SettingsDescriptionAttribute("Folders listed at once when adding from a network share"),
+         Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
+         Global.System.Configuration.DefaultSettingValueAttribute("8"),
+         Category("LTFSWriter"),
+         LocalizedDescription("PropertyDescription_LTFSWriter_AddListThreads")>
+        Public Property LTFSWriter_AddListThreads() As Integer
+            Get
+                Return CType(Me("LTFSWriter_AddListThreads"), Integer)
+            End Get
+            Set(Value As Integer)
+                Me("LTFSWriter_AddListThreads") = Value
+            End Set
+        End Property
+
+        <Global.System.Configuration.UserScopedSettingAttribute(),
          Global.System.Configuration.SettingsDescriptionAttribute("LTFS NAS Reader host[:port]"),
          Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),
          Global.System.Configuration.DefaultSettingValueAttribute(""),

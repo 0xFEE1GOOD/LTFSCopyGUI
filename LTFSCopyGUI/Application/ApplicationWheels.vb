@@ -706,7 +706,8 @@ Public Module GlobCollector
         pending.Push(root)
         While pending.Count > 0
             Dim directory As DirectoryInfo = pending.Pop()
-            For Each entry As FileSystemInfo In directory.EnumerateFileSystemInfos()
+            ' 2.019: a name .NET paths cannot hold (a Mac's "Icon\r") no longer ends the add; it is left out and logged.
+            For Each entry As FileSystemInfo In AddListing.SafeFileSystemInfos(directory)
                 Dim file As FileInfo = TryCast(entry, FileInfo)
                 If file IsNot Nothing Then
                     Yield file
