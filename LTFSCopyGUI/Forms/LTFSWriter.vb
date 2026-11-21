@@ -283,6 +283,7 @@ Public Class LTFSWriter
     Private ReadOnly _messageStateLock As New Object()
     Private ReadOnly _pendingQueueLock As New Object()
     Private ReadOnly _pendingByDirectory As New Dictionary(Of ltfsindex.directory, Dictionary(Of String, FileRecord))(DirectoryRecordComparer.Instance)
+    Private _pendingIndexComplete As Boolean   ' 2.018: during an add, _pendingByDirectory holds every pending file (under _pendingQueueLock)
     Private _pendingTreeCountByDirectory As New Dictionary(Of ltfsindex.directory, Long)(DirectoryRecordComparer.Instance)
     Private _pendingSize As Long
     Private _activeAddFileLookup As Dictionary(Of ltfsindex.directory, Dictionary(Of String, List(Of ltfsindex.file)))
@@ -1516,7 +1517,9 @@ Public Class LTFSWriter
         If _pendingByDirectory.TryGetValue(directory, byName) Then Return byName
 
         byName = New Dictionary(Of String, FileRecord)(StringComparer.Ordinal)
-        If UnwrittenFiles IsNot Nothing Then
+        ' 2.018: during an add the index holds every pending file (RebuildPendingIndexForAdd), so a folder it does not
+        ' know has none and needs no scan of the whole write list.
+        If UnwrittenFiles IsNot Nothing AndAlso Not _pendingIndexComplete Then
             For Each record As FileRecord In UnwrittenFiles
                 If record IsNot Nothing AndAlso
                    DirectoryRecordComparer.Instance.Equals(record.ParentDirectory, directory) AndAlso
@@ -1612,17 +1615,18 @@ Public Class LTFSWriter
                 Return RemovePendingRecord(record)
             End If
 
-            Dim indexedDirectoryIsConsistent As Boolean = hasIndexedDirectory
-            If hasIndexedDirectory Then
-                Dim directoryPendingCount As Integer = 0
-                If directory.UnwrittenFiles IsNot Nothing Then
-                    SyncLock directory.UnwrittenFiles
-                        directoryPendingCount = directory.UnwrittenFiles.Count
-                    End SyncLock
-                End If
-                indexedDirectoryIsConsistent = directoryPendingCount = byName.Count
+            ' 2.018: an index built just now (a full scan of the write list) is checked the same way as one built earlier.
+            ' Before, it was always taken as out of step: the first file of every new folder scanned the whole write list
+            ' twice and then dropped the index it had just built. Adding 108,633 files in 16,901 folders spent about 40 %
+            ' of its time there, and the share grew with the size of the write list.
+            Dim directoryPendingCount As Integer = 0
+            If directory.UnwrittenFiles IsNot Nothing Then
+                SyncLock directory.UnwrittenFiles
+                    directoryPendingCount = directory.UnwrittenFiles.Count
+                End SyncLock
             End If
-            If indexedDirectoryIsConsistent Then Return False
+            If directoryPendingCount = byName.Count Then Return False
+            _pendingIndexComplete = False      ' out of step somewhere: full scans again until the add ends
 
             Dim removedFiles As New HashSet(Of ltfsindex.file)
             If directory.UnwrittenFiles IsNot Nothing Then
@@ -1711,11 +1715,40 @@ Public Class LTFSWriter
     Private Sub BeginAddFileLookup()
         _activeAddFileLookup = New Dictionary(Of ltfsindex.directory, Dictionary(Of String, List(Of ltfsindex.file)))(DirectoryReferenceComparer.Instance)
         _activeAddFileLookupCalls = New Dictionary(Of ltfsindex.directory, Integer)(DirectoryReferenceComparer.Instance)
+        RebuildPendingIndexForAdd()
     End Sub
 
     Private Sub EndAddFileLookup()
         _activeAddFileLookup = Nothing
         _activeAddFileLookupCalls = Nothing
+        SyncLock _pendingQueueLock
+            _pendingIndexComplete = False
+        End SyncLock
+    End Sub
+
+    ''' <summary>
+    ''' 2.018: at the start of an add, index every file in the write list by folder and name in one pass. Every file the
+    ''' add queues goes through AddPendingRecord, which indexes it, and every removal takes it out again, so for the rest
+    ''' of the add a folder the index does not know has no pending files and GetPendingDirectoryIndexUnsafe needs no scan
+    ''' of the whole write list for each new folder. If the index and a folder's own list ever disagree,
+    ''' RemovePendingByName clears _pendingIndexComplete and the add goes back to full scans.
+    ''' </summary>
+    Private Sub RebuildPendingIndexForAdd()
+        SyncLock _pendingQueueLock
+            _pendingByDirectory.Clear()
+            If UnwrittenFiles IsNot Nothing Then
+                For Each record As FileRecord In UnwrittenFiles
+                    If record Is Nothing OrElse record.ParentDirectory Is Nothing OrElse record.File Is Nothing Then Continue For
+                    Dim byName As Dictionary(Of String, FileRecord) = Nothing
+                    If Not _pendingByDirectory.TryGetValue(record.ParentDirectory, byName) Then
+                        byName = New Dictionary(Of String, FileRecord)(StringComparer.Ordinal)
+                        _pendingByDirectory(record.ParentDirectory) = byName
+                    End If
+                    byName(If(record.File.name, String.Empty)) = record
+                Next
+            End If
+            _pendingIndexComplete = True
+        End SyncLock
     End Sub
 
     Private Function GetExistingFilesForAdd(directory As ltfsindex.directory, fileName As String) As List(Of ltfsindex.file)
