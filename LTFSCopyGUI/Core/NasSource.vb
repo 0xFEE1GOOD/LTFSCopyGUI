@@ -42,6 +42,7 @@ Friend NotInheritable Class NasSource
     Private ReadOnly _order As Integer()                  ' list indexes in the order the NAS sends them
     Private ReadOnly _covered As HashSet(Of Integer)
     Private ReadOnly _buffer As Byte() = New Byte(ChunkMax - 1) {}
+    Private _smallFile As Byte() = New Byte(65535) {}     ' TryReadAll's result, reused (grows to the largest small file)
     Private ReadOnly _head As Byte() = New Byte(12) {}
     Private _next As Integer                              ' position in _order of the entry the stream is at
     Private _dead As Integer
@@ -275,27 +276,44 @@ Friend NotInheritable Class NasSource
         End Get
     End Property
 
-    ''' <summary>A small file's bytes, or Nothing: then read it over the share. A file that is shorter now comes back
-    ''' shorter, so the caller's length check reports it as for a share read. One that grew (the NAS sent the extra byte
-    ''' TryOpen asked for) gives Nothing, so the share read reports it.</summary>
-    Public Function TryReadAll(index As Integer, expected As Long) As Byte()
-        Dim data(CInt(expected)) As Byte                   ' expected + 1 bytes: room for the byte that shows growth
+    ''' <summary>
+    ''' A small file's bytes, in <paramref name="data"/>: the count, or -1 when the NAS did not send it (then read it
+    ''' over the share). A file that is shorter now comes back shorter, so the caller's length check reports it as for
+    ''' a share read. One that grew (the NAS sent the extra byte TryOpen asked for) gives -1, so the share read reports
+    ''' it. <paramref name="data"/> is one buffer reused for every file (2.020): it holds this file's bytes only until
+    ''' the next call, so the caller copies them out first. Before, each file took two new arrays (its length + 1, then
+    ''' Array.Resize to its length); files from 85 KB up are large objects, so a write of such files from the NAS
+    ''' piled up 28-35 GB of them between full collections, and each of those paused the write for 1.7-3.5 s.
+    ''' </summary>
+    Public Function TryReadAll(index As Integer, expected As Long, ByRef data As Byte()) As Integer
+        data = Nothing
+        Dim capacity As Long = expected + 1                ' room for the byte that shows growth
+        If capacity > Integer.MaxValue Then Return -1
+        If _smallFile.Length < capacity Then
+            Dim size As Long = _smallFile.Length
+            While size < capacity
+                size *= 2
+            End While
+            _smallFile = New Byte(CInt(Math.Min(size, CLng(Integer.MaxValue))) - 1) {}
+        End If
+        Dim target As Byte() = _smallFile
+        Dim room As Integer = CInt(capacity)
         Dim got As Integer = 0
         Dim r As Outcome = ReadAsync(index, Function(buf, n)
-                                                Dim take As Integer = Math.Min(n, data.Length - got)
-                                                Buffer.BlockCopy(buf, 0, data, got, take)
+                                                Dim take As Integer = Math.Min(n, room - got)
+                                                Buffer.BlockCopy(buf, 0, target, got, take)
                                                 got += take
                                                 Return Task.FromResult(True)
                                             End Function).GetAwaiter().GetResult()
-        If r.Status <> 0 Then Return Nothing
+        If r.Status <> 0 Then Return -1
         If got > expected Then
             _served -= 1
             _notServed += 1
             If _problems.Count < 20 Then _problems.Add($"#{index}: larger than when the list was made")
-            Return Nothing
+            Return -1
         End If
-        If got < data.Length Then Array.Resize(data, got)
-        Return data
+        data = target
+        Return got
     End Function
 
     ''' <summary>

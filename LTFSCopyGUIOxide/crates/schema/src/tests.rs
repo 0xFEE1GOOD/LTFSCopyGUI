@@ -842,3 +842,90 @@ fn unmodelled_index_parts_are_kept_and_do_not_stop_the_load() {
     drop(store);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn stored_records_copy_exactly_as_parsed() {
+    // write_record must give write_fragment's bytes (or its error) for every record, in the index writer's
+    // context: after a start tag, record after record, and before the end tag that follows.
+    let canonical = serialize_file(&FileData {
+        name: "a&b <c> 'd' \"e\" \u{3a9}\u{1F600}.txt".to_owned(),
+        length: 12,
+        creation_time: Some("2019-05-05T12:34:56.1234567Z".to_owned()),
+        modify_time: Some(String::new()),
+        file_uid: 7,
+        xattrs: vec![("k&".to_owned(), "v<>\"'\t".to_owned()), ("empty".to_owned(), String::new())],
+        extents: vec![
+            LscExtent { file_offset: 0, partition: 1, reserved: 0, start_block: 9, byte_offset: 0, byte_count: 5 },
+            LscExtent { file_offset: 5, partition: 0, reserved: 0, start_block: 10, byte_offset: 3, byte_count: 7 },
+        ],
+        symlink: Some("../x".to_owned()),
+        ..Default::default()
+    })
+    .expect("serialize");
+    let percent = serialize_file(&FileData { name: "cr\rname\u{1}".to_owned(), ..Default::default() }).expect("serialize");
+    let mut records: Vec<Vec<u8>> = vec![canonical, percent];
+    for text in [
+        "<file><name>x</name></file>",
+        "<file></file>",
+        "<file><a></a><b/><c /><d x=\"1\"/></file>",
+        "<file><name percentencoded=\"true\">a%0Db</name><length>1</length></file>",
+        "<file><name>&apos;Lectric &amp;&amp; Co&apos;</name></file>",
+        "<file><name>&#38;&#x26;&lt;&gt;&quot;</name></file>",
+        "<file><name> spaced </name><extendedattributes></extendedattributes></file>",
+        "<file x='1' y=\"2\"><name>v</name></file>",
+        "<file><a><b><c>deep</c></b></a></file>",
+        "<file>\n<name>x</name>\n</file>",
+        "<file><name>x</name> </file>",
+        "<file>text<name>x</name></file>",
+        "<file><name>a>b</name></file>",
+        "<file><name>a&foo;b</name></file>",
+        "<file><name>a&amp b</name></file>",
+        "<file><name>x</nam></file>",
+        "<file><name>x</name >",
+        "<file><name>x</name></file >",
+        "<file><!--c--><name>x</name></file>",
+        "<file><name><![CDATA[x<y]]></name></file>",
+        "<file><?pi x?><name>x</name></file>",
+        "<file><name>x</name></file><file></file>",
+        "<file><name>x</name></file>trailing",
+        "<file><name>x</name>",
+        "<file/>",
+        " <file></file>",
+        "<file a=\"x>y\"><name>x</name></file>",
+        "<file a=\"x/\"><name>x</name></file>",
+        "<file><n\u{e9}me>x</n\u{e9}me></file>",
+        "<fi le><name>x</name></fi>",
+        "",
+    ] {
+        records.push(text.as_bytes().to_vec());
+    }
+    records.push(b"<file><name>\xff</name></file>".to_vec());
+    let run = |fast: bool, list: &[&Vec<u8>]| -> Result<Vec<u8>, String> {
+        let mut writer = new_xml_writer(Vec::new());
+        writer.write_event(Event::Start(BytesStart::new("contents"))).unwrap();
+        let mut breaks = Vec::new();
+        for record in list {
+            if fast {
+                write_record(&mut writer, record, &mut breaks)?;
+            } else {
+                write_fragment(&mut writer, record)?;
+            }
+        }
+        writer.write_event(Event::End(BytesEnd::new("contents"))).unwrap();
+        Ok(writer.into_inner())
+    };
+    let mut fast_count = 0;
+    for record in &records {
+        let mut breaks = Vec::new();
+        if super::serialization::plan_record(record, &mut breaks).is_some() {
+            fast_count += 1;
+        }
+        let one = [record];
+        assert_eq!(run(true, &one), run(false, &one), "record {:?}", String::from_utf8_lossy(record));
+        let three = [record, record, record];
+        assert_eq!(run(true, &three), run(false, &three), "x3 {:?}", String::from_utf8_lossy(record));
+    }
+    let all: Vec<&Vec<u8>> = records.iter().filter(|r| run(false, &[*r]).is_ok()).collect();
+    assert_eq!(run(true, &all), run(false, &all));
+    assert!(fast_count >= 12, "plain records taken by the fast path: {fast_count}");
+}

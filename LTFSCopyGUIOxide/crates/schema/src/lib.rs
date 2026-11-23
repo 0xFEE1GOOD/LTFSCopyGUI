@@ -27,8 +27,8 @@ use file_parser::{
 
 mod serialization;
 use serialization::{
-    file_data_from_input, new_xml_writer, serialize_file, write_fragment, write_xml_element,
-    write_xml_text,
+    file_data_from_input, new_xml_writer, serialize_file, write_file, write_fragment,
+    write_record, write_xml_element, write_xml_text,
 };
 
 #[cfg(test)]
@@ -417,6 +417,21 @@ pub struct LscStoreDirectoryInfo {
     pub read_only: u32,
     pub reserved: u32,
     pub file_uid: i64,
+}
+
+/// A stored directory's scalars in one call (lsc_store_copy_directory_scalars): the strings lie one after another
+/// in the caller's UTF-16 buffer, without terminators, in the order name, creation, change, modify, access and
+/// backup time, unmodelled XML; `lengths` gives each one's UTF-16 length (0 also for an absent value).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct LscStoreDirectoryScalars {
+    pub struct_size: u32,
+    pub abi_version: u32,
+    pub read_only: u32,
+    pub reserved: u32,
+    pub file_uid: i64,
+    pub lengths: [u32; 7],
+    pub reserved2: u32,
 }
 
 #[repr(C)]
@@ -2556,7 +2571,11 @@ fn store_file_index_entry(
         FILE_INDEX_ENTRY_SIZE as usize,
         "file index",
     )?;
-    let mut cursor = StoreCursor::new(&bytes);
+    parse_file_index_entry(&bytes)
+}
+
+fn parse_file_index_entry(bytes: &[u8]) -> Result<LscStoreFileIndexEntry, String> {
+    let mut cursor = StoreCursor::new(bytes);
     Ok(LscStoreFileIndexEntry {
         struct_size: std::mem::size_of::<LscStoreFileIndexEntry>() as u32,
         abi_version: 1,
@@ -5485,7 +5504,126 @@ fn copy_store_file_record_to_writer(
     source
         .read_exact(&mut bytes)
         .map_err(|error| format!("cannot read file records backing file: {error}"))?;
-    write_fragment(writer, &bytes)
+    write_record(writer, &bytes, &mut Vec::new())
+}
+
+/// Every stored file record of one directory, in index-chain order, copied into `writer`. Both backing files are
+/// locked once for the whole directory (in the order StoreSearchReader uses) and read through StoreWindowReader:
+/// a directory's index entries and records mostly lie next to each other, so most of them need no system call
+/// (before, each file took four: a seek and a read for its index entry and again for its record).
+fn copy_store_directory_files_to_writer(
+    writer: &mut Writer<BufWriter<File>>,
+    store: &StoreContext,
+    directory_record_offset: i64,
+) -> Result<(), String> {
+    let header = read_store_directory_header(store, directory_record_offset)?;
+    if header.file_count == 0 {
+        return Ok(());
+    }
+    if header.file_index_offset < 0 {
+        return Err(invalid("invalid schema backing file index"));
+    }
+    let count = usize::try_from(header.file_count)
+        .map_err(|_| invalid("schema backing file count is too large"))?;
+    let mut record_file = store
+        .file_records
+        .lock()
+        .map_err(|_| invalid("file records backing file is poisoned"))?;
+    let mut index_file = store
+        .file_index
+        .lock()
+        .map_err(|_| invalid("file index backing file is poisoned"))?;
+    let mut records = StoreWindowReader::new(&mut record_file);
+    let mut index = StoreWindowReader::new(&mut index_file);
+    let mut breaks = Vec::new();
+    let mut entry_offset = header.file_index_offset;
+    for _ in 0..count {
+        if entry_offset < 0 {
+            return Err(invalid("schema backing file index chain is truncated"));
+        }
+        let entry = parse_file_index_entry(index.read(
+            entry_offset,
+            FILE_INDEX_ENTRY_SIZE as usize,
+            "file index",
+        )?)?;
+        let record_length = u64::try_from(entry.record_length)
+            .map_err(|_| invalid("invalid schema backing file record length"))?;
+        if entry.record_offset < 0 || record_length == 0 {
+            return Err(invalid("invalid schema store file record range"));
+        }
+        let length = usize::try_from(record_length)
+            .map_err(|_| invalid("schema store file record is too large"))?;
+        write_record(
+            writer,
+            records.read(entry.record_offset, length, "file records")?,
+            &mut breaks,
+        )?;
+        entry_offset = entry.next_offset;
+    }
+    Ok(())
+}
+
+/// Reads from one backing file during a single call through a window of the file kept in memory. Used only while
+/// the file's lock is held, so nothing can change the file between the reads. A read outside the window reads a
+/// new one from its offset: 4 KiB (most directories have a few files), doubling up to 256 KiB while the reads run
+/// on past the window's end (a long directory, records in a row), back to 4 KiB after a jump elsewhere.
+struct StoreWindowReader<'a> {
+    file: &'a mut File,
+    start: u64,
+    data: Vec<u8>,
+    next: usize,
+}
+
+const STORE_WINDOW_MIN: usize = 4 * 1024;
+const STORE_WINDOW_MAX: usize = 256 * 1024;
+
+impl<'a> StoreWindowReader<'a> {
+    fn new(file: &'a mut File) -> Self {
+        Self {
+            file,
+            start: 0,
+            data: Vec::new(),
+            next: STORE_WINDOW_MIN,
+        }
+    }
+
+    fn read(&mut self, offset: i64, length: usize, label: &str) -> Result<&[u8], String> {
+        let offset = u64::try_from(offset).map_err(|_| invalid(format!("invalid {label} offset")))?;
+        let end = offset
+            .checked_add(length as u64)
+            .ok_or_else(|| invalid(format!("invalid {label} offset")))?;
+        let window_end = self.start + self.data.len() as u64;
+        if offset < self.start || end > window_end {
+            self.next = if !self.data.is_empty() && offset >= self.start && offset <= window_end {
+                (self.next * 2).min(STORE_WINDOW_MAX)
+            } else {
+                STORE_WINDOW_MIN
+            };
+            let want = length.max(self.next);
+            self.data.resize(want, 0);
+            self.file
+                .seek(SeekFrom::Start(offset))
+                .map_err(|error| format!("cannot seek {label} backing file: {error}"))?;
+            let mut filled = 0;
+            while filled < want {
+                match self.file.read(&mut self.data[filled..]) {
+                    Ok(0) => break,
+                    Ok(count) => filled += count,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(error) => return Err(format!("cannot read {label} backing file: {error}")),
+                }
+            }
+            self.data.truncate(filled);
+            self.start = offset;
+            if filled < length {
+                return Err(format!(
+                    "cannot read {label} backing file: failed to fill whole buffer"
+                ));
+            }
+        }
+        let from = (offset - self.start) as usize;
+        Ok(&self.data[from..from + length])
+    }
 }
 
 fn writer_name(ptr: *const u16, len: u32) -> Result<String, String> {

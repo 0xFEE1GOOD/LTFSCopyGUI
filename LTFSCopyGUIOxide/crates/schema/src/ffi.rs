@@ -16,18 +16,20 @@ use std::sync::Mutex;
 use super::{
     DirectorySortOptions, FileContext, LSC_ERROR, LSC_INVALID_ARGUMENT, LSC_OK, LscExtent,
     LscFileInfo, LscFileInput, LscSchemaMetadata, LscSchemaResult, LscStoreDirectoryIndexEntry,
-    LscStoreDirectoryInfo, LscStoreDirectorySortProgressCallback, LscStoreDirectorySortResult,
+    LSC_BUFFER_TOO_SMALL, LscStoreDirectoryInfo, LscStoreDirectoryScalars,
+    LscStoreDirectorySortProgressCallback, LscStoreDirectorySortResult,
     LscStoreFileIndexEntry, LscStoreFileSummary, LscStoreSearchProgressCallback,
     LscStoreSearchResult, LscStoreTapeSortProgressCallback, LscStoreTapeSortResult,
     ParsedFileSummary, SchemaContext, SchemaWriter, StoreContext, StoreSearchComputation,
     StoreSearchOptions, TapeSortOptions, byte_slice, copy_bytes, copy_bytes_wide,
-    copy_store_file_record_to_writer, copy_utf16, ffi_call, ffi_call_value, file_data_from_input,
-    file_string, get_schema_string, invalid, last_error, new_xml_writer, parse_file_bytes,
+    copy_store_directory_files_to_writer, copy_store_file_record_to_writer, copy_utf16, ffi_call,
+    ffi_call_value, file_data_from_input, file_string, get_schema_string, invalid, last_error,
+    new_xml_writer, parse_file_bytes,
     parse_file_name_bytes, parse_file_summary_bytes, read_store_at, read_store_directory_header,
     read_store_directory_scalars, schema_context_from_file, schema_context_from_files,
     search_store, serialize_file, set_last_error, sort_directory_children, sort_tape_files,
     store_directory_file_bytes, store_directory_index_entry, store_file_index_entry, utf16_string,
-    write_fragment, write_xml_element, writer_mut, writer_name,
+    write_file, write_fragment, write_xml_element, writer_mut, writer_name,
 };
 
 #[unsafe(no_mangle)]
@@ -271,6 +273,88 @@ pub unsafe extern "system" fn lsc_store_copy_directory_string(
         return status;
     }
     copy_utf16(&value, buffer, capacity, required)
+}
+
+/// Everything lsc_store_get_directory_info and seven lsc_store_copy_directory_string calls give the index writer for
+/// a stored directory, from one read of its header and scalars (those were 15 calls, each reading both again).
+/// `required` is the UTF-16 length of all strings together; a smaller `capacity` returns LSC_BUFFER_TOO_SMALL
+/// with `output` and `required` filled in.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn lsc_store_copy_directory_scalars(
+    context: *const StoreContext,
+    record_offset: i64,
+    output: *mut LscStoreDirectoryScalars,
+    buffer: *mut u16,
+    capacity: u32,
+    required: *mut u32,
+) -> i32 {
+    if context.is_null() || output.is_null() {
+        set_last_error("schema store context or output pointer is null");
+        return LSC_INVALID_ARGUMENT;
+    }
+    let mut value: (LscStoreDirectoryScalars, Vec<u16>) = Default::default();
+    let status = ffi_call_value(
+        || {
+            // SAFETY: context was checked for null and remains alive until close.
+            let context = unsafe { &*context };
+            let header = read_store_directory_header(context, record_offset)?;
+            let scalars = read_store_directory_scalars(context, &header)?;
+            let mut info = LscStoreDirectoryScalars {
+                struct_size: std::mem::size_of::<LscStoreDirectoryScalars>() as u32,
+                abi_version: 1,
+                read_only: u32::from(scalars.read_only),
+                file_uid: scalars.file_uid,
+                ..Default::default()
+            };
+            let mut units: Vec<u16> = Vec::new();
+            let fields = [
+                &scalars.name,
+                &scalars.creation_time,
+                &scalars.change_time,
+                &scalars.modify_time,
+                &scalars.access_time,
+                &scalars.backup_time,
+                &scalars.extra_xml,
+            ];
+            for (slot, field) in fields.into_iter().enumerate() {
+                let before = units.len();
+                if let Some(text) = field {
+                    units.extend(text.encode_utf16());
+                }
+                info.lengths[slot] = u32::try_from(units.len() - before)
+                    .map_err(|_| invalid("UTF-16 output is too long"))?;
+            }
+            Ok((info, units))
+        },
+        &mut value,
+    );
+    if status != LSC_OK {
+        return status;
+    }
+    let (info, units) = value;
+    // SAFETY: output was checked for null and is owned by the caller.
+    unsafe { *output = info };
+    let Ok(total) = u32::try_from(units.len()) else {
+        set_last_error("UTF-16 output is too long");
+        return LSC_ERROR;
+    };
+    if !required.is_null() {
+        // SAFETY: `required` is an output pointer supplied by the caller.
+        unsafe { *required = total };
+    }
+    if total > capacity {
+        return LSC_BUFFER_TOO_SMALL;
+    }
+    if total == 0 {
+        return LSC_OK;
+    }
+    if buffer.is_null() {
+        set_last_error("UTF-16 output pointer is null");
+        return LSC_INVALID_ARGUMENT;
+    }
+    // SAFETY: the caller's buffer holds at least `capacity` >= `total` UTF-16 units.
+    unsafe { std::ptr::copy_nonoverlapping(units.as_ptr(), buffer, units.len()) };
+    LSC_OK
 }
 
 fn copy_optional_utf16(value: &str, buffer: *mut u16, capacity: u32, required: *mut u32) -> i32 {
@@ -1000,9 +1084,9 @@ pub unsafe extern "system" fn lsc_writer_file(
         }
         // SAFETY: input was checked for null and is valid for this synchronous call.
         let value = unsafe { file_data_from_input(&*input) }?;
-        let bytes = serialize_file(&value)?;
+        // Written straight into the index (it was serialized to a buffer, parsed back and written again).
         // SAFETY: writer was checked for null and is owned by the caller.
-        write_fragment(writer_mut(unsafe { &mut *writer })?, &bytes)
+        write_file(writer_mut(unsafe { &mut *writer })?, &value)
     })
 }
 
@@ -1069,29 +1153,7 @@ pub unsafe extern "system" fn lsc_writer_store_directory_files(
         // SAFETY: both pointers were checked above and remain owned by the
         // caller for the duration of this synchronous FFI call.
         let writer = writer_mut(unsafe { &mut *writer })?;
-        let store = unsafe { &*store };
-        let header = read_store_directory_header(store, directory_record_offset)?;
-        if header.file_count == 0 {
-            return Ok(());
-        }
-        if header.file_index_offset < 0 {
-            return Err(invalid("invalid schema backing file index"));
-        }
-
-        let count = usize::try_from(header.file_count)
-            .map_err(|_| invalid("schema backing file count is too large"))?;
-        let mut entry_offset = header.file_index_offset;
-        for _ in 0..count {
-            if entry_offset < 0 {
-                return Err(invalid("schema backing file index chain is truncated"));
-            }
-            let entry = store_file_index_entry(store, entry_offset)?;
-            let record_length = u64::try_from(entry.record_length)
-                .map_err(|_| invalid("invalid schema backing file record length"))?;
-            copy_store_file_record_to_writer(writer, store, entry.record_offset, record_length)?;
-            entry_offset = entry.next_offset;
-        }
-        Ok(())
+        copy_store_directory_files_to_writer(writer, unsafe { &*store }, directory_record_offset)
     })
 }
 

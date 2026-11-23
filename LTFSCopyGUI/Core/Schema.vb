@@ -2897,19 +2897,7 @@ Friend NotInheritable Class LazySchemaStore
     End Sub
 
     Friend Function ReadDirectoryScalars(recordOffset As Long) As LazyDirectoryScalarData
-        Dim handle As IntPtr = EnsureNativeStore()
-        Dim info As NativeStoreDirectoryInfo = ReadStoreDirectoryInfo(handle, recordOffset)
-        Dim result As New LazyDirectoryScalarData
-        result.Name = CopyStoreDirectoryString(handle, recordOffset, 1UI)
-        result.ReadOnly = info.[ReadOnly] <> 0UI
-        result.CreationTime = CopyStoreDirectoryString(handle, recordOffset, 2UI)
-        result.ChangeTime = CopyStoreDirectoryString(handle, recordOffset, 3UI)
-        result.ModifyTime = CopyStoreDirectoryString(handle, recordOffset, 4UI)
-        result.AccessTime = CopyStoreDirectoryString(handle, recordOffset, 5UI)
-        result.BackupTime = CopyStoreDirectoryString(handle, recordOffset, 6UI)
-        result.UnmodelledXml = CopyStoreDirectoryString(handle, recordOffset, 7UI)
-        result.FileUid = info.FileUid
-        Return result
+        Return ReadStoreDirectoryScalars(EnsureNativeStore(), recordOffset)
     End Function
 
     Friend Iterator Function EnumerateDirectoryChildren(recordOffset As Long) As IEnumerable(Of LazySchemaChildData)

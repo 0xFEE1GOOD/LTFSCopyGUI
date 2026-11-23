@@ -41,6 +41,7 @@ Imports Serilog.Context
 
 Public Class FileDataProvider
     Private ReadOnly _pipe As Pipe
+    Private ReadOnly _segmentPool As PipeSegmentPool       ' the pipe's segments, kept for reuse (pipe mode only)
     Private ReadOnly _writer As PipeWriter
     Public ReadOnly Property Reader As PipeReader
     Public ReadOnly RingBuffer As SpscRingBuffer
@@ -145,10 +146,12 @@ Public Class FileDataProvider
         Else
             Dim pause As Long = pipeBufferBytes
             Dim resumeTh As Long = Math.Max(1L, (pause \ 4) * 3)
+            _segmentPool = New PipeSegmentPool(My.Settings.LTFSWriter_MinimumSegmentSize)
             _pipe = New Pipe(New PipeOptions(
+                pool:=_segmentPool,
                 pauseWriterThreshold:=pause,
                 resumeWriterThreshold:=resumeTh,
-                minimumSegmentSize:=My.Settings.LTFSWriter_MinimumSegmentSize,
+                minimumSegmentSize:=_segmentPool.SegmentSize,
                 useSynchronizationContext:=False
             ))
             Reader = _pipe.Reader
@@ -264,6 +267,7 @@ Public Class FileDataProvider
         Await AwaitBackgroundTaskAsync(_preloadTask, "preloader").ConfigureAwait(False)
         If _nas IsNot Nothing Then _nas.Dispose() ' logs how many files the NAS sent
         CompleteReader()
+        If _segmentPool IsNot Nothing Then _segmentPool.Dispose() ' both ends done: drop the kept segments (up to the buffer size)
 
         Try
             _nextFileSignal.Dispose()
@@ -390,29 +394,36 @@ Public Class FileDataProvider
 
                 If isSmallFile Then
                     Dim data As Byte() = Nothing
+                    Dim dataLength As Integer = 0          ' the file's bytes are data(0 .. dataLength - 1)
                     Dim preloaded As Task(Of Byte()) = Nothing
                     If _nas IsNot Nothing AndAlso _nas.Covers(nextIdx) Then
-                        data = _nas.TryReadAll(nextIdx, fr.File.length) ' Nothing: the NAS did not send it, read it below
-                        If data IsNot Nothing Then fr.IsOpened = True
+                        ' -1: the NAS did not send it, read it below. Otherwise data is the NAS reader's buffer, reused
+                        ' for the next file: it is copied into the ring or pipe below, before the next call.
+                        dataLength = _nas.TryReadAll(nextIdx, fr.File.length, data)
+                        If dataLength >= 0 Then fr.IsOpened = True Else data = Nothing
                     End If
                     If data Is Nothing AndAlso _smallCacheMap.TryRemove(fr, preloaded) Then
                         data = Await preloaded.ConfigureAwait(False) ' read, or still being read by a worker
                         If data IsNot Nothing Then
                             Interlocked.Add(_smallCacheBytes, -data.LongLength)
                             fr.IsOpened = True ' as ReadAllBytesSafe does: the writer waits for this before taking the data
+                            dataLength = data.Length
                         End If
                     End If
-                    If data Is Nothing Then data = ReadAllBytesSafe(fr) ' not read ahead, or the worker could not read it
+                    If data Is Nothing Then
+                        data = ReadAllBytesSafe(fr) ' not read ahead, or the worker could not read it
+                        If data IsNot Nothing Then dataLength = data.Length
+                    End If
 
                     Dim expectedLength As Long = fr.File.length
-                    If data Is Nothing OrElse data.LongLength <> expectedLength Then
-                        Throw New EndOfStreamException($"Source file length changed while reading: {fr.SourcePath}; expected {expectedLength}, got {If(data Is Nothing, 0L, data.LongLength)}.")
+                    If data Is Nothing OrElse dataLength <> expectedLength Then
+                        Throw New EndOfStreamException($"Source file length changed while reading: {fr.SourcePath}; expected {expectedLength}, got {If(data Is Nothing, 0L, CLng(dataLength))}.")
                     End If
-                    If data.Length > 0 Then
+                    If dataLength > 0 Then
                         If _ringBufferEnabled Then
-                            WriteAllToRing(data, _cts.Token)
+                            WriteAllToRing(data, dataLength, _cts.Token)
                         Else
-                            _writer.Write(data.AsSpan())
+                            WriteToPipe(data, dataLength)
                             Dim res = Await FlushTimedAsync(_cts.Token)
                             If res.IsCanceled OrElse res.IsCompleted Then Exit While
                         End If
@@ -474,6 +485,24 @@ Public Class FileDataProvider
 
     Private Sub WriteAllToRing(data As Byte(), ct As CancellationToken)
         WriteAllToRing(data, data.Length, ct)
+    End Sub
+
+    ''' <summary>
+    ''' Copies data(0 .. count - 1) into the pipe at most one segment at a time (2.020). PipeWriter.Write asked the pipe
+    ''' for one segment as large as the rest of the data (a NAS frame is up to 8 MiB, a small file up to 16 MiB), and a
+    ''' segment larger than PipeSegmentPool's is a new array every time; GetMemory(1) is the current segment's free
+    ''' space or one pooled segment. The caller flushes, as after Write.
+    ''' </summary>
+    Private Sub WriteToPipe(data As Byte(), count As Integer)
+        Dim offset As Integer = 0
+        While offset < count
+            Dim dest As New ArraySegment(Of Byte)
+            If Not MemoryMarshal.TryGetArray(Of Byte)(_writer.GetMemory(1), dest) Then Throw New InvalidOperationException("TryGetArray failed")
+            Dim n As Integer = Math.Min(dest.Count, count - offset)
+            Buffer.BlockCopy(data, offset, dest.Array, dest.Offset, n)
+            _writer.Advance(n)
+            offset += n
+        End While
     End Sub
 
     ''' <summary>FlushAsync, timing the wait (it waits only when the buffer is full).</summary>
@@ -571,7 +600,7 @@ Public Class FileDataProvider
             WriteAllToRing(buffer, count, _cts.Token)
             Return True
         End If
-        _writer.Write(buffer.AsSpan(0, count))
+        WriteToPipe(buffer, count)
         Dim res = Await FlushTimedAsync(_cts.Token).ConfigureAwait(False)
         Return Not (res.IsCanceled OrElse res.IsCompleted)
     End Function
@@ -776,7 +805,7 @@ Public Class FileDataProvider
                 If _ringBufferEnabled Then
                     WriteAllToRing(buf, n, ct)
                 Else
-                    _writer.Write(buf.AsSpan(0, n))
+                    WriteToPipe(buf, n)
                     Dim result = Await FlushTimedAsync(ct).ConfigureAwait(False)
                     outputClosed = result.IsCanceled OrElse result.IsCompleted
                 End If
@@ -936,6 +965,75 @@ End Class
 ''' names from DNS (192.168.3.5 -> LinkBigNas.local, LinkBigNas; a name also gives its IPv4 address), or a list of names
 ''' (e.g. extra hosts-file entries); empty = one connection. A name is used only once the share answered under it.
 ''' </summary>
+''' <summary>
+''' The pipe's segments, kept and reused (2.020). The default pool rents through ArrayPool(Of Byte).Shared, which keeps
+''' arrays only up to 1 MiB, so every segment of LTFSWriter_MinimumSegmentSize (4 MiB) was a new large object and was
+''' dropped again once the writer had taken it. Measured through the NAS reader without tape (tools\lanestest), 2.2 GB
+''' were allocated per GB read, nearly all large objects, and nearly every collection was a full one. Segments of the
+''' configured size come from a free list here; a larger request (none from WriteToPipe) gets an array of its own. The
+''' provider disposes the pool when the write ends, which lets the kept segments (up to the buffer size) go.
+''' </summary>
+Friend NotInheritable Class PipeSegmentPool
+    Inherits MemoryPool(Of Byte)
+
+    Private ReadOnly _free As New ConcurrentStack(Of Byte())
+    Private _disposed As Integer
+    Public ReadOnly SegmentSize As Integer
+
+    Public Sub New(segmentSize As Integer)
+        Me.SegmentSize = Math.Max(4096, segmentSize)
+    End Sub
+
+    Public Overrides ReadOnly Property MaxBufferSize As Integer
+        Get
+            Return Integer.MaxValue
+        End Get
+    End Property
+
+    Public Overrides Function Rent(Optional minBufferSize As Integer = -1) As IMemoryOwner(Of Byte)
+        If minBufferSize > SegmentSize Then Return New Lease(Me, New Byte(minBufferSize - 1) {}, False)
+        Dim array As Byte() = Nothing
+        If Not _free.TryPop(array) Then array = New Byte(SegmentSize - 1) {}
+        Return New Lease(Me, array, True)
+    End Function
+
+    Private Sub GiveBack(array As Byte())
+        If Volatile.Read(_disposed) = 0 Then _free.Push(array)
+    End Sub
+
+    Protected Overrides Sub Dispose(disposing As Boolean)
+        Interlocked.Exchange(_disposed, 1)
+        _free.Clear()
+    End Sub
+
+    Private NotInheritable Class Lease
+        Implements IMemoryOwner(Of Byte)
+
+        Private ReadOnly _pool As PipeSegmentPool
+        Private ReadOnly _keep As Boolean
+        Private _array As Byte()
+
+        Public Sub New(pool As PipeSegmentPool, array As Byte(), keep As Boolean)
+            _pool = pool
+            _array = array
+            _keep = keep
+        End Sub
+
+        Public ReadOnly Property Memory As Memory(Of Byte) Implements IMemoryOwner(Of Byte).Memory
+            Get
+                Dim array As Byte() = _array
+                If array Is Nothing Then Throw New ObjectDisposedException(NameOf(Lease))
+                Return New Memory(Of Byte)(array)
+            End Get
+        End Property
+
+        Public Sub Dispose() Implements IDisposable.Dispose
+            Dim array As Byte() = Interlocked.Exchange(_array, Nothing)
+            If array IsNot Nothing AndAlso _keep Then _pool.GiveBack(array)
+        End Sub
+    End Class
+End Class
+
 Friend NotInheritable Class SourceRoutes
     Private ReadOnly _setting As String
     Private ReadOnly _names As New ConcurrentDictionary(Of String, String())(StringComparer.OrdinalIgnoreCase) ' "server\share" -> names, (0) = server
