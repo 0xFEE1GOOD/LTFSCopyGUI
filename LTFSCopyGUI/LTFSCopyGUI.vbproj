@@ -335,6 +335,7 @@
     <Compile Include="Core\NasSource.vb" />
     <Compile Include="Core\AddListing.vb" />
     <Compile Include="Core\RestoreCheck.vb" />
+    <Compile Include="Core\FastCores.vb" />
     <Compile Include="Core\FileSystemPathResolver.vb" />
     <Compile Include="Forms\Form1.vb">
       <SubType>Form</SubType>

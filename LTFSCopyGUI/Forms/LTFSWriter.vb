@@ -4441,7 +4441,7 @@ Public Class LTFSWriter
             schema.location.startblock = CurrentPos.BlockNumber
             PrintMsg(My.Resources.ResText_GI)
             tmpf = LazySchemaStore.CreateTempFilePath("index-write")
-            If Not schema.SaveFile(tmpf) Then Throw New IO.IOException("Cannot save the current index to a temporary file.")
+            If Not FastCores.Run(Function() schema.SaveFile(tmpf)) Then Throw New IO.IOException("Cannot save the current index to a temporary file.")
             'Dim sdata As Byte() = Encoding.UTF8.GetBytes(schema.GetSerializedText())
             PrintMsg(My.Resources.ResText_WI)
             'TapeUtils.Write(TapeDrive, sdata, plabel.blocksize)
@@ -4530,7 +4530,7 @@ Public Class LTFSWriter
             If ExtraPartitionCount > 0 Then
                 PrintMsg(My.Resources.ResText_GI)
                 tmpf = LazySchemaStore.CreateTempFilePath("index-write")
-                If Not schema.SaveFile(tmpf) Then Throw New IO.IOException("Cannot save the index to a temporary file.")
+                If Not FastCores.Run(Function() schema.SaveFile(tmpf)) Then Throw New IO.IOException("Cannot save the index to a temporary file.")
                 PrintMsg(My.Resources.ResText_WI)
                 ' Same check as WriteCurrentIndex. A refused index write must not reach
                 ' the WriteVCI below, or the Volume Coherency Info would advertise an
